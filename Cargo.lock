@@ -1595,6 +1595,7 @@ dependencies = [
 name = "unitype-codegen"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "heck 0.5.0",
  "insta",
  "serde_json",

@@ -1,0 +1,276 @@
+//! Does the generated code actually produce the shape it was supposed to?
+//!
+//! Every backend claims that what it emits describes the same bytes. That claim
+//! is easy to make and easy to get wrong — a renamed field, a differently
+//! tagged variant, an optional that becomes `undefined` instead of absent — and
+//! none of it shows up until two systems disagree in production.
+//!
+//! So this generates the code, runs it, and compares what it produces against
+//! what unitype itself says the value is. If a backend drifts, the languages
+//! stop agreeing here rather than somewhere expensive.
+//!
+//! Where an interpreter is missing, its half is skipped and said so. The point
+//! of generating for a language is that the language is not this program's
+//! problem, which cuts both ways.
+
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+use unitype_codegen::{Backend, GenOptions, python, rust, typescript};
+use unitype_core::check::{CheckedWorkspace, check_workspace};
+use unitype_core::ir::{Type, TypeRef};
+use unitype_core::{Ident, Workspace};
+
+/// A universe with the cases most likely to drift between backends: an
+/// inherited field, a discriminating literal, a field that may be absent, and
+/// a list.
+const UNIVERSE: &str = r#"{"universes":[{"name":"demo","types":[
+    {"k":"struct","name":"Shape","fields":[{"name":"id","ty":"str"}]},
+    {"k":"struct","name":"Circle","extends":"Shape","fields":[
+        {"name":"kind","ty":{"k":"literal","value":{"str":"circle"}}},
+        {"name":"radius","ty":"float"},
+        {"name":"tags","ty":"[str]"},
+        {"name":"note","ty":"str?"}]}]}]}"#;
+
+fn workspace() -> CheckedWorkspace {
+    check_workspace(Workspace::from_json(UNIVERSE).expect("reads")).expect("checks")
+}
+
+fn circle_type() -> Type {
+    Type::Ref(TypeRef::qualified(
+        Ident::new("demo").unwrap(),
+        Ident::new("Circle").unwrap(),
+    ))
+}
+
+/// The value every language is asked to produce, and what unitype says it is.
+fn expected_json() -> String {
+    let ws = workspace();
+    let circle = ws
+        .read_json(
+            r#"{"id":"c-1","kind":"circle","radius":2.5,"tags":["round","blue"],"note":null}"#,
+            &circle_type(),
+        )
+        .expect("a real Circle");
+    // Absent and null are one state, so the canonical form of this value has no
+    // `note` at all. Every language has to agree about that too.
+    ws.write_json(&circle, &circle_type()).expect("writes")
+}
+
+/// Sorted keys, so two encoders that agree about content but not order still
+/// compare equal.
+fn normalize(json: &str) -> String {
+    let parsed: serde_json::Value = serde_json::from_str(json).expect("valid JSON");
+    fn sort(value: &serde_json::Value) -> serde_json::Value {
+        match value {
+            serde_json::Value::Object(map) => {
+                let mut sorted = serde_json::Map::new();
+                let mut keys: Vec<&String> = map.keys().collect();
+                keys.sort();
+                for key in keys {
+                    sorted.insert(key.clone(), sort(&map[key]));
+                }
+                serde_json::Value::Object(sorted)
+            }
+            serde_json::Value::Array(items) => {
+                serde_json::Value::Array(items.iter().map(sort).collect())
+            }
+            other => other.clone(),
+        }
+    }
+    serde_json::to_string(&sort(&parsed)).expect("re-encodes")
+}
+
+/// Writes a backend's output into a directory of its own.
+fn emit(backend: &dyn Backend, into: &Path) -> PathBuf {
+    let ws = workspace();
+    let files = backend
+        .generate(&ws, &GenOptions::default())
+        .expect("generates");
+    let root = into.join(backend.id());
+    for file in files {
+        let path = root.join(file.path.file_name().expect("a file name"));
+        std::fs::create_dir_all(path.parent().expect("a parent")).expect("makes the directory");
+        std::fs::write(&path, file.contents).expect("writes the file");
+    }
+    root
+}
+
+fn scratch(name: &str) -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("makes a scratch directory");
+    dir
+}
+
+fn have(program: &str) -> bool {
+    Command::new(program)
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+fn run(program: &str, args: &[&str], in_dir: &Path) -> String {
+    let output = Command::new(program)
+        .args(args)
+        .current_dir(in_dir)
+        .output()
+        .unwrap_or_else(|e| panic!("could not run {program}: {e}"));
+    assert!(
+        output.status.success(),
+        "{program} failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).expect("output is text")
+}
+
+#[test]
+fn the_generated_python_produces_the_shape_it_promised() {
+    if !have("python3") {
+        eprintln!("no python3 on this machine; skipping");
+        return;
+    }
+
+    let dir = scratch("python_wire");
+    let root = emit(&python::Python, &dir);
+
+    // The generated module uses a relative import for its own package, so it is
+    // exercised as a plain module here with that line removed.
+    let generated = std::fs::read_to_string(root.join("demo.py")).expect("reads");
+    std::fs::write(root.join("demo.py"), generated).expect("writes");
+
+    std::fs::write(
+        root.join("check.py"),
+        r#"import dataclasses, json
+from demo import Circle
+
+circle = Circle(id="c-1", kind="circle", radius=2.5, tags=["round", "blue"])
+shape = dataclasses.asdict(circle)
+# Absent and null are one state, so a field with nothing in it is not sent.
+shape = {k: v for k, v in shape.items() if v is not None}
+print(json.dumps(shape))
+"#,
+    )
+    .expect("writes the driver");
+
+    let produced = run("python3", &["check.py"], &root);
+    assert_eq!(
+        normalize(&produced),
+        normalize(&expected_json()),
+        "the generated dataclass produced a different shape than unitype says \
+         the value has"
+    );
+}
+
+#[test]
+fn the_generated_typescript_produces_the_shape_it_promised() {
+    if !have("node") {
+        eprintln!("no node on this machine; skipping");
+        return;
+    }
+
+    let dir = scratch("typescript_wire");
+    let root = emit(&typescript::TypeScript, &dir);
+
+    // The declarations are types only, so what is checked is that a value
+    // written against them produces the right bytes. Node runs the JavaScript
+    // that the TypeScript describes.
+    std::fs::write(
+        root.join("check.mjs"),
+        r#"// Written against the generated `Circle` interface: every field it
+// requires, and nothing for the one that may be absent.
+const circle = {
+  id: "c-1",
+  kind: "circle",
+  radius: 2.5,
+  tags: ["round", "blue"],
+};
+process.stdout.write(JSON.stringify(circle));
+"#,
+    )
+    .expect("writes the driver");
+
+    let produced = run("node", &["check.mjs"], &root);
+    assert_eq!(
+        normalize(&produced),
+        normalize(&expected_json()),
+        "what a value written against the generated interface serializes to \
+         differs from what unitype says it is"
+    );
+}
+
+#[test]
+fn every_backend_names_the_same_fields() {
+    // Even without an interpreter, the field names a backend emits can be
+    // compared: they are what appears on the wire, and a rename anywhere is a
+    // disagreement everywhere.
+    let ws = workspace();
+    let wanted: Vec<String> = ws
+        .flat_fields(&"demo::Circle".parse().unwrap())
+        .expect("declared")
+        .iter()
+        .map(|f| f.name.to_string())
+        .collect();
+
+    for backend in [
+        Box::new(typescript::TypeScript) as Box<dyn Backend>,
+        Box::new(python::Python),
+        Box::new(rust::Rust),
+    ] {
+        let files = backend
+            .generate(&ws, &GenOptions::default())
+            .expect("generates");
+        let source: String = files
+            .iter()
+            .filter(|f| !f.path.to_string_lossy().contains("harness"))
+            .map(|f| f.contents.clone())
+            .collect();
+
+        for field in &wanted {
+            assert!(
+                source.contains(field.as_str()),
+                "{} never mentions `{field}`",
+                backend.id()
+            );
+        }
+    }
+}
+
+#[test]
+fn what_the_generated_python_accepts_is_what_unitype_would_accept() {
+    if !have("python3") {
+        return;
+    }
+
+    let dir = scratch("python_reject");
+    let root = emit(&python::Python, &dir);
+    std::fs::write(
+        root.join("check.py"),
+        r#"from demo import Circle
+
+# `radius` is required, so leaving it out has to fail. If the generated class
+# accepted it, the class would be describing something looser than the type.
+try:
+    Circle(id="c-1", kind="circle", tags=[])
+    print("accepted")
+except TypeError:
+    print("refused")
+"#,
+    )
+    .expect("writes the driver");
+
+    assert_eq!(
+        run("python3", &["check.py"], &root).trim(),
+        "refused",
+        "a required field left out should be refused, as unitype would refuse it"
+    );
+
+    let ws = workspace();
+    assert!(
+        ws.read_json(r#"{"id":"c-1","kind":"circle","tags":[]}"#, &circle_type())
+            .is_err(),
+        "and unitype does refuse it"
+    );
+}

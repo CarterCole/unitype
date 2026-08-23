@@ -81,10 +81,110 @@ impl CheckedWorkspace {
     /// Writes a value back out as JSON text.
     ///
     /// The value is checked against `ty` first, so nothing that does not belong
-    /// leaves the system.
+    /// leaves the system. Fields that are absent are left out rather than
+    /// written as `null`: absence has one representation here, and this is it.
     pub fn write_json(&self, value: &Value, ty: &Type) -> Result<String, ReadError> {
         self.validate(value, ty).map_err(ReadError::Invalid)?;
-        Ok(value.to_json_string()?)
+        Ok(self.canonical(value, ty).to_json_string()?)
+    }
+
+    /// A value with nothing absent spelled out.
+    ///
+    /// A field that is not there and a field explicitly set to null are the
+    /// same state, so a canonical value carries only one of them — the absence.
+    /// Without this, unitype would emit `"note": null` where every generated
+    /// language omits the field, and two systems holding the same value would
+    /// disagree about its bytes.
+    pub fn canonical(&self, value: &Value, ty: &Type) -> Value {
+        let ty = self.expand_alias(ty);
+
+        match (&ty, value) {
+            (Type::Optional { of }, present) if !matches!(present, Value::Null) => {
+                self.canonical(present, of)
+            }
+            (Type::List { of }, Value::List(items)) => {
+                Value::List(items.iter().map(|i| self.canonical(i, of)).collect())
+            }
+            (Type::Map { value: v, .. }, Value::Map(entries)) => Value::Map(
+                entries
+                    .iter()
+                    .map(|(k, e)| (k.clone(), self.canonical(e, v)))
+                    .collect(),
+            ),
+            (Type::Tuple { items: types }, Value::Tuple(items)) if types.len() == items.len() => {
+                Value::Tuple(
+                    types
+                        .iter()
+                        .zip(items)
+                        .map(|(t, i)| self.canonical(i, t))
+                        .collect(),
+                )
+            }
+            (Type::Record { fields }, Value::Record(entries)) => {
+                let mut out = IndexMap::with_capacity(entries.len());
+                for (name, entry) in entries {
+                    let declared = fields.iter().find(|f| f.name.as_str() == name);
+                    match declared {
+                        // Absent, and allowed to be: leave it out.
+                        Some(field)
+                            if matches!(entry, Value::Null) && self.admits_absence(&field.ty) =>
+                        {
+                            continue;
+                        }
+                        Some(field) => {
+                            out.insert(name.clone(), self.canonical(entry, &field.ty));
+                        }
+                        // A field this type does not declare is kept as it is,
+                        // so that it survives a round trip.
+                        None => {
+                            out.insert(name.clone(), entry.clone());
+                        }
+                    }
+                }
+                Value::Record(out)
+            }
+            (Type::Ref(r), Value::Record(_)) => match self.fields_of(r) {
+                Some(fields) => self.canonical(value, &Type::Record { fields }),
+                None => value.clone(),
+            },
+            (
+                Type::Ref(r),
+                Value::Variant {
+                    tag,
+                    value: payload,
+                },
+            ) => {
+                let Some(TypeDef::Enum(d)) = self.ref_target(r).and_then(|q| self.def(&q)) else {
+                    return value.clone();
+                };
+                match d.variants.iter().find(|v| v.name.as_str() == tag) {
+                    Some(variant) => Value::variant(
+                        tag.clone(),
+                        self.canonical(payload, &variant.payload.clone()),
+                    ),
+                    None => value.clone(),
+                }
+            }
+            (Type::Union { members }, _) => {
+                // Whichever alternative this value actually is decides how it
+                // gets tidied.
+                for member in members {
+                    if self.validate(value, member).is_ok() {
+                        return self.canonical(value, member);
+                    }
+                }
+                value.clone()
+            }
+            _ => value.clone(),
+        }
+    }
+
+    /// Whether a field of this type may simply not be there.
+    fn admits_absence(&self, ty: &Type) -> bool {
+        matches!(
+            self.expand_alias(ty),
+            Type::Optional { .. } | Type::Unit | Type::Any
+        )
     }
 
     /// Interprets JSON as the type says to, without checking the result yet.
@@ -266,7 +366,8 @@ mod tests {
         {"k":"struct","name":"Shape","fields":[{"name":"id","ty":"str"}]},
         {"k":"struct","name":"Circle","extends":"Shape","fields":[
             {"name":"kind","ty":{"k":"literal","value":{"str":"circle"}}},
-            {"name":"radius","ty":"float"}]},
+            {"name":"radius","ty":"float"},
+            {"name":"note","ty":"str?"}]},
         {"k":"struct","name":"Rect","extends":"Shape","fields":[
             {"name":"kind","ty":{"k":"literal","value":{"str":"rect"}}},
             {"name":"w","ty":"float"}]},
@@ -435,6 +536,57 @@ mod tests {
             plain,
             "both spellings have to mean the same thing"
         );
+    }
+
+    #[test]
+    fn a_field_that_is_absent_is_left_out_rather_than_written_as_null() {
+        let ws = ws();
+        let circle = ws
+            .read_json(
+                r#"{"id":"a","kind":"circle","radius":1.0,"note":null}"#,
+                &named("Circle"),
+            )
+            .expect("reads");
+        let text = ws.write_json(&circle, &named("Circle")).expect("writes");
+        assert!(
+            !text.contains("note"),
+            "every generated language omits it, and so must this: {text}"
+        );
+        assert!(
+            ws.read_json(&text, &named("Circle")).is_ok(),
+            "and what is written still reads back: {text}"
+        );
+    }
+
+    #[test]
+    fn tidying_reaches_inside_lists_and_records() {
+        let ws = ws();
+        let ty = named("Circle").list();
+        let circles = ws
+            .read_json(
+                r#"[{"id":"a","kind":"circle","radius":1.0,"note":null},
+                    {"id":"b","kind":"circle","radius":2.0}]"#,
+                &ty,
+            )
+            .expect("reads");
+        let text = ws.write_json(&circles, &ty).expect("writes");
+        assert!(!text.contains("note"), "{text}");
+    }
+
+    #[test]
+    fn a_field_the_type_does_not_declare_survives_being_written_out() {
+        let ws = ws();
+        // Tidying only removes absence the type knows about. A field this
+        // reader has never heard of is passed along untouched, so a producer
+        // running ahead of it does not lose data on the way through.
+        let doc = ws
+            .read_json(
+                r#"{"tags":{},"blob":"AQI=","span":[1,2],"colour":"Red","extra":7}"#,
+                &named("Doc"),
+            )
+            .expect("reads");
+        let text = ws.write_json(&doc, &named("Doc")).expect("writes");
+        assert!(text.contains("extra"), "{text}");
     }
 
     #[test]

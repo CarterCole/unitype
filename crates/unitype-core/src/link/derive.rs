@@ -255,7 +255,10 @@ impl CheckedWorkspace {
     }
 
     /// Every field of a declaration, by qualified name.
-    pub(crate) fn fields_by_name(&self, name: &QualifiedName) -> Option<Vec<Field>> {
+    ///
+    /// `None` for anything without fields, which is how a caller distinguishes
+    /// "an enum" from "a struct with no fields".
+    pub fn fields_by_name(&self, name: &QualifiedName) -> Option<Vec<Field>> {
         self.fields_of(&TypeRef::qualified(
             name.universe.clone(),
             name.name.clone(),

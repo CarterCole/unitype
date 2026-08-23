@@ -11,6 +11,7 @@ repository.workspace = true
 unitype-core.workspace = true
 thiserror.workspace = true
 heck.workspace = true
+base64.workspace = true
 
 [dev-dependencies]
 insta.workspace = true
