@@ -34,6 +34,7 @@ pub mod canon;
 pub mod check;
 pub mod ident;
 pub mod ir;
+pub mod lang;
 pub mod link;
 pub mod meta;
 pub mod value;
@@ -44,6 +45,7 @@ pub use ir::{
     Expr, Field, FunctionSig, LiteralValue, LoadError, SCHEMA_VERSION, Type, TypeDef, TypeRef,
     Universe, Workspace,
 };
+pub use lang::{LANGUAGES, LanguageProfile};
 pub use link::{Link, LinkKind};
 pub use meta::{BigO, ImplProfile, Metadata};
 pub use value::Value;

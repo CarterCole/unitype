@@ -1,0 +1,66 @@
+{
+  "language": "rust",
+  "doc": "Rust's builtin types, and how the symbolic types are spelled in them.",
+  "scalars": {
+    "never": "std::convert::Infallible",
+    "any": "serde_json::Value",
+    "unit": "()",
+    "bool": "bool",
+    "i32": "i32",
+    "i64": "i64",
+    "f64": "f64",
+    "string": "String",
+    "bytes": "Vec<u8>"
+  },
+  "constructors": {
+    "list": "Vec<{}>",
+    "optional": "Option<{}>",
+    "map": "BTreeMap<{}, {}>",
+    "future": "impl Future<Output = {}>",
+    "tuple": "({})"
+  },
+  "notes": {
+    "map": "An ordered map, so that generated code serializes the same way twice.",
+    "any": "Held as parsed JSON, since Rust has no dynamic type of its own."
+  },
+  "reserved": [
+    "as", "async", "await", "break", "const", "continue", "crate", "dyn",
+    "else", "enum", "extern", "false", "fn", "for", "if", "impl", "in",
+    "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return",
+    "self", "Self", "static", "struct", "super", "trait", "true", "type",
+    "unsafe", "use", "where", "while", "abstract", "become", "box", "do",
+    "final", "macro", "override", "priv", "try", "typeof", "unsized",
+    "virtual", "yield"
+  ],
+  "escape": "r#{}",
+  "types": [
+    {
+      "k": "alias",
+      "name": "u64",
+      "doc": "An unsigned 64-bit integer. Travels as text, because half its range is outside i64 and JSON numbers cannot be trusted with the rest.",
+      "target": "string",
+      "meta": { "native": "u64", "lossy_into": "i64" }
+    },
+    {
+      "k": "alias",
+      "name": "i128",
+      "doc": "A 128-bit integer. Travels as text for the same reason.",
+      "target": "string",
+      "meta": { "native": "i128", "lossy_into": "i64" }
+    },
+    {
+      "k": "alias",
+      "name": "f32",
+      "doc": "A 32-bit float. Widening to f64 loses nothing; narrowing back does.",
+      "target": "f64",
+      "meta": { "native": "f32" }
+    },
+    {
+      "k": "alias",
+      "name": "char",
+      "doc": "A single Unicode scalar value, which travels as a one-character string.",
+      "target": "string",
+      "meta": { "native": "char" }
+    }
+  ]
+}

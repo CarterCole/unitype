@@ -1,0 +1,110 @@
+{
+  "language": "python",
+  "doc": "Python's builtin types, and how the symbolic types are spelled in them.",
+  "scalars": {
+    "never": "typing.NoReturn",
+    "any": "typing.Any",
+    "unit": "None",
+    "bool": "bool",
+    "i32": "int",
+    "i64": "int",
+    "f64": "float",
+    "string": "str",
+    "bytes": "bytes"
+  },
+  "constructors": {
+    "list": "list[{}]",
+    "optional": "{} | None",
+    "map": "dict[{}, {}]",
+    "future": "typing.Awaitable[{}]",
+    "tuple": "tuple[{}]"
+  },
+  "notes": {
+    "i64": "Python integers have no width, so this spelling accepts values the wire will not carry. Anything beyond 64 bits is refused at the boundary rather than truncated.",
+    "bool": "A `bool` is an `int` in Python, so a value meant as a number can arrive as True. The boundary check catches it."
+  },
+  "reserved": [
+    "False",
+    "None",
+    "True",
+    "and",
+    "as",
+    "assert",
+    "async",
+    "await",
+    "break",
+    "class",
+    "continue",
+    "def",
+    "del",
+    "elif",
+    "else",
+    "except",
+    "finally",
+    "for",
+    "from",
+    "global",
+    "if",
+    "import",
+    "in",
+    "is",
+    "lambda",
+    "nonlocal",
+    "not",
+    "or",
+    "pass",
+    "raise",
+    "return",
+    "try",
+    "while",
+    "with",
+    "yield",
+    "match",
+    "case",
+    "type"
+  ],
+  "escape": "{}_",
+  "loose": [
+    "optional"
+  ],
+  "group": "({})",
+  "types": [
+    {
+      "k": "alias",
+      "name": "int",
+      "doc": "An integer of unbounded size. Values beyond 64 bits do not fit the wire and travel as text.",
+      "target": "i64",
+      "meta": {
+        "native": "int",
+        "lossy_into": "i64"
+      }
+    },
+    {
+      "k": "alias",
+      "name": "Decimal",
+      "doc": "An exact decimal, which travels as text so that no digits are lost on the way.",
+      "target": "string",
+      "meta": {
+        "native": "decimal.Decimal"
+      }
+    },
+    {
+      "k": "alias",
+      "name": "datetime",
+      "doc": "An instant, which travels as an ISO 8601 string.",
+      "target": "string",
+      "meta": {
+        "native": "datetime.datetime"
+      }
+    },
+    {
+      "k": "alias",
+      "name": "tuple_immutable",
+      "doc": "Python tuples are immutable where lists are not; both arrive as JSON arrays.",
+      "target": "any",
+      "meta": {
+        "native": "tuple"
+      }
+    }
+  ]
+}

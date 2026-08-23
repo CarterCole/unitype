@@ -1,0 +1,123 @@
+{
+  "language": "typescript",
+  "doc": "TypeScript's builtin types, and how the symbolic types are spelled in them.",
+  "scalars": {
+    "never": "never",
+    "any": "unknown",
+    "unit": "null",
+    "bool": "boolean",
+    "i32": "number",
+    "i64": "number",
+    "f64": "number",
+    "string": "string",
+    "bytes": "string"
+  },
+  "constructors": {
+    "list": "{}[]",
+    "optional": "{} | null",
+    "map": "Record<{}, {}>",
+    "future": "Promise<{}>",
+    "tuple": "[{}]"
+  },
+  "notes": {
+    "i64": "A `number` holds integers exactly only up to 2^53. Beyond that this spelling loses data, and a 64-bit integer should travel as text.",
+    "bytes": "Base64, since there is no byte-string primitive to receive it.",
+    "any": "`unknown` rather than `any`, so that reading it still requires a check.",
+    "unit": "`null` rather than `undefined`: the wire has one way of being absent, and this is it."
+  },
+  "reserved": [
+    "break",
+    "case",
+    "catch",
+    "class",
+    "const",
+    "continue",
+    "debugger",
+    "default",
+    "delete",
+    "do",
+    "else",
+    "enum",
+    "export",
+    "extends",
+    "false",
+    "finally",
+    "for",
+    "function",
+    "if",
+    "import",
+    "in",
+    "instanceof",
+    "new",
+    "null",
+    "return",
+    "super",
+    "switch",
+    "this",
+    "throw",
+    "true",
+    "try",
+    "typeof",
+    "var",
+    "void",
+    "while",
+    "with",
+    "as",
+    "implements",
+    "interface",
+    "let",
+    "package",
+    "private",
+    "protected",
+    "public",
+    "static",
+    "yield",
+    "any",
+    "boolean",
+    "declare",
+    "get",
+    "module",
+    "require",
+    "number",
+    "set",
+    "string",
+    "symbol",
+    "type",
+    "from",
+    "of"
+  ],
+  "escape": "{}_",
+  "loose": [
+    "optional"
+  ],
+  "group": "({})",
+  "types": [
+    {
+      "k": "alias",
+      "name": "undefined",
+      "doc": "TypeScript distinguishes absent from null. The wire does not, so both arrive as the one state that every language agrees on.",
+      "target": "unit",
+      "meta": {
+        "native": "undefined"
+      }
+    },
+    {
+      "k": "alias",
+      "name": "bigint",
+      "doc": "An arbitrary-precision integer, which travels as text because JSON numbers cannot carry it.",
+      "target": "string",
+      "meta": {
+        "native": "bigint"
+      }
+    },
+    {
+      "k": "alias",
+      "name": "Date",
+      "doc": "An instant, which travels as an ISO 8601 string.",
+      "target": "string",
+      "meta": {
+        "native": "Date"
+      }
+    }
+  ]
+}
