@@ -53,7 +53,7 @@ Code generation and the command-line tool are what is missing.
 
 | | |
 |---|---|
-| **Built** | The symbolic core — types, values, canonical form, content addressing, word aliases — and the checker over it: inheritance, subtyping, refinement, generic bounds, and structural addressing that erases names across a whole workspace. Then bridges between universes, derived and composed; a total expression language for bodies; typed reading of text into the value domain; a profile per target language; and the runtime, where environments register what they can prove and a policy decides which proof answers a call. 385 tests, including the subtyping laws and the inference laws as property tests, and pinned golden vectors that make canonical drift impossible to do by accident. |
+| **Built** | The symbolic core — types, values, canonical form, content addressing, word aliases — and the checker over it: inheritance, subtyping, refinement, generic bounds, and structural addressing that erases names across a whole workspace. Then bridges between universes, derived and composed; a total expression language for bodies; typed reading of text into the value domain; a profile per target language; and the runtime, where environments register what they can prove and a policy decides which proof answers a call. 393 tests, including the subtyping laws and the inference laws as property tests, and pinned golden vectors that make canonical drift impossible to do by accident. |
 | **Next** | Code generation for TypeScript, Python, and Rust; the `unitype` command; a differential conformance harness; and reflection. |
 
 ```bash
