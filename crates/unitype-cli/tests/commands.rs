@@ -387,6 +387,30 @@ fn one_proof_on_its_own_has_nothing_to_disagree_with() {
 }
 
 #[test]
+fn a_declaration_is_a_value_of_the_type_that_describes_declarations() {
+    let reflected = json(&["reflect", "geo::Point"]);
+    assert_eq!(reflected["is_a"], "unitype::TypeDef");
+    assert_eq!(reflected["checks"], true, "{reflected}");
+    assert_eq!(
+        reflected["value"]["name"], "Point",
+        "and what comes back is the declaration itself, as data: {reflected}"
+    );
+}
+
+#[test]
+fn the_whole_workspace_is_a_value_too() {
+    let reflected = json(&["reflect"]);
+    assert_eq!(reflected["is_a"], "unitype::Workspace");
+    assert_eq!(reflected["checks"], true, "{reflected}");
+    assert!(
+        reflected["value"]["universes"]
+            .as_array()
+            .is_some_and(|u| u.len() >= 3),
+        "{reflected}"
+    );
+}
+
+#[test]
 fn what_the_project_says_is_the_same_thing_is_listed() {
     let classes = json(&["classes"]);
     let listed = classes.as_array().expect("a list");

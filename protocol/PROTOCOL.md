@@ -457,12 +457,24 @@ is lossy and must say so.
 
 ---
 
-## 9. Reflection *(specified, not yet built)*
+## 9. Reflection
 
-A built-in `unitype` universe describes this protocol's own IR. Because
-everything serializes canonically, every type is also a value that validates
-against `unitype::Type` — so types can be sent through bridges, code generation,
-and pipelines like any other data, with no separate reflection mechanism.
+A built-in universe named `unitype` declares this protocol's own representation:
+what a type is, what a declaration is, what a universe is. An implementation
+SHOULD ship it.
+
+Nothing new is needed to make it work. Types, declarations, and universes
+already serialize canonically (§2), so each of them was always a value; the
+universe just says which value. Once it is loaded, a declaration can be
+validated, addressed, named in three words, moved through a bridge, generated as
+code, and passed to a proposition — because it is data, and all of that is what
+this protocol does with data.
+
+`Type` is declared as a union of one struct per variant, each pinned by a
+literal `k`, which is exactly the wire form of §2. That is what makes the
+description checkable rather than merely descriptive: an implementation MUST
+verify its own declarations against it, so the description cannot drift from
+what it describes. Adding a variant without adding it here has to fail.
 
 ---
 

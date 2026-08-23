@@ -1,0 +1,1098 @@
+{
+  "name": "unitype",
+  "doc": "The system, described in its own terms.\n\nEvery type, declaration, and universe here serializes to plain JSON, which means each of them is also a value \u2014 and a value can be validated, moved between universes, generated as code, and passed to a proposition like any other. So describing the representation in the representation is not a trick: it is what makes a type an ordinary thing to compute with.\n\nKept honest by a test. The real declarations are serialized and checked against these, so this cannot quietly drift away from what it claims to describe.",
+  "types": [
+    {
+      "k": "struct",
+      "name": "TypeNever",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "never"
+            }
+          }
+        }
+      ],
+      "doc": "The empty type. Nothing inhabits it."
+    },
+    {
+      "k": "struct",
+      "name": "TypeAny",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "any"
+            }
+          }
+        }
+      ],
+      "doc": "The unknown type. Everything inhabits it."
+    },
+    {
+      "k": "struct",
+      "name": "TypeUnit",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "unit"
+            }
+          }
+        }
+      ],
+      "doc": "One value, written null."
+    },
+    {
+      "k": "struct",
+      "name": "TypeBool",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "bool"
+            }
+          }
+        }
+      ],
+      "doc": "A boolean."
+    },
+    {
+      "k": "struct",
+      "name": "TypeI32",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "i32"
+            }
+          }
+        }
+      ],
+      "doc": "A 32-bit signed integer."
+    },
+    {
+      "k": "struct",
+      "name": "TypeI64",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "i64"
+            }
+          }
+        }
+      ],
+      "doc": "A 64-bit signed integer."
+    },
+    {
+      "k": "struct",
+      "name": "TypeF64",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "f64"
+            }
+          }
+        }
+      ],
+      "doc": "A 64-bit float."
+    },
+    {
+      "k": "struct",
+      "name": "TypeString",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "string"
+            }
+          }
+        }
+      ],
+      "doc": "A UTF-8 string."
+    },
+    {
+      "k": "struct",
+      "name": "TypeBytes",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "bytes"
+            }
+          }
+        }
+      ],
+      "doc": "Opaque bytes, base64 on the wire."
+    },
+    {
+      "k": "struct",
+      "name": "LiteralBool",
+      "fields": [
+        {
+          "name": "bool",
+          "ty": "bool"
+        }
+      ],
+      "doc": "A specific boolean, used as a discriminator."
+    },
+    {
+      "k": "struct",
+      "name": "LiteralInt",
+      "fields": [
+        {
+          "name": "int",
+          "ty": "i64"
+        }
+      ],
+      "doc": "A specific integer."
+    },
+    {
+      "k": "struct",
+      "name": "LiteralStr",
+      "fields": [
+        {
+          "name": "str",
+          "ty": "str"
+        }
+      ],
+      "doc": "A specific string, which is what most discriminators are."
+    },
+    {
+      "k": "alias",
+      "name": "LiteralValue",
+      "target": {
+        "k": "union",
+        "members": [
+          "LiteralBool",
+          "LiteralInt",
+          "LiteralStr"
+        ]
+      },
+      "doc": "A single value promoted to a type."
+    },
+    {
+      "k": "struct",
+      "name": "TypeLiteral",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "literal"
+            }
+          }
+        },
+        {
+          "name": "value",
+          "ty": "LiteralValue"
+        }
+      ],
+      "doc": "A singleton type: the one thing that makes a union discriminable."
+    },
+    {
+      "k": "struct",
+      "name": "TypeOptional",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "optional"
+            }
+          }
+        },
+        {
+          "name": "of",
+          "ty": "Type"
+        }
+      ],
+      "doc": "A value that may be absent."
+    },
+    {
+      "k": "struct",
+      "name": "TypeList",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "list"
+            }
+          }
+        },
+        {
+          "name": "of",
+          "ty": "Type"
+        }
+      ],
+      "doc": "An ordered sequence."
+    },
+    {
+      "k": "struct",
+      "name": "TypeFuture",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "future"
+            }
+          }
+        },
+        {
+          "name": "of",
+          "ty": "Type"
+        }
+      ],
+      "doc": "A value that arrives later."
+    },
+    {
+      "k": "struct",
+      "name": "TypeMap",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "map"
+            }
+          }
+        },
+        {
+          "name": "key",
+          "ty": "Type"
+        },
+        {
+          "name": "value",
+          "ty": "Type"
+        }
+      ],
+      "doc": "An association from keys to values."
+    },
+    {
+      "k": "struct",
+      "name": "TypeTuple",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "tuple"
+            }
+          }
+        },
+        {
+          "name": "items",
+          "ty": "[Type]"
+        }
+      ],
+      "doc": "A fixed-length heterogeneous sequence."
+    },
+    {
+      "k": "struct",
+      "name": "TypeRecord",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "record"
+            }
+          }
+        },
+        {
+          "name": "fields",
+          "ty": "[Field]"
+        }
+      ],
+      "doc": "An anonymous structural record."
+    },
+    {
+      "k": "struct",
+      "name": "TypeUnion",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "union"
+            }
+          }
+        },
+        {
+          "name": "members",
+          "ty": "[Type]"
+        }
+      ],
+      "doc": "An untagged union of alternatives."
+    },
+    {
+      "k": "struct",
+      "name": "TypeFunction",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "function"
+            }
+          }
+        },
+        {
+          "name": "params",
+          "ty": "[Type]"
+        },
+        {
+          "name": "ret",
+          "ty": "Type"
+        }
+      ],
+      "doc": "A function type. Parameter names live on the declaration, not here."
+    },
+    {
+      "k": "struct",
+      "name": "TypeReference",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "ref"
+            }
+          }
+        },
+        {
+          "name": "universe",
+          "ty": "str?",
+          "doc": "Absent means the universe this was written in."
+        },
+        {
+          "name": "name",
+          "ty": "str"
+        },
+        {
+          "name": "args",
+          "ty": "[Type]?",
+          "doc": "Generic arguments, absent when there are none."
+        }
+      ],
+      "doc": "A reference to a named declaration."
+    },
+    {
+      "k": "struct",
+      "name": "TypeParam",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "param"
+            }
+          }
+        },
+        {
+          "name": "name",
+          "ty": "str"
+        }
+      ],
+      "doc": "An occurrence of a generic parameter."
+    },
+    {
+      "k": "alias",
+      "name": "Type",
+      "target": {
+        "k": "union",
+        "members": [
+          "TypeNever",
+          "TypeAny",
+          "TypeUnit",
+          "TypeBool",
+          "TypeI32",
+          "TypeI64",
+          "TypeF64",
+          "TypeString",
+          "TypeBytes",
+          "TypeLiteral",
+          "TypeOptional",
+          "TypeList",
+          "TypeFuture",
+          "TypeMap",
+          "TypeTuple",
+          "TypeRecord",
+          "TypeUnion",
+          "TypeFunction",
+          "TypeReference",
+          "TypeParam"
+        ]
+      },
+      "doc": "A type, as one of the shapes it can take. This is the same union the wire form is."
+    },
+    {
+      "k": "struct",
+      "name": "Field",
+      "fields": [
+        {
+          "name": "name",
+          "ty": "str"
+        },
+        {
+          "name": "ty",
+          "ty": "Type"
+        },
+        {
+          "name": "doc",
+          "ty": "str?"
+        }
+      ],
+      "doc": "One named field of a record or struct."
+    },
+    {
+      "k": "struct",
+      "name": "TypeRef",
+      "fields": [
+        {
+          "name": "universe",
+          "ty": "str?"
+        },
+        {
+          "name": "name",
+          "ty": "str"
+        },
+        {
+          "name": "args",
+          "ty": "[Type]?"
+        }
+      ],
+      "doc": "A reference in a position where only a declaration will do."
+    },
+    {
+      "k": "struct",
+      "name": "TypeParamDecl",
+      "fields": [
+        {
+          "name": "name",
+          "ty": "str"
+        },
+        {
+          "name": "bounds",
+          "ty": "[TypeRef]?",
+          "doc": "Interfaces every argument must satisfy."
+        }
+      ],
+      "doc": "A generic parameter a declaration introduces."
+    },
+    {
+      "k": "struct",
+      "name": "Variant",
+      "fields": [
+        {
+          "name": "name",
+          "ty": "str"
+        },
+        {
+          "name": "payload",
+          "ty": "Type?",
+          "doc": "Absent for a bare tag."
+        },
+        {
+          "name": "doc",
+          "ty": "str?"
+        }
+      ],
+      "doc": "One alternative of an enum."
+    },
+    {
+      "k": "struct",
+      "name": "NamedParam",
+      "fields": [
+        {
+          "name": "name",
+          "ty": "str"
+        },
+        {
+          "name": "ty",
+          "ty": "Type"
+        },
+        {
+          "name": "doc",
+          "ty": "str?"
+        }
+      ],
+      "doc": "One parameter of a signature. Its name is for people, not for identity."
+    },
+    {
+      "k": "struct",
+      "name": "StructDef",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "struct"
+            }
+          }
+        },
+        {
+          "name": "name",
+          "ty": "str"
+        },
+        {
+          "name": "doc",
+          "ty": "str?"
+        },
+        {
+          "name": "params",
+          "ty": "[TypeParamDecl]?"
+        },
+        {
+          "name": "extends",
+          "ty": "TypeRef?",
+          "doc": "The single parent, in the same universe."
+        },
+        {
+          "name": "implements",
+          "ty": "[TypeRef]?"
+        },
+        {
+          "name": "fields",
+          "ty": "[Field]?",
+          "doc": "What this declaration adds, not what it inherits."
+        },
+        {
+          "name": "meta",
+          "ty": "any?"
+        }
+      ],
+      "doc": "A nominal product type."
+    },
+    {
+      "k": "struct",
+      "name": "InterfaceDef",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "interface"
+            }
+          }
+        },
+        {
+          "name": "name",
+          "ty": "str"
+        },
+        {
+          "name": "doc",
+          "ty": "str?"
+        },
+        {
+          "name": "params",
+          "ty": "[TypeParamDecl]?"
+        },
+        {
+          "name": "extends",
+          "ty": "[TypeRef]?"
+        },
+        {
+          "name": "fields",
+          "ty": "[Field]?"
+        },
+        {
+          "name": "meta",
+          "ty": "any?"
+        }
+      ],
+      "doc": "A field contract that structs can claim to satisfy."
+    },
+    {
+      "k": "struct",
+      "name": "EnumDef",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "enum"
+            }
+          }
+        },
+        {
+          "name": "name",
+          "ty": "str"
+        },
+        {
+          "name": "doc",
+          "ty": "str?"
+        },
+        {
+          "name": "params",
+          "ty": "[TypeParamDecl]?"
+        },
+        {
+          "name": "variants",
+          "ty": "[Variant]"
+        },
+        {
+          "name": "meta",
+          "ty": "any?"
+        }
+      ],
+      "doc": "A nominal tagged sum."
+    },
+    {
+      "k": "struct",
+      "name": "AliasDef",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "alias"
+            }
+          }
+        },
+        {
+          "name": "name",
+          "ty": "str"
+        },
+        {
+          "name": "doc",
+          "ty": "str?"
+        },
+        {
+          "name": "params",
+          "ty": "[TypeParamDecl]?"
+        },
+        {
+          "name": "target",
+          "ty": "Type"
+        },
+        {
+          "name": "meta",
+          "ty": "any?"
+        }
+      ],
+      "doc": "A transparent name for another type."
+    },
+    {
+      "k": "alias",
+      "name": "TypeDef",
+      "target": {
+        "k": "union",
+        "members": [
+          "StructDef",
+          "InterfaceDef",
+          "EnumDef",
+          "AliasDef"
+        ]
+      },
+      "doc": "A named type declaration."
+    },
+    {
+      "k": "struct",
+      "name": "FunctionSig",
+      "fields": [
+        {
+          "name": "name",
+          "ty": "str"
+        },
+        {
+          "name": "doc",
+          "ty": "str?"
+        },
+        {
+          "name": "params_decl",
+          "ty": "[TypeParamDecl]?"
+        },
+        {
+          "name": "params",
+          "ty": "[NamedParam]?"
+        },
+        {
+          "name": "ret",
+          "ty": "Type"
+        },
+        {
+          "name": "refines",
+          "ty": "str?",
+          "doc": "A signature this one strengthens, as `universe::name`."
+        },
+        {
+          "name": "body",
+          "ty": "any?",
+          "doc": "A constructive proof, when there is one."
+        },
+        {
+          "name": "meta",
+          "ty": "any?"
+        }
+      ],
+      "doc": "A proposition: a named function type that implementations prove."
+    },
+    {
+      "k": "struct",
+      "name": "Universe",
+      "fields": [
+        {
+          "name": "name",
+          "ty": "str"
+        },
+        {
+          "name": "doc",
+          "ty": "str?"
+        },
+        {
+          "name": "types",
+          "ty": "[TypeDef]?"
+        },
+        {
+          "name": "functions",
+          "ty": "[FunctionSig]?"
+        },
+        {
+          "name": "meta",
+          "ty": "any?"
+        }
+      ],
+      "doc": "A named scope of declarations and propositions."
+    },
+    {
+      "k": "struct",
+      "name": "CoercionIdentity",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "identity"
+            }
+          }
+        }
+      ],
+      "doc": "Nothing to do; the value passes through."
+    },
+    {
+      "k": "struct",
+      "name": "CoercionWidenInt",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "widen_int"
+            }
+          }
+        }
+      ],
+      "doc": "A 32-bit integer widens, losing nothing."
+    },
+    {
+      "k": "struct",
+      "name": "CoercionWrapOptional",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "wrap_optional"
+            }
+          }
+        },
+        {
+          "name": "of",
+          "ty": "Coercion"
+        }
+      ],
+      "doc": "A present value becomes an optional one."
+    },
+    {
+      "k": "struct",
+      "name": "CoercionThrough",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "through"
+            }
+          }
+        },
+        {
+          "name": "functor",
+          "ty": "str",
+          "doc": "The constructor being mapped through."
+        },
+        {
+          "name": "of",
+          "ty": "Coercion"
+        }
+      ],
+      "doc": "Whatever is inside a constructor is converted."
+    },
+    {
+      "k": "struct",
+      "name": "CoercionViaLink",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "via_link"
+            }
+          }
+        },
+        {
+          "name": "link",
+          "ty": "str"
+        }
+      ],
+      "doc": "The field's own type is bridged by another link."
+    },
+    {
+      "k": "alias",
+      "name": "Coercion",
+      "target": {
+        "k": "union",
+        "members": [
+          "CoercionIdentity",
+          "CoercionWidenInt",
+          "CoercionWrapOptional",
+          "CoercionThrough",
+          "CoercionViaLink"
+        ]
+      },
+      "doc": "How one field's value becomes another's."
+    },
+    {
+      "k": "struct",
+      "name": "FieldPair",
+      "fields": [
+        {
+          "name": "from",
+          "ty": "str"
+        },
+        {
+          "name": "to",
+          "ty": "str"
+        },
+        {
+          "name": "coercion",
+          "ty": "Coercion"
+        }
+      ],
+      "doc": "One field correspondence within a mapping."
+    },
+    {
+      "k": "struct",
+      "name": "LinkIdentical",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "identical"
+            }
+          }
+        }
+      ],
+      "doc": "The two hold the same data, so the conversion is a cast."
+    },
+    {
+      "k": "struct",
+      "name": "LinkFieldMap",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "field_map"
+            }
+          }
+        },
+        {
+          "name": "pairs",
+          "ty": "[FieldPair]"
+        },
+        {
+          "name": "dropped",
+          "ty": "[str]?",
+          "doc": "Source fields with no target. A lossy bridge."
+        }
+      ],
+      "doc": "A mechanical rearrangement of fields."
+    },
+    {
+      "k": "struct",
+      "name": "LinkWitness",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "witness"
+            }
+          }
+        },
+        {
+          "name": "sig",
+          "ty": "str"
+        }
+      ],
+      "doc": "An arbitrary conversion, witnessed by a signature somebody implemented."
+    },
+    {
+      "k": "alias",
+      "name": "LinkKind",
+      "target": {
+        "k": "union",
+        "members": [
+          "LinkIdentical",
+          "LinkFieldMap",
+          "LinkWitness"
+        ]
+      },
+      "doc": "What justifies a link."
+    },
+    {
+      "k": "struct",
+      "name": "Link",
+      "fields": [
+        {
+          "name": "name",
+          "ty": "str"
+        },
+        {
+          "name": "doc",
+          "ty": "str?"
+        },
+        {
+          "name": "from",
+          "ty": "str",
+          "doc": "The source type, as `universe::Name`."
+        },
+        {
+          "name": "to",
+          "ty": "str"
+        },
+        {
+          "name": "kind",
+          "ty": "LinkKind"
+        },
+        {
+          "name": "derived",
+          "ty": "bool?"
+        },
+        {
+          "name": "meta",
+          "ty": "any?"
+        }
+      ],
+      "doc": "A declared correspondence that lets data cross between universes."
+    },
+    {
+      "k": "struct",
+      "name": "Workspace",
+      "fields": [
+        {
+          "name": "version",
+          "ty": "str?"
+        },
+        {
+          "name": "universes",
+          "ty": "[Universe]?"
+        },
+        {
+          "name": "links",
+          "ty": "[Link]?"
+        }
+      ],
+      "doc": "Everything loaded together."
+    }
+  ],
+  "functions": [
+    {
+      "name": "describe",
+      "doc": "The declaration a name refers to.",
+      "params": [
+        {
+          "name": "name",
+          "ty": "str"
+        }
+      ],
+      "ret": "TypeDef?"
+    },
+    {
+      "name": "type_of",
+      "doc": "The type a value satisfies, worked out from the value alone.",
+      "params": [
+        {
+          "name": "value",
+          "ty": "any"
+        }
+      ],
+      "ret": "Type"
+    },
+    {
+      "name": "universes",
+      "doc": "Every universe loaded here, as data.",
+      "params": [],
+      "ret": "[Universe]"
+    },
+    {
+      "name": "address_of",
+      "doc": "A declaration's structural address, and the words that name it.",
+      "params": [
+        {
+          "name": "name",
+          "ty": "str"
+        }
+      ],
+      "ret": "str?"
+    }
+  ]
+}

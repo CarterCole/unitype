@@ -169,6 +169,14 @@ enum Command {
         sig: Option<String>,
     },
 
+    /// Show a declaration as the value it is, checked against the type that
+    /// describes declarations.
+    Reflect {
+        /// The declaration, as `universe::Name`. Without one, the whole
+        /// workspace.
+        name: Option<String>,
+    },
+
     /// Show which declarations the project says are the same thing.
     Classes,
 
@@ -275,6 +283,7 @@ async fn run(cli: Cli) -> Result<(), Failure> {
             commands::bridge::run(&project, &from, &to, data, &out).await
         }
         Command::Conform { sig } => commands::conform::run(&project, sig, &out).await,
+        Command::Reflect { name } => commands::reflect::run(&project, name, &out),
         Command::Classes => commands::classes::run(&project, &out),
         Command::Suggest { min } => commands::suggest::run(&project, min, &out),
     }

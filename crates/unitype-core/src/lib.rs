@@ -37,6 +37,7 @@ pub mod ir;
 pub mod lang;
 pub mod link;
 pub mod meta;
+pub mod reflect;
 pub mod value;
 
 pub use canon::{TypeId, canonical_string, decl_hash, full_alias, local_hash, sig_hash};

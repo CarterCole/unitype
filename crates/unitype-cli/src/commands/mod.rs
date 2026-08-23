@@ -8,6 +8,7 @@ pub mod conform;
 pub mod generate;
 pub mod infer;
 pub mod ls;
+pub mod reflect;
 pub mod run;
 pub mod suggest;
 pub mod validate;
