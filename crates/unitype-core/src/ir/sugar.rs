@@ -94,12 +94,12 @@ fn desugar_typedef(json: &mut Json) -> Result<(), SugarError> {
     desugar_param_decls(obj)?;
     match kind.as_str() {
         "struct" => {
-            type_ref_slot(obj, "extends");
-            type_ref_array(obj, "implements");
+            type_ref_slot(obj, "extends")?;
+            type_ref_array(obj, "implements")?;
             desugar_fields(obj)?;
         }
         "interface" => {
-            type_ref_array(obj, "extends");
+            type_ref_array(obj, "extends")?;
             desugar_fields(obj)?;
         }
         "enum" => {
@@ -124,7 +124,7 @@ fn desugar_function(json: &mut Json) -> Result<(), SugarError> {
     if let Some(decls) = obj.get_mut("params_decl").and_then(Json::as_array_mut) {
         for d in decls {
             if let Some(d) = d.as_object_mut() {
-                type_ref_array(d, "bounds");
+                type_ref_array(d, "bounds")?;
             }
         }
     }
@@ -137,7 +137,7 @@ fn desugar_function(json: &mut Json) -> Result<(), SugarError> {
     }
     type_slot(obj, "ret")?;
     if let Some(body) = obj.get_mut("body") {
-        desugar_expr(body);
+        desugar_expr(body)?;
     }
     Ok(())
 }
@@ -149,7 +149,7 @@ fn desugar_param_decls(obj: &mut Map<String, Json>) -> Result<(), SugarError> {
                 // A parameter declaration has `bounds`; a function parameter has
                 // `ty`. Only the former appears on a type declaration.
                 if d.contains_key("bounds") {
-                    type_ref_array(d, "bounds");
+                    type_ref_array(d, "bounds")?;
                 }
             }
         }
@@ -169,7 +169,7 @@ fn desugar_fields(obj: &mut Map<String, Json>) -> Result<(), SugarError> {
 }
 
 /// Expands shorthand in the type-reference slots inside an expression body.
-fn desugar_expr(json: &mut Json) {
+fn desugar_expr(json: &mut Json) -> Result<(), SugarError> {
     match json {
         Json::Object(obj) => {
             let kind = obj
@@ -178,19 +178,20 @@ fn desugar_expr(json: &mut Json) {
                 .unwrap_or("")
                 .to_string();
             if matches!(kind.as_str(), "make_record" | "make_variant") {
-                type_ref_slot(obj, "ty");
+                type_ref_slot(obj, "ty")?;
             }
             for (key, child) in obj.iter_mut() {
                 // A literal's payload is a value, not an expression.
                 if kind == "lit" && key == "value" {
                     continue;
                 }
-                desugar_expr(child);
+                desugar_expr(child)?;
             }
         }
-        Json::Array(items) => items.iter_mut().for_each(desugar_expr),
+        Json::Array(items) => items.iter_mut().try_for_each(desugar_expr)?,
         _ => {}
     }
+    Ok(())
 }
 
 /// Expands the type held under `key`, if present.
@@ -244,23 +245,33 @@ pub fn desugar_type(slot: &mut Json) -> Result<(), SugarError> {
 }
 
 /// Expands a type-reference slot, where only a name is meaningful.
-fn type_ref_slot(obj: &mut Map<String, Json>, key: &str) {
+fn type_ref_slot(obj: &mut Map<String, Json>, key: &str) -> Result<(), SugarError> {
     if let Some(slot) = obj.get_mut(key) {
-        if let Some(s) = slot.as_str() {
-            *slot = name_to_ref_fields(s);
-        }
+        desugar_type_ref(slot)?;
     }
+    Ok(())
 }
 
 /// Expands every type reference in the array held under `key`.
-fn type_ref_array(obj: &mut Map<String, Json>, key: &str) {
+fn type_ref_array(obj: &mut Map<String, Json>, key: &str) -> Result<(), SugarError> {
     if let Some(items) = obj.get_mut(key).and_then(Json::as_array_mut) {
         for item in items {
-            if let Some(s) = item.as_str() {
-                *item = name_to_ref_fields(s);
-            }
+            desugar_type_ref(item)?;
         }
     }
+    Ok(())
+}
+
+/// Expands one type reference: the name itself may be shorthand, and so may the
+/// generic arguments applied to it.
+fn desugar_type_ref(slot: &mut Json) -> Result<(), SugarError> {
+    if let Some(s) = slot.as_str() {
+        *slot = name_to_ref_fields(s);
+    }
+    if let Some(obj) = slot.as_object_mut() {
+        type_array(obj, "args")?;
+    }
+    Ok(())
 }
 
 /// Splits `Universe::Name` or `Name` into the fields of a type reference.
@@ -386,7 +397,7 @@ mod tests {
         // `value` means a type under `map` but a value under `lit`. Only the
         // former may be expanded, or `"i64"` the string would become a type.
         let mut json: Json = serde_json::from_str(r#"{"k":"lit","value":"i64"}"#).unwrap();
-        desugar_expr(&mut json);
+        desugar_expr(&mut json).expect("expands");
         assert_eq!(json["value"], Json::String("i64".into()));
     }
 }

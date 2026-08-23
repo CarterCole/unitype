@@ -31,6 +31,7 @@
 #![warn(missing_docs)]
 
 pub mod canon;
+pub mod check;
 pub mod ident;
 pub mod ir;
 pub mod link;

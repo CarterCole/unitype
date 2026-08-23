@@ -175,7 +175,41 @@ fn vectors() -> BTreeMap<String, String> {
         }),
     );
 
+    for (name, address) in shape_vectors() {
+        out.insert(name, format!("{address} {}", full_alias(&address)));
+    }
+
     out
+}
+
+/// A workspace exercising the cases structural addressing has to get right.
+const SHAPES: &str = r#"{"universes":[
+    {"name":"demo","types":[
+        {"k":"interface","name":"Identified","fields":[{"name":"id","ty":"str"}]},
+        {"k":"struct","name":"Shape","implements":["Identified"],
+         "fields":[{"name":"id","ty":"str"}]},
+        {"k":"struct","name":"Circle","extends":"Shape",
+         "fields":[{"name":"kind","ty":{"k":"literal","value":{"str":"circle"}}},
+                   {"name":"radius","ty":"float"}]},
+        {"k":"struct","name":"Tree","fields":[
+            {"name":"value","ty":"i64"},{"name":"kids","ty":"[Tree]"}]},
+        {"k":"struct","name":"Box","params":[{"name":"T"}],
+         "fields":[{"name":"item","ty":{"k":"param","name":"T"}}]},
+        {"k":"enum","name":"Color","variants":[{"name":"Red"},{"name":"Custom","payload":"str"}]},
+        {"k":"alias","name":"Coord","target":"Shape"}]},
+    {"name":"geo","types":[
+        {"k":"struct","name":"Point",
+         "fields":[{"name":"x","ty":"float"},{"name":"y","ty":"float"}]}]}]}"#;
+
+fn shape_vectors() -> Vec<(String, unitype_core::TypeId)> {
+    let ws = unitype_core::check::check_workspace(
+        unitype_core::Workspace::from_json(SHAPES).expect("reads"),
+    )
+    .expect("checks");
+
+    ws.def_names()
+        .filter_map(|name| Some((format!("shape/{name}"), ws.shape_hash(name)?)))
+        .collect()
 }
 
 fn golden_path() -> PathBuf {

@@ -52,8 +52,8 @@ and not yet built.
 
 | | |
 |---|---|
-| **Built** | The type IR, the total expression IR, values, input shorthand, normalization, canonical encoding, content addressing in three hash domains, and word aliases. 87 tests, including property tests for normalization idempotence and pinned golden vectors that make canonical drift impossible to do by accident. |
-| **Next** | The checker (inheritance, subtyping, application), then the runtime (implementation registry, pluggable executors, policy dispatch), code generation for TypeScript/Python/Rust, the CLI, cross-universe bridges, and reflection. |
+| **Built** | The type IR, the total expression IR, values, input shorthand, normalization, canonical encoding, content addressing, and word aliases. Then the checker: name resolution, inheritance validation and flattening, subtyping, generic bounds, refinement, call and pipeline checking, and structural addressing that erases names across a whole workspace. 176 tests, including property tests for the subtyping laws and for normalization idempotence, plus pinned golden vectors that make canonical drift impossible to do by accident. |
+| **Next** | The runtime (implementation registry, pluggable executors, policy dispatch), code generation for TypeScript/Python/Rust, the CLI, cross-universe bridges, and reflection. |
 
 ```bash
 cargo test
@@ -103,6 +103,30 @@ let written_one_way   = Type::Union { members: vec![Type::I64, Type::String] };
 let written_another   = Type::Union { members: vec![Type::String, Type::Never, Type::I64] };
 assert_eq!(local_hash(&written_one_way), local_hash(&written_another));
 ```
+
+And once a workspace is checked, the same holds for whole declarations across
+universes — including when one of them reached its fields through inheritance
+and the other didn't:
+
+```rust
+use unitype_core::{Workspace, check::check_workspace};
+
+let ws = check_workspace(Workspace::from_json(r#"{"universes":[
+    {"name":"a","types":[
+        {"k":"struct","name":"Base","fields":[{"name":"id","ty":"str"}]},
+        {"k":"struct","name":"Circle","extends":"Base","fields":[{"name":"radius","ty":"float"}]}]},
+    {"name":"b","types":[
+        {"k":"struct","name":"Disc","fields":[
+            {"name":"id","ty":"str"},{"name":"radius","ty":"float"}]}]}]}"#).unwrap()).unwrap();
+
+assert_eq!(
+    ws.shape_hash(&"a::Circle".parse().unwrap()),
+    ws.shape_hash(&"b::Disc".parse().unwrap()),
+);
+```
+
+Which is how the system notices, without being told, that two teams have been
+describing the same thing.
 
 ## Repository layout
 
