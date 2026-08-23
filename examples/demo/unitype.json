@@ -1,0 +1,11 @@
+{
+  "unitype": "1.0",
+  "name": "demo",
+  "universes": ["universes"],
+  "impls": ["impls"],
+  "links": ["links"],
+  "gen": {
+    "out": "generated",
+    "langs": ["typescript", "python", "rust"]
+  }
+}

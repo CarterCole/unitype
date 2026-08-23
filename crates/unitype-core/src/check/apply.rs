@@ -332,7 +332,10 @@ mod tests {
             .unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("argument 0"), "{msg}");
-        assert!(msg.contains("string") && msg.contains("i64"), "{msg}");
+        assert!(
+            msg.contains("[str]") && msg.contains("[i64]"),
+            "both types should read the way somebody would write them: {msg}"
+        );
     }
 
     #[test]

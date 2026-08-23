@@ -300,6 +300,11 @@ impl CheckedWorkspace {
     }
 
     /// The declaration a reference points at, if it points at anything.
+    pub fn ref_target_of(&self, r: &TypeRef) -> Option<QualifiedName> {
+        self.ref_target(r)
+    }
+
+    /// The declaration a reference points at, if it points at anything.
     pub(crate) fn ref_target(&self, r: &TypeRef) -> Option<QualifiedName> {
         Some(QualifiedName::new(r.universe.clone()?, r.name.clone()))
     }

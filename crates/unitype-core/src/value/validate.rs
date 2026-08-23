@@ -84,7 +84,7 @@ pub struct ValueError {
 
 impl ValueError {
     fn mismatch(path: &ValuePath, expected: &Type, found: &Value) -> Self {
-        let expected = crate::canon::canonical_string(expected);
+        let expected = expected.to_string();
         let found_kind = found.kind_name();
         Self {
             path: path.clone(),
@@ -97,7 +97,7 @@ impl ValueError {
     fn saying(path: &ValuePath, expected: &Type, found: &Value, detail: String) -> Self {
         Self {
             path: path.clone(),
-            expected: crate::canon::canonical_string(expected),
+            expected: expected.to_string(),
             found: found.kind_name().to_string(),
             detail,
         }

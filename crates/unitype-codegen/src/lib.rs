@@ -23,6 +23,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod literal;
 pub mod python;
 pub mod rust;
 pub mod typescript;
@@ -110,6 +111,62 @@ pub fn backend(language: &str) -> Option<Box<dyn Backend>> {
         "typescript" | "ts" => Some(Box::new(typescript::TypeScript)),
         "python" | "py" => Some(Box::new(python::Python)),
         "rust" | "rs" => Some(Box::new(rust::Rust)),
+        _ => None,
+    }
+}
+
+/// How a language builds the things a typed literal needs.
+///
+/// Kept beside the backends because it is the same knowledge: what a struct
+/// looks like when you make one, and what a variant is called.
+pub fn constructors(language: &str) -> Option<literal::Constructors> {
+    match language {
+        "typescript" | "ts" => Some(literal::Constructors {
+            record: |_name, fields| {
+                // TypeScript has no constructor to call: an interface is
+                // satisfied by an object literal.
+                let parts: Vec<String> = fields
+                    .iter()
+                    .map(|(name, value)| format!("{name}: {value}"))
+                    .collect();
+                format!("{{ {} }}", parts.join(", "))
+            },
+            variant: |_name, tag, payload| match payload {
+                Some(value) => format!("{{ $tag: {tag:?}, value: {value} }}"),
+                None => format!("{{ $tag: {tag:?} }}"),
+            },
+            plain: typescript::literal,
+        }),
+        "python" | "py" => Some(literal::Constructors {
+            record: |name, fields| {
+                let parts: Vec<String> = fields
+                    .iter()
+                    .map(|(field, value)| format!("{field}={value}"))
+                    .collect();
+                format!("{name}({})", parts.join(", "))
+            },
+            // An enum is a TypedDict here, so a variant is written the way it
+            // arrives rather than constructed.
+            variant: |_name, tag, payload| match payload {
+                Some(value) => format!("{{\"$tag\": {tag:?}, \"value\": {value}}}"),
+                None => format!("{{\"$tag\": {tag:?}}}"),
+            },
+            plain: python::literal,
+        }),
+        "rust" | "rs" => Some(literal::Constructors {
+            record: |name, fields| {
+                let parts: Vec<String> = fields
+                    .iter()
+                    .map(|(field, value)| format!("{field}: {value}"))
+                    .collect();
+                format!("{name} {{ {} }}", parts.join(", "))
+            },
+            variant: |name, tag, payload| match payload {
+                Some(value) => format!("{name}::{tag}({value})"),
+                None => format!("{name}::{tag}"),
+            },
+            plain: rust::literal,
+        }),
         _ => None,
     }
 }

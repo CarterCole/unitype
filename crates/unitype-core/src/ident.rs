@@ -61,6 +61,16 @@ impl Ident {
         Self(s.into())
     }
 
+    /// An identifier from a literal the caller knows is well-formed.
+    ///
+    /// For names a program writes into its own source, where a failure would be
+    /// a bug rather than bad input. Anything from outside goes through
+    /// [`Ident::new`].
+    pub fn literal(s: &'static str) -> Self {
+        debug_assert!(Ident::new(s).is_ok(), "`{s}` is not a valid identifier");
+        Self(s.to_string())
+    }
+
     /// The identifier as written.
     pub fn as_str(&self) -> &str {
         &self.0

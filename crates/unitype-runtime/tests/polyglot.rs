@@ -14,8 +14,7 @@ use std::sync::Arc;
 
 use unitype_core::check::{CheckedWorkspace, check_workspace};
 use unitype_core::value::Value;
-use unitype_core::{BigO, Ident, ImplProfile, QualifiedName, Universe, Workspace};
-use unitype_runtime::implementation::Implementation;
+use unitype_core::{Ident, QualifiedName, Universe, Workspace};
 use unitype_runtime::{Dispatcher, Policy, Registry};
 
 fn demo_dir() -> PathBuf {
@@ -64,32 +63,20 @@ fn dispatcher() -> Dispatcher {
     let ws = Arc::new(workspace());
     let mut registry = Registry::new();
 
-    // The proof written in Rust, registering itself as this process is an
-    // execution source.
-    registry.register_native_sync("merge_sort", |args| {
+    // The function itself has to be compiled in — there is no loading a Rust
+    // function out of a file — so this process offers it under a name.
+    registry.register_native_sync("builtin::merge_sort", |args| {
         let mut items = ints(args.first().unwrap_or(&Value::Null));
         items.sort_unstable();
         Ok(Value::List(items.into_iter().map(Value::Int).collect()))
     });
-    registry
-        .register(Implementation::new(
-            "sort.rust_merge",
-            q("demo::sort"),
-            Ident::new("here").unwrap(),
-            "merge_sort",
-            ImplProfile {
-                time: BigO::ONLogN,
-                space: BigO::ON,
-                notes: Some("Needs room for the halves it merges.".into()),
-            },
-        ))
-        .expect("registers");
 
-    // The proof written in Python, which this process learns about by being
-    // handed the manifest rather than by knowing anything about Python.
-    let manifest = demo_dir().join("impls/demo.json");
+    // Everything else comes from the manifest: which propositions are proved,
+    // by what, at what cost, and in which environment. This process is told;
+    // it does not know anything about Python, or about which of its own
+    // functions matter, until it reads that.
     registry
-        .load_manifest_file(&manifest)
+        .load_manifest_file(&demo_dir().join("impls/demo.json"))
         .expect("the demo manifest ships with the repository");
 
     // Bodies prove themselves.

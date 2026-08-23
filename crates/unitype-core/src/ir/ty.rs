@@ -5,6 +5,8 @@
 //! normalization rules that make one semantic type have exactly one such
 //! serialization, and [`crate::ir::sugar`] for the shorthand accepted on input.
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 use crate::ident::Ident;
@@ -197,6 +199,80 @@ pub enum Type {
         /// The parameter's name.
         name: Ident,
     },
+}
+
+impl fmt::Display for Type {
+    /// Writes a type the way a person would write it.
+    ///
+    /// The same shorthand the reader accepts, so that what an error message
+    /// shows can be pasted straight back into a universe. Canonical JSON is for
+    /// hashing and for machines; this is for reading.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Type::Never => f.write_str("never"),
+            Type::Any => f.write_str("any"),
+            Type::Unit => f.write_str("unit"),
+            Type::Bool => f.write_str("bool"),
+            Type::I32 => f.write_str("i32"),
+            Type::I64 => f.write_str("i64"),
+            Type::F64 => f.write_str("f64"),
+            Type::String => f.write_str("str"),
+            Type::Bytes => f.write_str("bytes"),
+
+            Type::Literal { value } => match value {
+                LiteralValue::Bool(b) => write!(f, "{b}"),
+                LiteralValue::Int(i) => write!(f, "{i}"),
+                LiteralValue::Str(s) => write!(f, "{s:?}"),
+            },
+
+            // A union or a function has to be bracketed here, or `A | B?` would
+            // read as a union with an optional rather than an optional union.
+            Type::Optional { of } => match of.as_ref() {
+                loose @ (Type::Union { .. } | Type::Function { .. }) => write!(f, "({loose})?"),
+                tight => write!(f, "{tight}?"),
+            },
+            Type::List { of } => write!(f, "[{of}]"),
+            Type::Future { of } => write!(f, "future<{of}>"),
+            Type::Map { key, value } => write!(f, "map<{key}, {value}>"),
+
+            Type::Tuple { items } => {
+                write!(f, "({})", join(items, ", "))
+            }
+            Type::Union { members } => f.write_str(&join(members, " | ")),
+            Type::Record { fields } => {
+                let inner: Vec<String> = fields
+                    .iter()
+                    .map(|field| format!("{}: {}", field.name, field.ty))
+                    .collect();
+                write!(f, "{{{}}}", inner.join(", "))
+            }
+            Type::Function { params, ret } => {
+                write!(f, "({}) -> {ret}", join(params, ", "))
+            }
+
+            Type::Ref(r) => match &r.universe {
+                Some(universe) => write!(f, "{universe}::{}{}", r.name, args(&r.args)),
+                None => write!(f, "{}{}", r.name, args(&r.args)),
+            },
+            Type::Param { name } => write!(f, "{name}"),
+        }
+    }
+}
+
+fn join(types: &[Type], separator: &str) -> String {
+    types
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(separator)
+}
+
+fn args(applied: &[Type]) -> String {
+    if applied.is_empty() {
+        String::new()
+    } else {
+        format!("<{}>", join(applied, ", "))
+    }
 }
 
 impl Type {
@@ -431,6 +507,51 @@ mod tests {
             !fits_f64_exactly(i64::MAX),
             "a round-trip cast saturates here, which is why it cannot be the test"
         );
+    }
+
+    #[test]
+    fn a_type_reads_the_way_it_would_be_written() {
+        assert_eq!(Type::I64.to_string(), "i64");
+        assert_eq!(Type::String.list().to_string(), "[str]");
+        assert_eq!(Type::String.optional().to_string(), "str?");
+        assert_eq!(Type::String.optional().list().to_string(), "[str?]");
+        assert_eq!(Type::String.list().optional().to_string(), "[str]?");
+        assert_eq!(Type::Bool.future().to_string(), "future<bool>");
+        assert_eq!(
+            Type::I64.map_from(Type::String).to_string(),
+            "map<str, i64>"
+        );
+        assert_eq!(Type::lit_str("circle").to_string(), "\"circle\"");
+        assert_eq!(
+            Type::Ref(TypeRef::qualified(
+                Ident::new("demo").unwrap(),
+                Ident::new("Circle").unwrap()
+            ))
+            .to_string(),
+            "demo::Circle"
+        );
+    }
+
+    #[test]
+    fn something_loose_is_bracketed_where_it_has_to_be() {
+        let either = Type::Union {
+            members: vec![Type::I64, Type::String],
+        };
+        assert_eq!(either.to_string(), "i64 | str");
+        assert_eq!(
+            either.optional().to_string(),
+            "(i64 | str)?",
+            "without the brackets this would read as a union with an optional"
+        );
+    }
+
+    #[test]
+    fn a_function_reads_as_an_arrow() {
+        let f = Type::Function {
+            params: vec![Type::I64.list()],
+            ret: Box::new(Type::Bool),
+        };
+        assert_eq!(f.to_string(), "([i64]) -> bool");
     }
 
     #[test]

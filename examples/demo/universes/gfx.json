@@ -1,0 +1,24 @@
+{
+  "name": "gfx",
+  "doc": "Where things are, as the drawing side of the system describes them.",
+  "types": [
+    {
+      "k": "struct",
+      "name": "Vec2",
+      "fields": [
+        { "name": "lat", "ty": "float" },
+        { "name": "lon", "ty": "float" }
+      ]
+    },
+    {
+      "k": "struct",
+      "name": "Marker",
+      "fields": [
+        { "name": "place_id", "ty": "str" },
+        { "name": "display_name", "ty": "str" },
+        { "name": "at", "ty": "Vec2" },
+        { "name": "colour", "ty": "str?" }
+      ]
+    }
+  ]
+}

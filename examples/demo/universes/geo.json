@@ -1,0 +1,24 @@
+{
+  "name": "geo",
+  "doc": "Where things are, as the mapping side of the system describes them.",
+  "types": [
+    {
+      "k": "struct",
+      "name": "Point",
+      "fields": [
+        { "name": "lat", "ty": "float" },
+        { "name": "lon", "ty": "float" }
+      ]
+    },
+    {
+      "k": "struct",
+      "name": "Place",
+      "doc": "A named point. The other universe calls this a Marker and spells its fields differently.",
+      "fields": [
+        { "name": "placeId", "ty": "str" },
+        { "name": "displayName", "ty": "str" },
+        { "name": "at", "ty": "Point" }
+      ]
+    }
+  ]
+}

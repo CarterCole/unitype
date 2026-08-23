@@ -1581,10 +1581,10 @@ checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
 name = "unitype-cli"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "clap",
  "serde",
  "serde_json",
+ "thiserror 2.0.20",
  "tokio",
  "unitype-codegen",
  "unitype-core",

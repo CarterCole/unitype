@@ -15,6 +15,18 @@
   ],
   "implementations": [
     {
+      "id": "sort.rust_merge",
+      "proves": "demo::sort",
+      "environment": "here",
+      "entry": "builtin::merge_sort",
+      "cost": {
+        "time": "o_n_log_n",
+        "space": "o_n",
+        "notes": "Needs room for the halves it merges."
+      },
+      "notes": "The quick proof, compiled into the command itself."
+    },
+    {
       "id": "sort.py_bubble",
       "proves": "demo::sort",
       "environment": "python",
@@ -24,7 +36,7 @@
         "space": "o1",
         "notes": "Sorts in place, so it needs no room beyond the list itself."
       },
-      "notes": "The frugal proof. Slow, but it borrows nothing."
+      "notes": "The frugal proof. Slow, but it borrows nothing, and it is in another language."
     }
   ]
 }

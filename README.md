@@ -53,11 +53,39 @@ Code generation and the command-line tool are what is missing.
 
 | | |
 |---|---|
-| **Built** | The symbolic core — types, values, canonical form, content addressing, word aliases — and the checker over it: inheritance, subtyping, refinement, generic bounds, and structural addressing that erases names across a whole workspace. Then bridges between universes, derived and composed; a total expression language for bodies; typed reading of text into the value domain; a profile per target language; the runtime, where environments register what they can prove and a policy decides which proof answers a call; and code generation for TypeScript, Python, and Rust, checked by running the generated code and comparing what it produces against what unitype says the value is. 455 tests, including the subtyping laws and the inference laws as property tests, and pinned golden vectors that make canonical drift impossible to do by accident. |
-| **Next** | The `unitype` command, a differential conformance harness, and reflection. |
+| **Built** | The symbolic core — types, values, canonical form, content addressing, word aliases — and the checker over it: inheritance, subtyping, refinement, generic bounds, and structural addressing that erases names across a whole workspace. Then bridges between universes, derived and composed; a total expression language for bodies; typed reading of text into the value domain; a profile per target language; the runtime, where environments register what they can prove and a policy decides which proof answers a call; code generation for TypeScript, Python, and Rust, checked by running the generated code and comparing what it produces against what unitype says the value is; and the `unitype` command over all of it. 490 tests, including the subtyping laws and the inference laws as property tests, and pinned golden vectors that make canonical drift impossible to do by accident. |
+| **Next** | A differential conformance harness, and reflection. |
 
 ```bash
 cargo test
+```
+
+## Try it
+
+```bash
+cargo run -p unitype-cli -- --project examples/demo check
+cargo run -p unitype-cli -- --project examples/demo ls types
+```
+
+The last of those prints three words beside every type. `geo::Point` and
+`gfx::Vec2` get the *same* three, because they hold the same data — which
+nobody told it.
+
+```bash
+# One proposition, two proofs, in two languages. Same answer either way.
+cargo run -p unitype-cli -- --project examples/demo \
+    run demo::sort --args '[[5,3,9,1]]' --policy fastest -v
+cargo run -p unitype-cli -- --project examples/demo \
+    run demo::sort --args '[[5,3,9,1]]' --policy min-memory -v
+
+# A value crossing between universes, through a conversion nobody wrote out.
+cargo run -p unitype-cli -- --project examples/demo bridge \
+    --from geo::Place --to gfx::Marker \
+    --data '{"placeId":"p-1","displayName":"The Angel","at":{"lat":51.53,"lon":-0.1}}'
+
+# The same value, written the way each language would have written it.
+cargo run -p unitype-cli -- --project examples/demo cast --lang rust \
+    --type demo::Circle --data '{"id":"c-1","kind":"circle","radius":2.5}'
 ```
 
 ## What it looks like

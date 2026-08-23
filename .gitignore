@@ -5,3 +5,4 @@
 *.pending-snap
 __pycache__/
 node_modules/
+examples/demo/generated/

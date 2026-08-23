@@ -1,0 +1,25 @@
+{
+  "links": [
+    {
+      "name": "point_is_a_vec2",
+      "doc": "The same two numbers under two names, so nothing has to be converted.",
+      "from": "geo::Point",
+      "to": "gfx::Vec2",
+      "kind": { "k": "identical" }
+    },
+    {
+      "name": "place_is_a_marker",
+      "doc": "The fields are spelled differently on each side, and the drawing side has a colour the mapping side never had. Nobody wrote the conversion; it was worked out from the two declarations.",
+      "from": "geo::Place",
+      "to": "gfx::Marker",
+      "kind": {
+        "k": "field_map",
+        "pairs": [
+          { "from": "placeId", "to": "place_id", "coercion": { "k": "identity" } },
+          { "from": "displayName", "to": "display_name", "coercion": { "k": "identity" } },
+          { "from": "at", "to": "at", "coercion": { "k": "via_link", "link": "point_is_a_vec2" } }
+        ]
+      }
+    }
+  ]
+}

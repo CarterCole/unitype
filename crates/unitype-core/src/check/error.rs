@@ -483,9 +483,13 @@ impl fmt::Display for Diagnostics {
     }
 }
 
-/// Describes a type compactly enough for an error message.
+/// Describes a type the way a person would write it.
+///
+/// Canonical JSON is what gets hashed; this is what gets read. An error saying
+/// `[str]?` is one somebody can act on, where the same thing spelled as nested
+/// objects is one they have to decode first.
 pub(crate) fn describe(t: &Type) -> String {
-    crate::canon::canonical_string(t)
+    t.to_string()
 }
 
 #[cfg(test)]
