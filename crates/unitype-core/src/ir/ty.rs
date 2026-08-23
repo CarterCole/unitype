@@ -9,6 +9,20 @@ use serde::{Deserialize, Serialize};
 
 use crate::ident::Ident;
 
+/// The largest magnitude of integer that a float holds exactly.
+///
+/// Above this, consecutive integers stop being distinguishable as floats.
+const MAX_EXACT_INTEGER_IN_F64: i64 = 1 << 53;
+
+/// Whether an integer survives being a float.
+///
+/// Note that a round-trip cast is *not* a valid test for this: converting an
+/// out-of-range float back to an integer saturates, so `i64::MAX` appears to
+/// round-trip when it does not.
+pub fn fits_f64_exactly(i: i64) -> bool {
+    (-MAX_EXACT_INTEGER_IN_F64..=MAX_EXACT_INTEGER_IN_F64).contains(&i)
+}
+
 /// A singleton value promoted to a type.
 ///
 /// Singleton types are what make a union discriminable: a field typed
@@ -405,6 +419,18 @@ mod tests {
             let kids = t.children().into_iter().cloned().collect();
             assert_eq!(t.with_children(kids), t, "rebuilding {t:?} changed it");
         }
+    }
+
+    #[test]
+    fn the_integers_a_float_holds_exactly_stop_at_two_to_the_53() {
+        assert!(fits_f64_exactly(0));
+        assert!(fits_f64_exactly(9_007_199_254_740_992));
+        assert!(fits_f64_exactly(-9_007_199_254_740_992));
+        assert!(!fits_f64_exactly(9_007_199_254_740_993));
+        assert!(
+            !fits_f64_exactly(i64::MAX),
+            "a round-trip cast saturates here, which is why it cannot be the test"
+        );
     }
 
     #[test]

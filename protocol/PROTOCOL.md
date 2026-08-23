@@ -59,6 +59,14 @@ Notes on the choices, each of which affects what is representable:
 - Integers are `i32` and `i64` only; floats are `f64` only. Unsigned and
   arbitrary-precision integers are excluded because they do not survive a trip
   through a JavaScript `number`.
+- **Numeric widening is allowed only where nothing is lost.** `i32` may be used
+  where `i64` or `f64` is expected, because every 32-bit integer is exactly both.
+  `i64` may **not** be used where `f64` is expected: past 2^53 an integer does
+  not survive the conversion, and an implementation must not lose that silently.
+  A *specific* integer — a literal, or a value being validated — is accepted as
+  an `f64` when its magnitude is at most 2^53. Note that a round-trip cast is not
+  a valid test for this, because converting an out-of-range float back to an
+  integer saturates.
 - `literal` has no float case. Floats have no exact equality worth building type
   identity on.
 - **Absence has one representation.** `optional(T)` covers "explicitly null",

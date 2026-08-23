@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc e3c2139f4af4cd3b7723809e6ee3343e6e14c765dbc53ce059646a9f755c304b # shrinks to samples = [Map([(Str("a"), Tuple([Null, Null, Float(0.0)])), (Str("a"), Tuple([Null, Null, Int(-36142539316918489)]))])]
+cc b2348670d4c0ea3e53735f382913c127448b02aa63980a3de90b257d16f5554c # shrinks to v = List([Float(0.0), Int(9007800239638721)])

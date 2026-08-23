@@ -14,6 +14,6 @@ pub use defs::{
 };
 pub use expr::{Expr, FieldInit};
 pub use sugar::SugarError;
-pub use ty::{Field, LiteralValue, Type, TypeRef};
+pub use ty::{Field, LiteralValue, Type, TypeRef, fits_f64_exactly};
 pub use universe::Universe;
 pub use workspace::{LoadError, SCHEMA_VERSION, Workspace};

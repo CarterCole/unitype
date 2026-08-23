@@ -33,7 +33,7 @@ use crate::check::CheckedWorkspace;
 use crate::check::error::describe;
 use crate::check::subst::{bind, substitute, substitute_ref};
 use crate::ident::QualifiedName;
-use crate::ir::{Field, LiteralValue, Type, TypeDef, TypeRef};
+use crate::ir::{Field, LiteralValue, Type, TypeDef, TypeRef, fits_f64_exactly};
 
 /// How deep an alias may expand before the checker gives up.
 ///
@@ -153,15 +153,21 @@ impl CheckedWorkspace {
             if self.sub(&value.base(), b, seen) {
                 return true;
             }
-            // An integer literal also fits the narrower integer, if it fits.
-            return matches!((value, b), (LiteralValue::Int(i), Type::I32)
-                if i32::try_from(*i).is_ok());
+            // A specific integer also fits any narrower type it happens to fit
+            // in, which the general rule below cannot say about `i64`.
+            return match (value, b) {
+                (LiteralValue::Int(i), Type::I32) => i32::try_from(*i).is_ok(),
+                (LiteralValue::Int(i), Type::F64) => fits_f64_exactly(*i),
+                _ => false,
+            };
         }
 
-        // The one widening between primitives. Integers deliberately do not
-        // widen into f64: that conversion loses precision above 2^53, and
-        // silently is the worst way for it to happen.
-        if matches!((a, b), (Type::I32, Type::I64)) {
+        // The widenings between primitives, and only the ones that lose
+        // nothing. Every 32-bit integer is exactly a 64-bit integer and exactly
+        // a float. A 64-bit integer is neither guaranteed: past 2^53 it does
+        // not survive being a float, and losing precision silently is the worst
+        // way for that to happen.
+        if matches!((a, b), (Type::I32, Type::I64) | (Type::I32, Type::F64)) {
             return true;
         }
 
@@ -423,13 +429,33 @@ mod tests {
     }
 
     #[test]
-    fn the_only_numeric_widening_is_the_one_that_loses_nothing() {
+    fn the_only_numeric_widenings_are_the_ones_that_lose_nothing() {
         let ws = ws();
         assert!(ws.is_subtype(&Type::I32, &Type::I64));
+        assert!(
+            ws.is_subtype(&Type::I32, &Type::F64),
+            "every 32-bit integer is exactly a float"
+        );
         assert!(!ws.is_subtype(&Type::I64, &Type::I32));
         assert!(
             !ws.is_subtype(&Type::I64, &Type::F64),
-            "integers must not slide into floats"
+            "past 2^53 an integer does not survive being a float"
+        );
+    }
+
+    #[test]
+    fn a_specific_integer_fits_wherever_that_integer_actually_fits() {
+        let ws = ws();
+        let small = Type::Literal {
+            value: LiteralValue::Int(3),
+        };
+        let huge = Type::Literal {
+            value: LiteralValue::Int(i64::MAX),
+        };
+        assert!(ws.is_subtype(&small, &Type::F64));
+        assert!(
+            !ws.is_subtype(&huge, &Type::F64),
+            "this particular integer does not survive being a float"
         );
     }
 
