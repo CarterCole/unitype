@@ -4,6 +4,7 @@ pub mod bridge;
 pub mod cast;
 pub mod check;
 pub mod classes;
+pub mod conform;
 pub mod generate;
 pub mod infer;
 pub mod ls;

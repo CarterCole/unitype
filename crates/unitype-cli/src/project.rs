@@ -32,6 +32,9 @@ pub struct ProjectFile {
     /// Files or directories holding implementation manifests.
     #[serde(default = "default_impls")]
     pub impls: Vec<PathBuf>,
+    /// Files or directories holding conformance vectors.
+    #[serde(default = "default_conform")]
+    pub conform: Vec<PathBuf>,
     /// Files or directories holding links between universes.
     ///
     /// Separate from the universes because a link belongs to neither end of
@@ -74,6 +77,10 @@ fn default_links() -> Vec<PathBuf> {
     vec!["links".into()]
 }
 
+fn default_conform() -> Vec<PathBuf> {
+    vec!["conform".into()]
+}
+
 /// A file of links, however it was written.
 #[derive(Deserialize)]
 #[serde(untagged)]
@@ -103,6 +110,7 @@ impl Default for ProjectFile {
             universes: default_universes(),
             impls: default_impls(),
             links: default_links(),
+            conform: default_conform(),
             generate: GenSettings::default(),
         }
     }
@@ -290,7 +298,7 @@ impl Project {
 
 /// Every `.json` file at a path: itself if it is one, everything in it if it is
 /// a directory. Sorted, so a project loads the same way twice.
-fn json_files(at: &Path) -> Vec<PathBuf> {
+pub(crate) fn json_files(at: &Path) -> Vec<PathBuf> {
     if at.is_file() {
         return vec![at.to_path_buf()];
     }

@@ -258,6 +258,134 @@ fn generation_can_be_asked_about_without_writing_anything() {
     );
 }
 
+/// A project of its own, so a test can register proofs that disagree without
+/// putting a wrong one in the example anybody reads.
+fn scratch_project(name: &str, extra_proof: Option<&str>) -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
+    let _ = std::fs::remove_dir_all(&dir);
+    let write = |at: PathBuf, text: &str| {
+        std::fs::create_dir_all(at.parent().expect("a parent")).expect("makes a directory");
+        std::fs::write(at, text).expect("writes");
+    };
+
+    write(dir.join("unitype.json"), r#"{"name":"scratch"}"#);
+    write(
+        dir.join("universes/demo.json"),
+        r#"{"name":"demo","functions":[
+            {"name":"sort","params":[{"name":"xs","ty":"[int]"}],"ret":"[int]"}]}"#,
+    );
+    write(
+        dir.join("impls/demo.json"),
+        &format!(
+            r#"{{"implementations":[
+                {{"id":"sort.merge","proves":"demo::sort","environment":"here",
+                  "entry":"builtin::merge_sort",
+                  "cost":{{"time":"o_n_log_n","space":"o_n"}}}}{}]}}"#,
+            extra_proof.unwrap_or("")
+        ),
+    );
+    write(
+        dir.join("conform/sort.json"),
+        r#"{"signature":"demo::sort","vectors":[
+            {"name":"backwards","args":[[3,2,1]],"expect":[1,2,3]},
+            {"name":"already in order","args":[[1,2,3]],"expect":[1,2,3]},
+            {"name":"no answer given","args":[[5,1,4,2]]}]}"#,
+    );
+    dir
+}
+
+fn in_project(dir: &PathBuf, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_unitype"))
+        .arg("--project")
+        .arg(dir)
+        .args(args)
+        .output()
+        .expect("the command runs")
+}
+
+#[test]
+fn proofs_of_the_demo_agree_with_each_other() {
+    if !have_python() {
+        eprintln!("no python3 on this machine; skipping");
+        return;
+    }
+    let report = json(&["conform"]);
+    let sort = &report.as_array().expect("a list")[0];
+    assert_eq!(sort["signature"], "demo::sort");
+    assert_eq!(sort["agreed"], true, "{sort}");
+    assert_eq!(
+        sort["proofs"].as_array().map(Vec::len),
+        Some(2),
+        "the Rust one and the Python one both take part: {sort}"
+    );
+}
+
+#[test]
+fn a_proof_of_the_wrong_thing_is_caught_and_says_so_to_a_build() {
+    // Reversing has exactly the type sorting has, so nothing about the
+    // signature separates them. Only running both does.
+    let dir = scratch_project(
+        "conform_disagree",
+        Some(
+            r#",{"id":"sort.broken","proves":"demo::sort","environment":"here",
+                "entry":"builtin::reverse","cost":{"time":"o_n","space":"o1"}}"#,
+        ),
+    );
+    let output = in_project(&dir, &["conform"]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(4),
+        "a build should be able to tell this apart from a crash"
+    );
+    let said = String::from_utf8_lossy(&output.stdout);
+    assert!(said.contains("sort.broken"), "{said}");
+    assert!(
+        said.contains("already in order"),
+        "the case it got wrong should be named: {said}"
+    );
+    assert!(
+        !said.contains("  backwards\n"),
+        "reversing happens to be right for this one, and should not be blamed: {said}"
+    );
+}
+
+#[test]
+fn a_disagreement_is_found_even_where_nobody_said_what_the_answer_should_be() {
+    let dir = scratch_project(
+        "conform_no_expectation",
+        Some(
+            r#",{"id":"sort.broken","proves":"demo::sort","environment":"here",
+                "entry":"builtin::reverse","cost":{"time":"o_n","space":"o1"}}"#,
+        ),
+    );
+    let output = in_project(&dir, &["--json", "conform"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
+
+    let case = report[0]["cases"]
+        .as_array()
+        .expect("cases")
+        .iter()
+        .find(|c| c["name"] == "no answer given")
+        .expect("the case with no expected answer");
+    assert_eq!(
+        case["agreed"], false,
+        "two proofs saying different things is a disagreement whether or not \
+         anybody worked out the right answer first: {case}"
+    );
+}
+
+#[test]
+fn one_proof_on_its_own_has_nothing_to_disagree_with() {
+    let dir = scratch_project("conform_alone", None);
+    let output = in_project(&dir, &["conform"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 #[test]
 fn what_the_project_says_is_the_same_thing_is_listed() {
     let classes = json(&["classes"]);

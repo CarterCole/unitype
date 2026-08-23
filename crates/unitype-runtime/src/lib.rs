@@ -14,6 +14,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod conform;
 pub mod dispatch;
 pub mod environment;
 pub mod error;
@@ -22,6 +23,7 @@ pub mod interpret;
 pub mod registry;
 pub mod subprocess;
 
+pub use conform::{Answer, ConformError, Report, Suite, Vector};
 pub use dispatch::{Considered, Dispatcher, Invocation, Options, Outcome, Policy};
 pub use environment::{Environment, Reach};
 pub use error::{DispatchError, ExecError};

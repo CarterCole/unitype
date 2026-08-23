@@ -27,6 +27,12 @@ mod exit {
     pub const CHECK: u8 = 2;
     /// Something ran and failed.
     pub const RUN: u8 = 3;
+    /// Proofs of one proposition do not agree.
+    ///
+    /// Its own code because it is the one failure a build should treat
+    /// differently: nothing is broken, but two implementations of the same
+    /// thing disagree, and somebody has to decide which is right.
+    pub const DISAGREEMENT: u8 = 4;
 }
 
 #[derive(Parser)]
@@ -156,6 +162,13 @@ enum Command {
         data: Option<String>,
     },
 
+    /// Check that the proofs of each proposition agree.
+    Conform {
+        /// Only this proposition, as `universe::name`.
+        #[arg(long, value_name = "SIGNATURE")]
+        sig: Option<String>,
+    },
+
     /// Show which declarations the project says are the same thing.
     Classes,
 
@@ -209,6 +222,14 @@ impl Failure {
             code: exit::RUN,
         }
     }
+
+    /// Proofs of one proposition do not agree.
+    pub fn disagreement(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            code: exit::DISAGREEMENT,
+        }
+    }
 }
 
 async fn run(cli: Cli) -> Result<(), Failure> {
@@ -253,6 +274,7 @@ async fn run(cli: Cli) -> Result<(), Failure> {
         Command::Bridge { from, to, data } => {
             commands::bridge::run(&project, &from, &to, data, &out).await
         }
+        Command::Conform { sig } => commands::conform::run(&project, sig, &out).await,
         Command::Classes => commands::classes::run(&project, &out),
         Command::Suggest { min } => commands::suggest::run(&project, min, &out),
     }

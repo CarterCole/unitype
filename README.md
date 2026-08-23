@@ -53,8 +53,8 @@ Code generation and the command-line tool are what is missing.
 
 | | |
 |---|---|
-| **Built** | The symbolic core — types, values, canonical form, content addressing, word aliases — and the checker over it: inheritance, subtyping, refinement, generic bounds, and structural addressing that erases names across a whole workspace. Then bridges between universes, derived and composed; a total expression language for bodies; typed reading of text into the value domain; a profile per target language; the runtime, where environments register what they can prove and a policy decides which proof answers a call; code generation for TypeScript, Python, and Rust, checked by running the generated code and comparing what it produces against what unitype says the value is; and the `unitype` command over all of it. 490 tests, including the subtyping laws and the inference laws as property tests, and pinned golden vectors that make canonical drift impossible to do by accident. |
-| **Next** | A differential conformance harness, and reflection. |
+| **Built** | The symbolic core — types, values, canonical form, content addressing, word aliases — and the checker over it: inheritance, subtyping, refinement, generic bounds, and structural addressing that erases names across a whole workspace. Then bridges between universes, derived and composed; a total expression language for bodies; typed reading of text into the value domain; a profile per target language; the runtime, where environments register what they can prove and a policy decides which proof answers a call; code generation for TypeScript, Python, and Rust, checked by running the generated code and comparing what it produces against what unitype says the value is; the `unitype` command over all of it; and a conformance harness that checks the proofs of one proposition against each other, since `sort` and `reverse` have the same type and only running both tells them apart. 505 tests, including the subtyping laws and the inference laws as property tests, and pinned golden vectors that make canonical drift impossible to do by accident. |
+| **Next** | Reflection: a built-in universe describing the IR itself, so that a type is a value like any other. |
 
 ```bash
 cargo test
@@ -86,6 +86,9 @@ cargo run -p unitype-cli -- --project examples/demo bridge \
 # The same value, written the way each language would have written it.
 cargo run -p unitype-cli -- --project examples/demo cast --lang rust \
     --type demo::Circle --data '{"id":"c-1","kind":"circle","radius":2.5}'
+
+# Do the two proofs of sort actually agree? (Exit code 4 if not.)
+cargo run -p unitype-cli -- --project examples/demo conform
 ```
 
 ## What it looks like

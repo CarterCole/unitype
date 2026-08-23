@@ -358,9 +358,8 @@ what entry name. A manifest is that announcement written down:
 Relative paths in a manifest resolve against the manifest's own directory, so it
 means the same thing wherever it is loaded from.
 
-Complexity is **declared, not measured**. The dispatcher believes the claim; a
-differential conformance harness checks that all proofs of one proposition
-actually agree.
+Complexity is **declared, not measured**. The dispatcher believes the claim; §7.3
+is how the claims get checked against each other.
 
 At the dispatch boundary, arguments are checked against the signature's
 parameters and the result against its return type. A result that does not match
@@ -400,7 +399,36 @@ One process per call is the specified behavior. A long-lived worker is a
 compatible extension — the request shape leaves room for an `id` — but is not
 part of version 1.
 
-### 7.2 Code generation *(specified, in progress)*
+### 7.3 Conformance **(frozen)**
+
+A signature says what shape comes back, not what is in it — `sort` and `reverse`
+have the same type. So the proofs of one proposition are also checked against
+each other, by running them on the same inputs:
+
+```json
+{"version": "1.0",
+ "signature": "demo::sort",
+ "float_tolerance": 0,
+ "vectors": [
+   {"name": "backwards", "args": [[3, 2, 1]], "expect": [1, 2, 3]},
+   {"name": "a long one", "args": [[9, 3, 7, 1]]}]}
+```
+
+Arguments and the expected answer are read against the signature's types by §5's
+rules. A vector with no `expect` still checks something: the proofs are held to
+each other, which finds a disagreement without anybody having worked out the
+right answer first.
+
+Comparison is between **values, not their text**. Two encoders that write a
+number differently, or an object with its keys in another order, agree. An
+integer and the same number written as a float agree. Floats agree within
+`float_tolerance`, which defaults to exact.
+
+A proof that could not be run — no interpreter on this machine — is **skipped**,
+not counted as disagreeing. An implementation reporting a failure *is* counted:
+a proof that does not answer has not proved anything.
+
+### 7.4 Code generation *(specified, in progress)*
 
 Each target language has a **profile**: how the symbolic types are spelled, how
 constructors are written, which identifiers are reserved and how to escape one,
