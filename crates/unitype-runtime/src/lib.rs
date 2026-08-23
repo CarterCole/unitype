@@ -20,6 +20,7 @@ pub mod error;
 pub mod implementation;
 pub mod interpret;
 pub mod registry;
+pub mod subprocess;
 
 pub use dispatch::{Considered, Dispatcher, Invocation, Options, Outcome, Policy};
 pub use environment::{Environment, Reach};
@@ -27,3 +28,4 @@ pub use error::{DispatchError, ExecError};
 pub use implementation::{ImplId, Implementation, Manifest};
 pub use interpret::{BoxFuture, Calls, NoCalls, Scope, eval, eval_signature};
 pub use registry::{Registry, RegistryError, RegistryWarning};
+pub use subprocess::PROTOCOL_VERSION;

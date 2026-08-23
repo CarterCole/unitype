@@ -1,0 +1,90 @@
+{
+  "name": "demo",
+  "doc": "Shapes, and the things done to them.",
+  "types": [
+    {
+      "k": "interface",
+      "name": "Identified",
+      "doc": "Anything that can be told apart from another of its kind.",
+      "fields": [{ "name": "id", "ty": "str" }]
+    },
+    {
+      "k": "struct",
+      "name": "Shape",
+      "implements": ["Identified"],
+      "fields": [{ "name": "id", "ty": "str" }]
+    },
+    {
+      "k": "struct",
+      "name": "Circle",
+      "extends": "Shape",
+      "fields": [
+        {
+          "name": "kind",
+          "doc": "The discriminator, pinned to one value so a union can be told apart.",
+          "ty": { "k": "literal", "value": { "str": "circle" } }
+        },
+        { "name": "radius", "ty": "float" }
+      ]
+    },
+    {
+      "k": "struct",
+      "name": "Rect",
+      "extends": "Shape",
+      "fields": [
+        {
+          "name": "kind",
+          "ty": { "k": "literal", "value": { "str": "rect" } }
+        },
+        { "name": "width", "ty": "float" },
+        { "name": "height", "ty": "float" }
+      ]
+    },
+    {
+      "k": "alias",
+      "name": "AnyShape",
+      "doc": "Either kind, told apart by `kind`.",
+      "target": { "k": "union", "members": ["Circle", "Rect"] }
+    },
+    {
+      "k": "struct",
+      "name": "Label",
+      "fields": [
+        { "name": "text", "ty": "str" },
+        { "name": "sides", "ty": "i64" }
+      ]
+    }
+  ],
+  "functions": [
+    {
+      "name": "sort",
+      "doc": "Puts a list of integers in order. Says nothing about how, which is the point: several proofs of this exist and they differ in what they cost.",
+      "params": [{ "name": "xs", "ty": "[int]" }],
+      "ret": "[int]"
+    },
+    {
+      "name": "mergesort",
+      "doc": "Sorting, but specifically by merging. A proof of this is also a proof of `sort`, so registering one here answers calls to either.",
+      "refines": "demo::sort",
+      "params": [{ "name": "xs", "ty": "[int]" }],
+      "ret": "[int]"
+    },
+    {
+      "name": "label_of",
+      "doc": "Describes a rectangle. Written as a body rather than implemented, so it needs nobody to prove it and runs in every language once generated.",
+      "params": [{ "name": "r", "ty": "Rect" }],
+      "ret": "Label",
+      "body": {
+        "k": "make_record",
+        "ty": "Label",
+        "fields": [
+          {
+            "name": "text",
+            "value": { "k": "field", "of": { "k": "var", "name": "r" }, "name": "id" }
+          },
+          { "name": "sides", "value": { "k": "lit", "value": 4 } }
+        ]
+      }
+    }
+  ]
+}

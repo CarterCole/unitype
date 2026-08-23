@@ -47,13 +47,14 @@ explicit **link** that says how, witnessed by a mapping anyone can read.
 
 ## Status
 
-Early. The symbolic core is real and tested; the layers above it are specified
-and not yet built.
+Early, but the loop closes: a type can be described, checked, addressed,
+bridged to another universe, and computed — in more than one language — today.
+Code generation and the command-line tool are what is missing.
 
 | | |
 |---|---|
-| **Built** | The type IR, the total expression IR, values, input shorthand, normalization, canonical encoding, content addressing, and word aliases. Then the checker: name resolution, inheritance validation and flattening, subtyping, generic bounds, refinement, call and pipeline checking, and structural addressing that erases names across a whole workspace. 176 tests, including property tests for the subtyping laws and for normalization idempotence, plus pinned golden vectors that make canonical drift impossible to do by accident. |
-| **Next** | The runtime (implementation registry, pluggable executors, policy dispatch), code generation for TypeScript/Python/Rust, the CLI, cross-universe bridges, and reflection. |
+| **Built** | The symbolic core — types, values, canonical form, content addressing, word aliases — and the checker over it: inheritance, subtyping, refinement, generic bounds, and structural addressing that erases names across a whole workspace. Then bridges between universes, derived and composed; a total expression language for bodies; typed reading of text into the value domain; a profile per target language; and the runtime, where environments register what they can prove and a policy decides which proof answers a call. 385 tests, including the subtyping laws and the inference laws as property tests, and pinned golden vectors that make canonical drift impossible to do by accident. |
+| **Next** | Code generation for TypeScript, Python, and Rust; the `unitype` command; a differential conformance harness; and reflection. |
 
 ```bash
 cargo test
@@ -127,6 +128,21 @@ assert_eq!(
 
 Which is how the system notices, without being told, that two teams have been
 describing the same thing.
+
+And the headline arrangement, end to end — one proposition, two proofs, in two
+languages, chosen at the moment of the call:
+
+```rust
+let fast   = dispatcher.call(&sort, vec![unsorted.clone()], &Policy::Fastest).await?;
+let frugal = dispatcher.call(&sort, vec![unsorted],         &Policy::MinMemory).await?;
+
+assert_eq!(fast.implementation.as_str(),   "sort.rust_merge");   // in this process
+assert_eq!(frugal.implementation.as_str(), "sort.py_bubble");    // Python, over a pipe
+assert_eq!(fast.value, frugal.value);        // which proof ran does not change what is true
+```
+
+Nothing above the dispatcher knew which it was getting. That is what makes the
+choice a policy decision rather than an architectural one.
 
 ## Repository layout
 

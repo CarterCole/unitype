@@ -286,7 +286,9 @@ impl Dispatcher {
             }
 
             let started = Instant::now();
-            let outcome = self.invoke(implementation, args.clone(), policy).await;
+            let outcome = self
+                .invoke(implementation, args.clone(), &expected, policy)
+                .await;
             let elapsed = started.elapsed();
 
             match outcome {
@@ -370,6 +372,9 @@ impl Dispatcher {
                     ))
                 }
             }
+            // Whether the program is actually there is discovered by trying to
+            // start it, which gives a precise reason rather than a guess.
+            Reach::Subprocess { .. } => Ok(()),
             other => Err(format!(
                 "reaching a `{}` environment is not built into this binary yet",
                 other.kind()
@@ -382,22 +387,45 @@ impl Dispatcher {
         &self,
         implementation: &Implementation,
         args: Vec<Value>,
+        expected: &Type,
         policy: &Policy,
     ) -> Result<Value, ExecError> {
-        // A body proves its own signature, and calls inside it come back
-        // through here, so a nested call is chosen under the same policy.
-        if implementation.entry == INTRINSIC_ENTRY {
-            let calls = Through {
-                dispatcher: self,
-                policy,
-            };
-            return eval_signature(&self.ws, &implementation.proves, args, &calls).await;
-        }
-
-        let Some(native) = self.registry.native(&implementation.entry) else {
-            return Err(ExecError::NotRegistered(implementation.entry.clone()));
+        let Some(environment) = self.registry.environment(&implementation.environment) else {
+            return Err(ExecError::Unreachable {
+                environment: implementation.environment.to_string(),
+                detail: "not registered".into(),
+            });
         };
-        native(args).await
+
+        match &environment.reach {
+            Reach::Here => {
+                // A body proves its own signature, and calls inside it come
+                // back through here, so a nested call is chosen under the same
+                // policy.
+                if implementation.entry == INTRINSIC_ENTRY {
+                    let calls = Through {
+                        dispatcher: self,
+                        policy,
+                    };
+                    return eval_signature(&self.ws, &implementation.proves, args, &calls).await;
+                }
+                let Some(native) = self.registry.native(&implementation.entry) else {
+                    return Err(ExecError::NotRegistered(implementation.entry.clone()));
+                };
+                native(args).await
+            }
+            Reach::Subprocess { .. } => {
+                crate::subprocess::invoke(&self.ws, environment, implementation, args, expected)
+                    .await
+            }
+            other => Err(ExecError::Unreachable {
+                environment: environment.id.to_string(),
+                detail: format!(
+                    "reaching a `{}` environment is not built in yet",
+                    other.kind()
+                ),
+            }),
+        }
     }
 }
 
@@ -772,13 +800,18 @@ mod tests {
         );
         let mut registry = Registry::new();
         registry
-            .add_environment(Environment::subprocess("py", "python", "python3", &[]))
+            .add_environment(Environment::subprocess(
+                "missing",
+                "python",
+                "unitype_no_such_interpreter",
+                &[],
+            ))
             .unwrap();
         registry
             .register(Implementation::new(
-                "sort.py",
+                "sort.elsewhere",
                 q("demo::sort"),
-                Ident::new("py").unwrap(),
+                Ident::new("missing").unwrap(),
                 "bubble_sort",
                 ImplProfile::new(BigO::ON2, BigO::O1),
             ))
@@ -790,8 +823,11 @@ mod tests {
             .unwrap_err();
 
         let message = err.to_string();
-        assert!(message.contains("sort.py"), "{message}");
-        assert!(message.contains("subprocess"), "{message}");
+        assert!(message.contains("sort.elsewhere"), "{message}");
+        assert!(
+            message.contains("could not start"),
+            "the reason should be the actual one: {message}"
+        );
     }
 
     #[tokio::test]

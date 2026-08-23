@@ -1,0 +1,30 @@
+{
+  "version": "1.0",
+  "environments": [
+    {
+      "id": "python",
+      "language": "python",
+      "doc": "A Python interpreter, started once per call.",
+      "reach": {
+        "k": "subprocess",
+        "command": "python3",
+        "args": ["../py/sort_impl.py"],
+        "timeout_ms": 30000
+      }
+    }
+  ],
+  "implementations": [
+    {
+      "id": "sort.py_bubble",
+      "proves": "demo::sort",
+      "environment": "python",
+      "entry": "bubble_sort",
+      "cost": {
+        "time": "o_n2",
+        "space": "o1",
+        "notes": "Sorts in place, so it needs no room beyond the list itself."
+      },
+      "notes": "The frugal proof. Slow, but it borrows nothing."
+    }
+  ]
+}

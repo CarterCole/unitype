@@ -10,8 +10,8 @@ the reference implementation, not the definition.
 Sections marked **frozen** must not change without a version bump, because
 changing them changes every address already published.
 
-Status: §§1–5 are settled and implemented. §§6–9 are specified as the layers
-above them are built; they are marked accordingly.
+Status: §§1–5 and §7 are settled and implemented. §§6, 8, and 9 are specified as
+the layers above them are built; they are marked accordingly.
 
 ---
 
@@ -119,7 +119,7 @@ Kind tokens for types: `never any unit bool i32 i64 f64 string bytes literal
 optional list map tuple record union function future ref param`.
 For declarations: `struct interface enum alias`.
 For expressions (§6): `lit var field make_record make_list make_tuple
-make_variant call let if map_list`.
+make_variant call let if map_through`.
 
 A workspace document:
 
@@ -313,32 +313,105 @@ A signature may carry a **body**: a constructive proof written in a small
 expression language, which both runs directly and transpiles into every target.
 
 The language is **total** by construction: no recursion, no lambdas, no
-unbounded loops. `map_list` is the only iteration form and visits an existing
-list once. The call graph among bodies must be acyclic, checked by topological
-sort. Totality is what lets a body be trusted as a proof and lets a transpiled
-body be trusted in a language with no such guarantee.
+unbounded loops. `map_through` is the only iteration form: it maps a
+transformation through a constructor — every element of a list, the value of an
+optional if it is there, the eventual result of a future — visiting what already
+exists and unable to produce more. One form covers every container, because
+`list`, `optional`, and `future` are the same idea applied three ways.
+
+Note what `map_through` does *not* offer: there is no way to ask whether an
+optional value is present. A body can say what to do with a value if there is
+one; it cannot branch on absence and do something else entirely.
+
+The call graph among bodies must be acyclic, checked by topological sort.
+Totality is what lets a body be trusted as a proof and lets a transpiled body be
+trusted in a language with no such guarantee.
 
 Computations needing real recursion — sorting, for instance — remain
 propositions with external implementations. That division is intended.
 
 ---
 
-## 7. Implementations, execution, and code generation *(specified, in progress)*
+## 7. Environments and implementations
 
-An implementation record names the proposition it proves, the language it is
-written in, its declared time and space complexity, and how to run it: in
-process, as a subprocess speaking JSON over stdio, as a WebAssembly module, or
-as an expression body. Complexity is **declared, not measured**; the dispatcher
-believes the claim and a differential conformance harness checks that all proofs
-of one proposition actually agree.
+An implementation does not run in a language, it runs in an **environment**: a
+browser, a Node process, a Python interpreter, the host process, a WebAssembly
+sandbox, something already running elsewhere. The language says what the code is
+written in; the environment says where it executes. They are separate because
+the same code can be reached more than one way, and none of those ways changes
+the proof.
+
+Nothing is discovered. An environment loads a module and the module **registers
+as an execution source**, announcing which propositions it can prove and under
+what entry name. A manifest is that announcement written down:
+
+```json
+{"version": "1.0",
+ "environments": [
+   {"id": "python", "language": "python",
+    "reach": {"k": "subprocess", "command": "python3", "args": ["impls.py"]}}],
+ "implementations": [
+   {"id": "sort.py_bubble", "proves": "demo::sort", "environment": "python",
+    "entry": "bubble_sort", "cost": {"time": "o_n2", "space": "o1"}}]}
+```
+
+Relative paths in a manifest resolve against the manifest's own directory, so it
+means the same thing wherever it is loaded from.
+
+Complexity is **declared, not measured**. The dispatcher believes the claim; a
+differential conformance harness checks that all proofs of one proposition
+actually agree.
 
 At the dispatch boundary, arguments are checked against the signature's
-parameters and the result against its return type. A proof that returns the
-wrong shape fails loudly and is never retried elsewhere, because the problem is
-the proof rather than the environment.
+parameters and the result against its return type. A result that does not match
+means the proof is wrong, and an implementation **must not** be retried
+elsewhere in that case, however forgiving the caller has asked the dispatcher to
+be. A failure to *reach* an environment is a different thing and may be retried.
 
-The subprocess wire protocol, the WebAssembly ABI, the manifest format, and the
-per-language type mappings are specified alongside their implementations.
+### 7.1 The subprocess protocol **(frozen)**
+
+One request in, one response out, over the child's standard streams. The parent
+closes its writing end; **end of input is the frame delimiter**, so nothing has
+to agree on a length prefix or a terminator.
+
+```json
+→ {"unitype": "1", "kind": "invoke", "signature": "demo::sort",
+   "entry": "bubble_sort", "args": [[3, 1, 2]]}
+← {"ok": true, "value": [1, 2, 3]}
+```
+
+A failure the child recognizes as its own:
+
+```json
+← {"ok": false, "error": {"code": "value_error", "message": "..."}}
+```
+
+Arguments are values in the §4 encoding. The response value is read against the
+signature's return type by §5's rules, so it becomes a map, an enum, or a tuple
+where the type says so.
+
+A child MUST check `unitype` and refuse a version it does not know. A child that
+reports a failure this way SHOULD still exit zero: a non-zero exit says the
+environment is broken, which is a different claim. Whatever it writes to its
+error stream is kept and shown when it exits non-zero or sends something
+unreadable.
+
+One process per call is the specified behavior. A long-lived worker is a
+compatible extension — the request shape leaves room for an `id` — but is not
+part of version 1.
+
+### 7.2 Code generation *(specified, in progress)*
+
+Each target language has a **profile**: how the symbolic types are spelled, how
+constructors are written, which identifiers are reserved and how to escape one,
+which spellings need bracketing when nested, and a small universe of the
+language's own builtin types for the cases the symbolic layer has no exact
+counterpart for. A profile also records where precision goes — that a 64-bit
+integer spelled as a TypeScript `number` is exact only to 2^53, that a Python
+`int` has no width — next to the spelling it qualifies.
+
+A profile is data, so a language this specification never mentions is added by
+writing one.
 
 ---
 
