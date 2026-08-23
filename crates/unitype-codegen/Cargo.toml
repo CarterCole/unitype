@@ -1,0 +1,17 @@
+[package]
+name = "unitype-codegen"
+description = "TypeScript, Python, and Rust code generation backends for unitype"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+unitype-core.workspace = true
+thiserror.workspace = true
+heck.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+serde_json.workspace = true

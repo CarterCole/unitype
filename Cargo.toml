@@ -1,0 +1,29 @@
+[workspace]
+members = ["crates/*"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/cartercole/unitype"
+
+[workspace.dependencies]
+unitype-core = { path = "crates/unitype-core", version = "0.1.0" }
+unitype-runtime = { path = "crates/unitype-runtime", version = "0.1.0" }
+unitype-codegen = { path = "crates/unitype-codegen", version = "0.1.0" }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+indexmap = { version = "2", features = ["serde"] }
+thiserror = "2"
+blake3 = "1"
+base64 = "0.22"
+heck = "0.5"
+tokio = "1"
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+
+proptest = "1"
+insta = "1"
