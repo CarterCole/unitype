@@ -13,6 +13,7 @@ wasm = ["dep:wasmtime"]
 
 [dependencies]
 unitype-core.workspace = true
+indexmap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
