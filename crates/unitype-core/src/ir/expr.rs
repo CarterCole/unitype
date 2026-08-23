@@ -16,6 +16,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ident::{Ident, QualifiedName};
+use crate::ir::functor::Functor;
 use crate::ir::ty::TypeRef;
 use crate::value::Value;
 
@@ -44,7 +45,7 @@ pub enum Expr {
         /// The constant value.
         value: Value,
     },
-    /// A parameter or a name bound by [`Expr::Let`] or [`Expr::MapList`].
+    /// A parameter or a name bound by [`Expr::Let`] or [`Expr::MapThrough`].
     Var {
         /// The bound name.
         name: Ident,
@@ -112,16 +113,27 @@ pub enum Expr {
         #[serde(rename = "else")]
         otherwise: Box<Expr>,
     },
-    /// Element-wise transformation of a list.
+    /// Transformation of whatever is inside a constructor.
     ///
-    /// The one iteration form, and bounded by construction: it visits each
-    /// element of an existing list exactly once and cannot extend it.
-    MapList {
-        /// The list being transformed.
-        list: Box<Expr>,
-        /// The name bound to each element.
+    /// One form covers every container: a list has each element transformed, a
+    /// value that may be absent stays absent or is transformed, a value that
+    /// arrives later is transformed when it does. Which of those happens is the
+    /// functor's business, not this expression's.
+    ///
+    /// This is the only iteration the language has, and it is bounded by
+    /// construction: it visits what is already there and cannot produce more.
+    /// Notice also what it does *not* offer — there is no way to ask whether an
+    /// optional value is present, so a body cannot branch on absence and do
+    /// something else entirely. It can only say what to do with a value if
+    /// there is one.
+    MapThrough {
+        /// The constructor being mapped through.
+        functor: Functor,
+        /// The value the constructor was applied to.
+        value: Box<Expr>,
+        /// The name bound to what is inside.
         var: Ident,
-        /// The transformation applied to each element.
+        /// The transformation applied to it.
         body: Box<Expr>,
     },
 }
@@ -184,7 +196,7 @@ impl Expr {
                 then,
                 otherwise,
             } => vec![cond.as_ref(), then.as_ref(), otherwise.as_ref()],
-            Expr::MapList { list, body, .. } => vec![list.as_ref(), body.as_ref()],
+            Expr::MapThrough { value, body, .. } => vec![value.as_ref(), body.as_ref()],
         }
     }
 }
@@ -224,8 +236,9 @@ mod tests {
 
     #[test]
     fn calls_are_collected_from_anywhere_in_a_body() {
-        let e = Expr::MapList {
-            list: Expr::var("xs").into(),
+        let e = Expr::MapThrough {
+            functor: Functor::List,
+            value: Expr::var("xs").into(),
             var: id("x"),
             body: Box::new(Expr::Call {
                 sig: "demo::area".parse().unwrap(),

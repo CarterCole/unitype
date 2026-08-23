@@ -7,8 +7,9 @@
 //! `$`, so no user field name can ever collide with one.
 
 mod infer;
-mod json;
+pub(crate) mod json;
 mod lift;
+mod read;
 mod unify;
 mod validate;
 
@@ -17,6 +18,7 @@ use indexmap::IndexMap;
 pub use infer::{InferOptions, infer, infer_many, infer_many_with, infer_with};
 pub use json::{ValueDecodeError, ValueParseError};
 pub use lift::{Lifted, lift};
+pub use read::ReadError;
 pub use unify::{unify, unify_all};
 pub use validate::{ValueError, ValuePath, ValueSeg};
 

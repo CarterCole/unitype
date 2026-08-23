@@ -8,28 +8,63 @@
 use serde::{Deserialize, Serialize};
 
 use crate::ident::{Ident, QualifiedName};
+use crate::ir::Functor;
 use crate::meta::Metadata;
 
 /// How one field's value becomes another's.
+///
+/// Conversions nest, because the types do: turning a `[i32]` into an
+/// `[i64]?` is widening, applied to each element, of a value that then becomes
+/// optional. Each case that wraps a type carries the conversion for what it
+/// wraps, so a backend can emit the whole thing by walking this structure.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "k", rename_all = "snake_case")]
 pub enum Coercion {
-    /// The types are identical; the value passes through.
+    /// Nothing to do; the value passes through.
     Identity,
-    /// A 32-bit integer widens to 64 bits.
+    /// A 32-bit integer widens, losing nothing.
     WidenInt,
     /// A present value becomes an optional one.
-    WrapOptional,
+    WrapOptional {
+        /// How the value itself converts first.
+        of: Box<Coercion>,
+    },
+    /// Whatever is inside a constructor is converted.
+    ///
+    /// One case for every container: elements of a list, the value of an
+    /// optional if it is there, the result of a future when it arrives.
+    Through {
+        /// The constructor being mapped through.
+        functor: Functor,
+        /// The conversion applied to what is inside.
+        of: Box<Coercion>,
+    },
     /// The field's own type is bridged by another link.
     ViaLink {
         /// The link that converts it.
         link: Ident,
     },
-    /// Each element of a list is converted.
-    ElementWise {
-        /// The conversion applied to elements.
-        of: Box<Coercion>,
-    },
+}
+
+impl Coercion {
+    /// Wraps `inner` in this constructor, collapsing the case where there was
+    /// nothing to do in the first place.
+    fn nested(inner: Coercion, wrap: impl FnOnce(Box<Coercion>) -> Coercion) -> Coercion {
+        match inner {
+            Coercion::Identity => Coercion::Identity,
+            other => wrap(Box::new(other)),
+        }
+    }
+
+    /// A conversion applied inside a constructor.
+    pub(crate) fn through(functor: Functor, inner: Coercion) -> Coercion {
+        Self::nested(inner, |of| Coercion::Through { functor, of })
+    }
+
+    /// True when the value passes through untouched.
+    pub fn is_identity(&self) -> bool {
+        matches!(self, Coercion::Identity)
+    }
 }
 
 /// One field correspondence within a [`LinkKind::FieldMap`].

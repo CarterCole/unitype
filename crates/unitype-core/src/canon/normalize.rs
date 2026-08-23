@@ -328,8 +328,8 @@ fn qualify_expr_in_place(e: &mut Expr, home: &Ident) {
             qualify_expr_in_place(then, home);
             qualify_expr_in_place(otherwise, home);
         }
-        Expr::MapList { list, body, .. } => {
-            qualify_expr_in_place(list, home);
+        Expr::MapThrough { value, body, .. } => {
+            qualify_expr_in_place(value, home);
             qualify_expr_in_place(body, home);
         }
     }

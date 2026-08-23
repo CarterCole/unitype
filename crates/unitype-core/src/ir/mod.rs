@@ -3,6 +3,7 @@
 
 pub mod defs;
 pub mod expr;
+pub mod functor;
 pub mod sugar;
 pub mod ty;
 pub mod universe;
@@ -13,6 +14,7 @@ pub use defs::{
     Variant,
 };
 pub use expr::{Expr, FieldInit};
+pub use functor::Functor;
 pub use sugar::SugarError;
 pub use ty::{Field, LiteralValue, Type, TypeRef, fits_f64_exactly};
 pub use universe::Universe;

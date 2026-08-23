@@ -15,7 +15,9 @@
 mod apply;
 mod bounds;
 pub mod error;
+mod expr;
 mod inherit;
+mod links;
 mod refine;
 mod resolve;
 mod shape;
@@ -77,6 +79,7 @@ pub struct CheckedWorkspace {
     sig_index: HashMap<QualifiedName, SigIx>,
     shape_index: HashMap<TypeId, Vec<QualifiedName>>,
     refiners: HashMap<QualifiedName, Vec<QualifiedName>>,
+    warnings: Vec<CheckError>,
 }
 
 /// Checks a workspace, returning it in usable form or saying why not.
@@ -99,13 +102,20 @@ pub fn check_workspace(ws: Workspace) -> Result<CheckedWorkspace, Diagnostics> {
     inherit::verify(&checked, &mut diags);
     bounds::verify(&checked, &mut diags);
     refine::verify(&mut checked, &mut diags);
+    expr::verify(&checked, &mut diags);
+    // Structural addresses come before link checking, which uses them to decide
+    // whether a link claiming two types are identical is telling the truth.
     shape::compute(&mut checked);
+    links::verify(&checked, &mut diags);
 
-    if diags.is_ok() {
-        Ok(checked)
-    } else {
-        Err(diags)
+    if !diags.is_ok() {
+        return Err(diags);
     }
+    // A workspace can be perfectly usable and still have something worth
+    // saying about it — a bridge that quietly drops a field, say. Passing the
+    // check must not be what silences that.
+    checked.warnings = diags.warnings;
+    Ok(checked)
 }
 
 impl CheckedWorkspace {
@@ -172,12 +182,18 @@ impl CheckedWorkspace {
             sig_index,
             shape_index: HashMap::new(),
             refiners: HashMap::new(),
+            warnings: Vec::new(),
         }
     }
 
     /// The normalized workspace.
     pub fn workspace(&self) -> &Workspace {
         &self.ws
+    }
+
+    /// Things worth knowing that did not stop the workspace being usable.
+    pub fn warnings(&self) -> &[CheckError] {
+        &self.warnings
     }
 
     /// Every declaration's qualified name, in checked order.
