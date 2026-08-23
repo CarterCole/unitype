@@ -387,6 +387,76 @@ fn one_proof_on_its_own_has_nothing_to_disagree_with() {
 }
 
 #[test]
+fn a_route_says_what_carries_out_each_step_and_where() {
+    // A conversion that somebody had to write runs wherever its proof runs,
+    // which may be another language. A route that did not say so would be one
+    // you have to guess at.
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("route_languages");
+    let _ = std::fs::remove_dir_all(&dir);
+    let write = |at: PathBuf, text: &str| {
+        std::fs::create_dir_all(at.parent().expect("a parent")).expect("makes a directory");
+        std::fs::write(at, text).expect("writes");
+    };
+
+    write(dir.join("unitype.json"), r#"{"name":"routes"}"#);
+    write(
+        dir.join("universes/a.json"),
+        r#"{"name":"a","types":[{"k":"struct","name":"Raw",
+            "fields":[{"name":"text","ty":"str"}]}],
+          "functions":[{"name":"parse","params":[{"name":"r","ty":"Raw"}],"ret":"b::Parsed"}]}"#,
+    );
+    write(
+        dir.join("universes/b.json"),
+        r#"{"name":"b","types":[{"k":"struct","name":"Parsed",
+            "fields":[{"name":"words","ty":"[str]"}]}]}"#,
+    );
+    write(
+        dir.join("links/parse.json"),
+        r#"{"links":[{"name":"raw_becomes_parsed","from":"a::Raw","to":"b::Parsed",
+            "kind":{"k":"witness","sig":"a::parse"}}]}"#,
+    );
+    write(
+        dir.join("impls/parse.json"),
+        r#"{"environments":[
+                {"id":"node","language":"typescript",
+                 "reach":{"k":"subprocess","command":"node","args":["parse.js"]}}],
+            "implementations":[
+                {"id":"parse.js","proves":"a::parse","environment":"node",
+                 "entry":"parse","cost":{"time":"o_n","space":"o_n"}}]}"#,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_unitype"))
+        .arg("--project")
+        .arg(&dir)
+        .args(["--json", "bridge", "--from", "a::Raw", "--to", "b::Parsed"])
+        .output()
+        .expect("runs");
+    let route: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
+
+    let hop = &route["hops"][0];
+    assert_eq!(hop["link"], "raw_becomes_parsed");
+    assert!(
+        hop["by"]
+            .as_str()
+            .is_some_and(|by| by.contains("typescript")),
+        "the route should say which language carries this step: {hop}"
+    );
+    assert!(
+        hop["by"].as_str().is_some_and(|by| by.contains("node")),
+        "and where it runs: {hop}"
+    );
+}
+
+#[test]
+fn a_route_that_needs_nothing_run_says_so() {
+    let shown = stdout(&["bridge", "--from", "geo::Point", "--to", "gfx::Vec2"]);
+    assert!(
+        shown.contains("nothing to run"),
+        "the same data under two names is a cast: {shown}"
+    );
+}
+
+#[test]
 fn a_declaration_is_a_value_of_the_type_that_describes_declarations() {
     let reflected = json(&["reflect", "geo::Point"]);
     assert_eq!(reflected["is_a"], "unitype::TypeDef");

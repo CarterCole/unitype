@@ -26,20 +26,17 @@ pub async fn run(
         )));
     };
 
-    let hops: Vec<String> = path.iter().map(|l| l.name.to_string()).collect();
+    let hops: Vec<Hop> = path.iter().map(|link| Hop::of(project, link)).collect();
     let lossy = path.iter().any(|l| l.is_lossy());
 
     // Without data, the route is the answer.
     let Some(data) = data else {
         out.result(
             json!({ "from": source.to_string(), "to": target.to_string(),
-                    "hops": hops, "lossy": lossy }),
+                    "hops": hops.iter().map(Hop::as_json).collect::<Vec<_>>(),
+                    "lossy": lossy }),
             || {
-                out.say(route(
-                    &source.to_string(),
-                    &target.to_string(),
-                    path.as_slice(),
-                ));
+                out.say(route(&source.to_string(), &hops));
                 if lossy {
                     out.say("");
                     out.say("Fields are dropped along the way.");
@@ -89,16 +86,12 @@ pub async fn run(
         json!({
             "from": source.to_string(),
             "to": target.to_string(),
-            "hops": hops,
+            "hops": hops.iter().map(Hop::as_json).collect::<Vec<_>>(),
             "lossy": lossy,
             "value": serde_json::from_str::<serde_json::Value>(&written).unwrap_or_default(),
         }),
         || {
-            out.say(route(
-                &source.to_string(),
-                &target.to_string(),
-                path.as_slice(),
-            ));
+            out.say(route(&source.to_string(), &hops));
             out.say("");
             out.say(&written);
         },
@@ -107,14 +100,65 @@ pub async fn run(
     Ok(())
 }
 
-/// The route, drawn.
-fn route(from: &str, to: &str, path: &[&unitype_core::Link]) -> String {
-    if path.is_empty() {
-        return format!("{from} is already {to}.");
+/// One step of a route, and what carries it out.
+struct Hop {
+    link: String,
+    to: String,
+    /// Where the conversion runs, and how.
+    by: String,
+    lossy: bool,
+}
+
+impl Hop {
+    fn of(project: &Project, link: &unitype_core::Link) -> Self {
+        // A link's kind decides who does the work, and a witnessed one hands it
+        // to whatever proof the dispatcher would pick — which may be in another
+        // language entirely. Saying so is the difference between a route you
+        // can read and a route you have to guess at.
+        let by = match &link.kind {
+            unitype_core::LinkKind::Identical => "a cast, nothing to run".to_string(),
+            unitype_core::LinkKind::FieldMap { .. } => "mapped here".to_string(),
+            unitype_core::LinkKind::Witness { sig } => {
+                match project.registry.proofs_of(sig).first() {
+                    Some(proof) => {
+                        let language = project
+                            .registry
+                            .environment(&proof.environment)
+                            .map(|e| e.language.to_string())
+                            .unwrap_or_else(|| "?".into());
+                        format!("{sig} in {language}, via {}", proof.environment)
+                    }
+                    None => format!("{sig}, which nothing proves yet"),
+                }
+            }
+        };
+        Self {
+            link: link.name.to_string(),
+            to: link.to.to_string(),
+            by,
+            lossy: link.is_lossy(),
+        }
     }
-    let mut drawn = String::from(from);
-    for link in path {
-        drawn.push_str(&format!(" --{}-> {}", link.name, link.to));
+
+    fn as_json(&self) -> serde_json::Value {
+        json!({ "link": self.link, "to": self.to, "by": self.by, "lossy": self.lossy })
     }
-    drawn
+}
+
+/// The route, drawn, with what carries out each step.
+fn route(from: &str, hops: &[Hop]) -> String {
+    if hops.is_empty() {
+        return format!("{from} is already what you asked for.");
+    }
+    let mut drawn = format!("{from}\n");
+    for hop in hops {
+        drawn.push_str(&format!(
+            "  --{}-->  {}\n      {}{}\n",
+            hop.link,
+            hop.to,
+            hop.by,
+            if hop.lossy { ", dropping fields" } else { "" }
+        ));
+    }
+    drawn.trim_end().to_string()
 }
