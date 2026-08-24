@@ -47,14 +47,37 @@ explicit **link** that says how, witnessed by a mapping anyone can read.
 
 ## Status
 
-Early, but the loop closes: a type can be described, checked, addressed,
-bridged to another universe, and computed — in more than one language — today.
-Code generation and the command-line tool are what is missing.
+The loop closes. A type can be described, checked, addressed, named, bridged to
+another universe, generated as code, and computed — in more than one language —
+today.
 
-| | |
-|---|---|
-| **Built** | The symbolic core — types, values, canonical form, content addressing, word aliases — and the checker over it: inheritance, subtyping, refinement, generic bounds, and structural addressing that erases names across a whole workspace. Then bridges between universes, derived and composed; a total expression language for bodies; typed reading of text into the value domain; a profile per target language; the runtime, where environments register what they can prove and a policy decides which proof answers a call; code generation for TypeScript, Python, and Rust, checked by running the generated code and comparing what it produces against what unitype says the value is; the `unitype` command over all of it; and a conformance harness that checks the proofs of one proposition against each other, since `sort` and `reverse` have the same type and only running both tells them apart; reflection, where a built-in universe describes the representation itself and is checked against it; and workers, so a program calling repeatedly pays an interpreter's startup once rather than every time. 531 tests, including the subtyping laws and the inference laws as property tests, and pinned golden vectors that make canonical drift impossible to do by accident. |
-| **Next** | A WebAssembly environment, and a Go backend. |
+**Built**
+
+- **The symbolic core.** Types, values, canonical form, content addressing, word
+  aliases.
+- **The checker.** Inheritance, subtyping, refinement, generic bounds, and
+  structural addressing that erases names across a whole workspace.
+- **Bridges.** Derived from two declarations, composed along a path, and run
+  through the same expression language a person writes a proof in.
+- **Reading.** Text becomes a value *against* a type, which is what lets an
+  object become a map and `"Red"` become a variant.
+- **The runtime.** Environments register what they can prove; a policy decides
+  which proof answers a call; a worker keeps an interpreter alive between calls.
+- **Code generation.** TypeScript, Python, and Rust — checked by running the
+  generated code and comparing what it produces against what unitype says the
+  value is.
+- **The `unitype` command**, over all of it.
+- **Conformance.** The proofs of one proposition checked against each other,
+  since `sort` and `reverse` have the same type and only running both tells them
+  apart.
+- **Reflection.** A built-in universe describes the representation, and is
+  checked against it, so it cannot drift.
+
+531 tests, including the subtyping laws and the inference laws as property
+tests, and pinned golden vectors that make canonical drift impossible to do by
+accident.
+
+**Not built.** A WebAssembly environment, and a Go backend.
 
 ```bash
 cargo test
