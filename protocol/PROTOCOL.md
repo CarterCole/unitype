@@ -369,9 +369,10 @@ be. A failure to *reach* an environment is a different thing and may be retried.
 
 ### 7.1 The subprocess protocol **(frozen)**
 
-One request in, one response out, over the child's standard streams. The parent
-closes its writing end; **end of input is the frame delimiter**, so nothing has
-to agree on a length prefix or a terminator.
+One request in, one response out, over the child's standard streams. **Each
+message is one line**, terminated by a newline; end of input also ends the
+stream. A child that reads lines and a child that reads to the end are both
+correct, so nothing has to agree on a length prefix.
 
 ```json
 → {"unitype": "1", "kind": "invoke", "signature": "demo::sort",
@@ -395,9 +396,38 @@ environment is broken, which is a different claim. Whatever it writes to its
 error stream is kept and shown when it exits non-zero or sends something
 unreadable.
 
-One process per call is the specified behavior. A long-lived worker is a
-compatible extension — the request shape leaves room for an `id` — but is not
-part of version 1.
+One process per call is the default, and the only behavior a child has to
+support. §7.2 is how to keep one alive.
+
+### 7.2 Workers **(frozen)**
+
+An environment may declare `"persistent": true`, and then one process serves
+every call to it instead of one process per call. That saves what starting an
+interpreter costs, which for Python is around twenty milliseconds against
+microseconds of actual work.
+
+The messages are the ones §7.1 specifies. Only the framing matters: with the
+stream staying open, end of input can no longer mean end of message, so the
+newline does. A child that reads lines needs no mode of its own — sent one
+message and then a closed stream, its loop runs once and the process exits,
+which is exactly §7.1.
+
+Both sides MUST flush after each message, or a parent waiting on the next line
+waits on a buffer that never fills.
+
+A parent MUST NOT reuse a worker after an exchange goes wrong — a failure to
+read, a timeout, or a closed stream — because the stream's position is then
+unknown, and a late answer would be read as the next call's result. It MUST kill
+a worker it abandons. A failure the worker *reports* is not such a case: the
+worker is fine and knows where it is, and may be used again.
+
+Calls to one worker are serialized, since two messages down one pipe have no way
+to be told apart. An implementation wanting concurrency runs more than one
+worker.
+
+**What this costs.** State survives between calls. That is the whole saving and
+the whole risk, so it is opt-in: a module that holds nothing between calls says
+so by not asking.
 
 ### 7.3 Conformance **(frozen)**
 

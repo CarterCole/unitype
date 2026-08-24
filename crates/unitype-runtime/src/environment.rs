@@ -55,6 +55,17 @@ pub enum Reach {
         /// How long to wait before giving up.
         #[serde(default = "default_timeout")]
         timeout_ms: u64,
+        /// Keep the process alive between calls.
+        ///
+        /// Starting an interpreter costs more than most calls do — around
+        /// twenty milliseconds for Python — so a program calling repeatedly
+        /// pays that over and over for nothing. A worker pays it once.
+        ///
+        /// The cost is that state now survives between calls, which is exactly
+        /// what one process per call was free of. Off by default for that reason:
+        /// a module that holds nothing between calls says so.
+        #[serde(default)]
+        persistent: bool,
     },
     /// A WebAssembly module instantiated in this process.
     Wasm {
@@ -96,16 +107,31 @@ impl Reach {
         }
     }
 
+    /// Whether the process is kept alive between calls.
+    pub fn is_persistent(&self) -> bool {
+        matches!(
+            self,
+            Reach::Subprocess {
+                persistent: true,
+                ..
+            }
+        )
+    }
+
     /// Roughly what it costs to get there, ascending.
     ///
     /// Used only to break ties between proofs that are otherwise equally good,
-    /// on the reasoning that not leaving the process beats leaving it.
+    /// on the reasoning that not leaving the process beats leaving it. A worker
+    /// already running costs less to reach than one that has to be started.
     pub fn overhead(&self) -> u8 {
         match self {
             Reach::Here => 0,
             Reach::Wasm { .. } => 1,
-            Reach::Subprocess { .. } => 2,
-            Reach::Remote { .. } => 3,
+            Reach::Subprocess {
+                persistent: true, ..
+            } => 2,
+            Reach::Subprocess { .. } => 3,
+            Reach::Remote { .. } => 4,
         }
     }
 }
@@ -156,6 +182,7 @@ impl Environment {
                 cwd: None,
                 env: BTreeMap::new(),
                 timeout_ms: default_timeout(),
+                persistent: false,
             },
             meta: Metadata::default(),
         }
@@ -196,6 +223,15 @@ mod tests {
                 cwd: None,
                 env: BTreeMap::new(),
                 timeout_ms: 1000,
+                persistent: true,
+            },
+            Reach::Subprocess {
+                command: "python3".into(),
+                args: vec![],
+                cwd: None,
+                env: BTreeMap::new(),
+                timeout_ms: 1000,
+                persistent: false,
             },
             Reach::Remote {
                 endpoint: "https://elsewhere".into(),
@@ -229,6 +265,30 @@ mod tests {
         };
         assert_eq!(spawned.language, hosted.language);
         assert_ne!(spawned.reach.kind(), hosted.reach.kind());
+    }
+
+    #[test]
+    fn a_worker_already_running_is_cheaper_to_reach_than_one_that_must_start() {
+        let started_each_time = Environment::subprocess("py", "python", "python3", &[]);
+        let mut kept_alive = started_each_time.clone();
+        if let Reach::Subprocess { persistent, .. } = &mut kept_alive.reach {
+            *persistent = true;
+        }
+        assert!(kept_alive.reach.is_persistent());
+        assert!(!started_each_time.reach.is_persistent());
+        assert!(kept_alive.reach.overhead() < started_each_time.reach.overhead());
+    }
+
+    #[test]
+    fn a_process_is_started_afresh_unless_asked_otherwise() {
+        // Keeping a process alive means state survives between calls, which is
+        // a thing to opt into rather than discover.
+        let manifest: Environment = serde_json::from_str(
+            r#"{"id":"py","language":"python",
+                "reach":{"k":"subprocess","command":"python3"}}"#,
+        )
+        .expect("reads");
+        assert!(!manifest.reach.is_persistent());
     }
 
     #[test]

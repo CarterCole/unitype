@@ -37,10 +37,19 @@ PROVES = {
 
 
 def main():
-    # End of input is the end of the message, so reading to the end is the
-    # whole of the framing.
+    # One message per line. Reading lines serves both ways of being called: if
+    # the parent sends one message and closes the stream, this loop runs once
+    # and the process exits; if the parent keeps the stream open, it keeps
+    # answering. Nothing here has to know which is happening.
+    for line in sys.stdin:
+        line = line.strip()
+        if line:
+            answer(line)
+
+
+def answer(line):
     try:
-        request = json.loads(sys.stdin.read())
+        request = json.loads(line)
     except ValueError as exc:
         return fail("bad_request", f"could not read the request: {exc}")
 
@@ -65,13 +74,21 @@ def main():
 
 
 def succeed(value):
-    json.dump({"ok": True, "value": value}, sys.stdout)
+    _send({"ok": True, "value": value})
 
 
 def fail(code, message):
     # Reported as a failure of the proof, not of the process: exiting non-zero
     # would say the environment is broken, which it is not.
-    json.dump({"ok": False, "error": {"code": code, "message": message}}, sys.stdout)
+    _send({"ok": False, "error": {"code": code, "message": message}})
+
+
+def _send(response):
+    # One line, flushed: a parent waiting on the next line would otherwise wait
+    # on a buffer that never fills.
+    json.dump(response, sys.stdout)
+    sys.stdout.write("\n")
+    sys.stdout.flush()
 
 
 if __name__ == "__main__":

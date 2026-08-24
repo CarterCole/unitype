@@ -22,6 +22,7 @@ pub mod implementation;
 pub mod interpret;
 pub mod registry;
 pub mod subprocess;
+pub mod worker;
 
 pub use conform::{Answer, ConformError, Report, Suite, Vector};
 pub use dispatch::{Considered, Dispatcher, Invocation, Options, Outcome, Policy};
@@ -31,3 +32,4 @@ pub use implementation::{ImplId, Implementation, Manifest};
 pub use interpret::{BoxFuture, Calls, NoCalls, Scope, eval, eval_signature};
 pub use registry::{Registry, RegistryError, RegistryWarning};
 pub use subprocess::PROTOCOL_VERSION;
+pub use worker::Workers;

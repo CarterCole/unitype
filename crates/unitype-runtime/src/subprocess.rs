@@ -15,15 +15,16 @@
 //! ← {"ok":true,"value":[1,2,3]}
 //! ```
 //!
-//! End of input is the frame delimiter, which is why the parent closes its
-//! writing end and the child reads to the end. Nothing has to agree on a length
-//! prefix or a terminator, and a child written in ten lines of Python is
-//! correct by construction.
+//! Each message is one line, and end of input ends the stream, so a child that
+//! reads lines and a child that reads to the end are both correct here. Nothing
+//! has to agree on a length prefix, and a child written in ten lines of Python
+//! works by construction.
 //!
-//! Starting a process per call is real overhead, and it is why the default
-//! policy prefers to stay in this one. A long-lived worker is the obvious next
-//! step; this request shape leaves room for it, and one process per call is the
-//! version that cannot get stuck holding state it should not have.
+//! Starting a process per call is real overhead — around twenty milliseconds
+//! for Python, against microseconds of work — which is why the default policy
+//! prefers to stay in this one. A program calling repeatedly should ask for a
+//! worker instead; see [`crate::worker`]. This is the version that cannot get
+//! stuck holding state it should not have, which is why it stays the default.
 
 use std::process::Stdio;
 use std::time::Duration;
@@ -98,6 +99,7 @@ pub async fn invoke(
         cwd,
         env,
         timeout_ms,
+        ..
     } = &environment.reach
     else {
         return Err(ExecError::Unreachable {
@@ -106,23 +108,11 @@ pub async fn invoke(
         });
     };
 
-    let encoded: Vec<serde_json::Value> = args
-        .iter()
-        .map(|a| a.to_json())
-        .collect::<Result<_, _>>()
-        .map_err(|e| ExecError::Protocol {
-            id: implementation.id.to_string(),
-            detail: format!("an argument could not be encoded: {e}"),
-        })?;
-
-    let request = Request {
-        unitype: PROTOCOL_VERSION.to_string(),
-        kind: "invoke".to_string(),
-        signature: implementation.proves.to_string(),
-        entry: implementation.entry.clone(),
-        args: encoded,
-    };
-    let body = serde_json::to_vec(&request).expect("a request serializes");
+    // A trailing newline costs nothing here — JSON ignores it — and means the
+    // same bytes work for a child that reads lines, which is what a worker
+    // needs. One message, framed two ways at once.
+    let mut body = request_line(implementation, &args)?;
+    body.push(b'\n');
 
     let mut process = Command::new(command);
     process
@@ -180,14 +170,60 @@ pub async fn invoke(
         });
     }
 
-    let response: Response =
-        serde_json::from_slice(&output.stdout).map_err(|source| ExecError::Protocol {
+    let text = String::from_utf8_lossy(&output.stdout);
+    read_answer_with(ws, implementation, &text, expected, &tail(&output.stderr))
+}
+
+/// The bytes of one request, ready to send.
+///
+/// Shared by both ways of reaching a child, so a worker and a one-shot process
+/// are sent exactly the same thing.
+pub(crate) fn request_line(
+    implementation: &Implementation,
+    args: &[Value],
+) -> Result<Vec<u8>, ExecError> {
+    let encoded: Vec<serde_json::Value> = args
+        .iter()
+        .map(|a| a.to_json())
+        .collect::<Result<_, _>>()
+        .map_err(|e| ExecError::Protocol {
             id: implementation.id.to_string(),
-            detail: format!(
-                "could not read the response: {source}{}",
-                tail(&output.stderr)
-            ),
+            detail: format!("an argument could not be encoded: {e}"),
         })?;
+
+    let request = Request {
+        unitype: PROTOCOL_VERSION.to_string(),
+        kind: "invoke".to_string(),
+        signature: implementation.proves.to_string(),
+        entry: implementation.entry.clone(),
+        args: encoded,
+    };
+    Ok(serde_json::to_vec(&request).expect("a request serializes"))
+}
+
+/// Reads what a child sent back, against the type its signature promises.
+pub(crate) fn read_answer(
+    ws: &CheckedWorkspace,
+    implementation: &Implementation,
+    text: &str,
+    expected: &Type,
+) -> Result<Value, ExecError> {
+    read_answer_with(ws, implementation, text, expected, "")
+}
+
+/// The same, with whatever the child said on its error stream to add if the
+/// response turns out to be unreadable — which is usually where the reason is.
+fn read_answer_with(
+    ws: &CheckedWorkspace,
+    implementation: &Implementation,
+    text: &str,
+    expected: &Type,
+    context: &str,
+) -> Result<Value, ExecError> {
+    let response: Response = serde_json::from_str(text).map_err(|source| ExecError::Protocol {
+        id: implementation.id.to_string(),
+        detail: format!("could not read the response: {source}{context}"),
+    })?;
 
     if !response.ok {
         let reported = response
@@ -269,6 +305,7 @@ mod tests {
                 cwd: None,
                 env: BTreeMap::new(),
                 timeout_ms,
+                persistent: false,
             },
             meta: unitype_core::Metadata::default(),
         }

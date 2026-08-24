@@ -127,6 +127,8 @@ pub struct Dispatcher {
     ws: Arc<CheckedWorkspace>,
     registry: Arc<Registry>,
     options: Options,
+    /// Processes kept alive between calls, for environments that asked to be.
+    workers: crate::worker::Workers,
 }
 
 impl Dispatcher {
@@ -136,7 +138,16 @@ impl Dispatcher {
             ws,
             registry,
             options: Options::default(),
+            workers: crate::worker::Workers::new(),
         }
+    }
+
+    /// The workers this dispatcher is keeping alive.
+    ///
+    /// Exposed so a program can stop them at a moment of its choosing; dropping
+    /// the dispatcher stops them anyway.
+    pub fn workers(&self) -> &crate::worker::Workers {
+        &self.workers
     }
 
     /// The same, with different checking.
@@ -413,6 +424,15 @@ impl Dispatcher {
                     return Err(ExecError::NotRegistered(implementation.entry.clone()));
                 };
                 native(args).await
+            }
+            // An environment that asked to stay alive is answered by whatever
+            // worker is already running for it, or by one started now.
+            Reach::Subprocess {
+                persistent: true, ..
+            } => {
+                self.workers
+                    .invoke(&self.ws, environment, implementation, args, expected)
+                    .await
             }
             Reach::Subprocess { .. } => {
                 crate::subprocess::invoke(&self.ws, environment, implementation, args, expected)
