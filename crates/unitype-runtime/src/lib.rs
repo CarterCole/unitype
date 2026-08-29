@@ -21,6 +21,7 @@ pub mod error;
 pub mod implementation;
 pub mod interpret;
 pub mod registry;
+mod spawn;
 pub mod subprocess;
 pub mod worker;
 

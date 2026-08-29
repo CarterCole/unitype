@@ -82,10 +82,11 @@ impl Worker {
             process.current_dir(dir);
         }
 
-        let mut child = process.spawn().map_err(|source| ExecError::Unreachable {
-            environment: environment.id.to_string(),
-            detail: format!("could not start `{command}`: {source}"),
-        })?;
+        let mut child =
+            crate::spawn::spawn(&mut process).map_err(|source| ExecError::Unreachable {
+                environment: environment.id.to_string(),
+                detail: format!("could not start `{command}`: {source}"),
+            })?;
 
         let stdin = child.stdin.take().expect("stdin was piped");
         let stdout = BufReader::new(child.stdout.take().expect("stdout was piped")).lines();

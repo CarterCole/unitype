@@ -128,7 +128,7 @@ pub async fn invoke(
         process.current_dir(dir);
     }
 
-    let mut child = process.spawn().map_err(|source| ExecError::Unreachable {
+    let mut child = crate::spawn::spawn(&mut process).map_err(|source| ExecError::Unreachable {
         environment: environment.id.to_string(),
         detail: format!("could not start `{command}`: {source}"),
     })?;
@@ -340,6 +340,69 @@ mod tests {
             &Type::I64.list(),
         )
         .await
+    }
+
+    /// Short calls started alongside a child that sticks around.
+    ///
+    /// This is the arrangement that used to hang. Starting a process means
+    /// making pipes and then forking, and where those cannot be one atomic
+    /// step, a fork landing between them inherits a pipe it has no business
+    /// holding. The parent closes its own end to say the request is over, and
+    /// the child keeps waiting, because a stranger is still holding the other
+    /// copy open.
+    ///
+    /// Both halves matter, which is why the test has both. `cat` is the
+    /// victim: a child reading to end of input hangs where one reading a line
+    /// would not notice. The sleeper is the thief, and has to outlive the
+    /// patience of the calls it is stealing from — with only short-lived
+    /// children around, an inherited descriptor is let go again within
+    /// milliseconds and nobody waits long enough to care.
+    ///
+    /// It is a race, so a green run is weak evidence on its own. The value is
+    /// in running it forever after.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn a_long_lived_child_does_not_hold_another_call_s_input_open() {
+        // Long enough to outlast the patience below, so a stolen descriptor
+        // shows up as a call that never finishes rather than one that is
+        // merely slow.
+        let thief = tokio::spawn(run_with(
+            r#"cat > /dev/null; sleep 2; echo '{"ok":true,"value":[]}'"#,
+            30_000,
+        ));
+
+        let victims = (0..48).map(|n| async move {
+            run_with(
+                &format!(r#"cat > /dev/null; echo '{{"ok":true,"value":[{n}]}}'"#),
+                900,
+            )
+            .await
+        });
+
+        for (n, got) in futures_join(victims).await.into_iter().enumerate() {
+            assert_eq!(
+                got.unwrap_or_else(|e| panic!("call {n} should have answered: {e}")),
+                Value::List(vec![Value::Int(n as i64)]),
+                "each call got its own answer, not somebody else's"
+            );
+        }
+        thief.await.expect("it did not panic").expect("it answers");
+    }
+
+    /// Runs everything given to it at once and collects the results in order.
+    ///
+    /// Hand-rolled because this crate does not depend on `futures`, and one
+    /// join is not worth one.
+    async fn futures_join<F>(futures: impl IntoIterator<Item = F>) -> Vec<F::Output>
+    where
+        F: std::future::Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        let handles: Vec<_> = futures.into_iter().map(tokio::spawn).collect();
+        let mut out = Vec::with_capacity(handles.len());
+        for handle in handles {
+            out.push(handle.await.expect("the call did not panic"));
+        }
+        out
     }
 
     #[tokio::test]
