@@ -250,12 +250,22 @@ impl fmt::Display for Type {
                 write!(f, "({}) -> {ret}", join(params, ", "))
             }
 
-            Type::Ref(r) => match &r.universe {
-                Some(universe) => write!(f, "{universe}::{}{}", r.name, args(&r.args)),
-                None => write!(f, "{}{}", r.name, args(&r.args)),
-            },
+            Type::Ref(r) => write!(f, "{r}"),
             Type::Param { name } => write!(f, "{name}"),
         }
+    }
+}
+
+/// A reference, written the way it was written.
+///
+/// Unqualified when it names something in the universe it sits in, which is
+/// how the declaration itself reads.
+impl fmt::Display for TypeRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(universe) = &self.universe {
+            write!(f, "{universe}::")?;
+        }
+        write!(f, "{}{}", self.name, args(&self.args))
     }
 }
 

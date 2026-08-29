@@ -1,6 +1,8 @@
 //! Named declarations: the types a universe defines and the propositions it
 //! states.
 
+use std::fmt;
+
 use serde::{Deserialize, Serialize};
 
 use crate::ident::{Ident, QualifiedName};
@@ -306,12 +308,86 @@ impl FunctionSig {
     }
 }
 
+/// A proposition, written the way it would be said.
+///
+/// [`FunctionSig::function_type`] is the proposition's identity and drops
+/// parameter names on purpose. This keeps them, because a person reading
+/// `(xs: [i64]) -> [i64]` learns something `([i64]) -> [i64]` does not tell
+/// them — and someone about to pass arguments positionally learns it in the
+/// order they need it.
+impl fmt::Display for FunctionSig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.name)?;
+        if !self.params_decl.is_empty() {
+            let mut first = true;
+            write!(f, "<")?;
+            for decl in &self.params_decl {
+                if !std::mem::take(&mut first) {
+                    write!(f, ", ")?;
+                }
+                write!(f, "{}", decl.name)?;
+                for (n, bound) in decl.bounds.iter().enumerate() {
+                    write!(f, "{} {bound}", if n == 0 { ":" } else { " +" })?;
+                }
+            }
+            write!(f, ">")?;
+        }
+        write!(f, "(")?;
+        for (n, param) in self.params.iter().enumerate() {
+            if n > 0 {
+                write!(f, ", ")?;
+            }
+            write!(f, "{}: {}", param.name, param.ty)?;
+        }
+        write!(f, ") -> {}", self.ret)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn id(s: &str) -> Ident {
         Ident::new(s).unwrap()
+    }
+
+    #[test]
+    fn a_proposition_reads_the_way_it_would_be_said() {
+        let sig = FunctionSig {
+            name: id("sort"),
+            doc: None,
+            params_decl: vec![],
+            params: vec![NamedParam::new(id("xs"), Type::I64.list())],
+            ret: Type::I64.list(),
+            refines: None,
+            body: None,
+            meta: Metadata::default(),
+        };
+        assert_eq!(sig.to_string(), "sort(xs: [i64]) -> [i64]");
+
+        // Names are what this adds, so it must not be the same as the identity.
+        assert_eq!(sig.function_type().to_string(), "([i64]) -> [i64]");
+    }
+
+    #[test]
+    fn a_generic_proposition_says_what_it_is_over() {
+        let sig = FunctionSig {
+            name: id("first"),
+            doc: None,
+            params_decl: vec![TypeParamDecl {
+                name: id("T"),
+                bounds: vec![TypeRef::local(id("Ord")), TypeRef::local(id("Show"))],
+            }],
+            params: vec![NamedParam::new(
+                id("xs"),
+                Type::Param { name: id("T") }.list(),
+            )],
+            ret: Type::Param { name: id("T") }.optional(),
+            refines: None,
+            body: None,
+            meta: Metadata::default(),
+        };
+        assert_eq!(sig.to_string(), "first<T: Ord + Show>(xs: [T]) -> T?");
     }
 
     #[test]

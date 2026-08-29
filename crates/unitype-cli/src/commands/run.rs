@@ -82,17 +82,33 @@ pub async fn run(
     let ws = Arc::clone(&project.workspace);
     let dispatcher = Dispatcher::new(Arc::clone(&ws), Arc::clone(&project.registry));
 
-    let considered_before: Vec<String> = dispatcher
-        .candidates(&name, &policy)
+    let considered = dispatcher.candidates(&name, &policy);
+    // Padded to the widest, so the costs line up and the ordering the policy
+    // chose can be read down the column rather than parsed out of each row.
+    let widest_id = considered
         .iter()
-        .map(|i| format!("{}  {}  {}", i.id, i.environment, i.cost))
+        .map(|i| i.id.as_str().len())
+        .max()
+        .unwrap_or(0);
+    let widest_env = considered
+        .iter()
+        .map(|i| i.environment.as_str().len())
+        .max()
+        .unwrap_or(0);
+    let considered_before: Vec<String> = considered
+        .iter()
+        .map(|i| {
+            format!(
+                "{:widest_id$}  {:widest_env$}  {}",
+                i.id.as_str(),
+                i.environment.as_str(),
+                i.cost
+            )
+        })
         .collect();
 
     if verbose && !out.is_machine() {
-        out.say(format!(
-            "{name} : {}",
-            unitype_core::canon::canonical_string(&sig.function_type())
-        ));
+        out.say(format!("{}::{sig}", name.universe));
         out.say("candidates:");
         for line in &considered_before {
             out.say(format!("  {line}"));
