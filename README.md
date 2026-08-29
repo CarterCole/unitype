@@ -63,6 +63,11 @@ today.
   object become a map and `"Red"` become a variant.
 - **The runtime.** Environments register what they can prove; a policy decides
   which proof answers a call; a worker keeps an interpreter alive between calls.
+- **A sandbox.** A proof compiled to WebAssembly gets memory, a budget, and
+  nothing else — no files, no sockets, no clock — so a proof you did not write
+  has somewhere to run where it can only answer. Behind `--features wasm`,
+  because the engine is a large thing to build for a capability not every
+  workspace wants.
 - **Code generation.** TypeScript, Python, and Rust — checked by running the
   generated code and comparing what it produces against what unitype says the
   value is.
@@ -73,14 +78,15 @@ today.
 - **Reflection.** A built-in universe describes the representation, and is
   checked against it, so it cannot drift.
 
-531 tests, including the subtyping laws and the inference laws as property
+534 tests, including the subtyping laws and the inference laws as property
 tests, and pinned golden vectors that make canonical drift impossible to do by
-accident.
+accident. 545 with the sandbox turned on.
 
-**Not built.** A WebAssembly environment, and a Go backend.
+**Not built.** A Go backend.
 
 ```bash
 cargo test
+cargo test --features unitype-runtime/wasm,unitype-cli/wasm
 ```
 
 ## Try it
@@ -100,6 +106,12 @@ cargo run -p unitype-cli -- --project examples/demo \
     run demo::sort --args '[[5,3,9,1]]' --policy fastest -v
 cargo run -p unitype-cli -- --project examples/demo \
     run demo::sort --args '[[5,3,9,1]]' --policy min-memory -v
+
+# The same proposition again, proved somewhere it can reach nothing at all.
+cargo build --release --target wasm32-unknown-unknown \
+    --manifest-path examples/wasm-guest/Cargo.toml
+cargo run -p unitype-cli --features wasm -- --project examples/demo \
+    run demo::sort --args '[[5,3,9,1]]' --impl sort.sandboxed -v
 
 # A value crossing between universes, through a conversion nobody wrote out.
 cargo run -p unitype-cli -- --project examples/demo bridge \

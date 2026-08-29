@@ -23,6 +23,8 @@ pub mod interpret;
 pub mod registry;
 mod spawn;
 pub mod subprocess;
+#[cfg(feature = "wasm")]
+pub mod wasm;
 pub mod worker;
 
 pub use conform::{Answer, ConformError, Report, Suite, Vector};

@@ -6,3 +6,4 @@
 __pycache__/
 node_modules/
 examples/demo/generated/
+/examples/wasm-guest/target

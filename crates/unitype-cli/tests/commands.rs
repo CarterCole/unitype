@@ -313,11 +313,33 @@ fn proofs_of_the_demo_agree_with_each_other() {
     let sort = &report.as_array().expect("a list")[0];
     assert_eq!(sort["signature"], "demo::sort");
     assert_eq!(sort["agreed"], true, "{sort}");
-    assert_eq!(
-        sort["proofs"].as_array().map(Vec::len),
-        Some(2),
-        "the Rust one and the Python one both take part: {sort}"
-    );
+    // Named rather than counted: which proofs take part depends on how this
+    // binary was built — the sandboxed one needs the `wasm` feature — and the
+    // claim worth making is that two languages actually ran, not how many
+    // proofs exist.
+    let took_part: Vec<&str> = sort["proofs"]
+        .as_array()
+        .expect("a list")
+        .iter()
+        .filter_map(|p| p.as_str())
+        .collect();
+    for expected in ["sort.rust_merge", "sort.py_bubble"] {
+        assert!(
+            took_part.contains(&expected),
+            "{expected} should have taken part: {sort}"
+        );
+    }
+    // And every proof that did take part answered every case, rather than
+    // being quietly skipped into agreement with nobody.
+    for case in sort["cases"].as_array().expect("a list") {
+        for proof in &took_part {
+            assert!(
+                case["answers"].get(proof).is_some(),
+                "{proof} did not answer `{}`: {sort}",
+                case["name"]
+            );
+        }
+    }
 }
 
 #[test]

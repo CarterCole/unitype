@@ -11,6 +11,16 @@
         "args": ["../py/sort_impl.py"],
         "timeout_ms": 30000
       }
+    },
+    {
+      "id": "sandbox",
+      "language": "rust",
+      "doc": "A WebAssembly guest: memory, a budget, and nothing else.",
+      "reach": {
+        "k": "wasm",
+        "module": "../../wasm-guest/target/wasm32-unknown-unknown/release/unitype_wasm_guest.wasm",
+        "fuel": 100000000
+      }
     }
   ],
   "implementations": [
@@ -37,6 +47,18 @@
         "notes": "Sorts in place, so it needs no room beyond the list itself."
       },
       "notes": "The frugal proof. Slow, but it borrows nothing, and it is in another language."
+    },
+    {
+      "id": "sort.sandboxed",
+      "proves": "demo::sort",
+      "environment": "sandbox",
+      "entry": "sort",
+      "cost": {
+        "time": "o_n_log_n",
+        "space": "o_n",
+        "notes": "Rust's sort, compiled to WebAssembly."
+      },
+      "notes": "The portable proof. Same code as the fast one, running somewhere it cannot reach anything. Needs `--features wasm` and `examples/wasm-guest` built; without either it is simply unavailable, which is what an environment that is not there should look like."
     }
   ]
 }

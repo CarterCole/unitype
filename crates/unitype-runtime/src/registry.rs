@@ -313,7 +313,7 @@ fn resolve_paths(reach: &mut Reach, base: &Path) {
                 *cwd = Some(base.to_path_buf());
             }
         }
-        Reach::Wasm { module } => {
+        Reach::Wasm { module, .. } => {
             if module.is_relative() {
                 *module = base.join(&*module);
             }

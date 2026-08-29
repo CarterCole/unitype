@@ -68,9 +68,18 @@ pub enum Reach {
         persistent: bool,
     },
     /// A WebAssembly module instantiated in this process.
+    ///
+    /// The only environment that is actually a sandbox: a guest gets memory and
+    /// nothing else — no files, no sockets, no clock — and runs on a budget, so
+    /// a proof that never finishes stops rather than taking this process with
+    /// it. There is no operating system process to kill here, which is why the
+    /// budget matters more than a timeout would.
     Wasm {
         /// The module to load.
         module: PathBuf,
+        /// How much work the guest may do before it is stopped.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fuel: Option<u64>,
     },
     /// Something already running that this process talks to.
     Remote {
@@ -188,6 +197,24 @@ impl Environment {
         }
     }
 
+    /// An environment reached by loading a WebAssembly module.
+    ///
+    /// The language is what the guest was written in, which is worth keeping
+    /// even though the host cannot tell: a route printed for a person should
+    /// say a proof came from Rust or from Go, not that it came from bytecode.
+    pub fn wasm(id: &str, language: &str, module: impl Into<PathBuf>) -> Self {
+        Self {
+            id: Ident::new(id).expect("a valid name"),
+            language: Ident::new(language).expect("a valid name"),
+            doc: None,
+            reach: Reach::Wasm {
+                module: module.into(),
+                fuel: None,
+            },
+            meta: Metadata::default(),
+        }
+    }
+
     /// Whether this environment is this process.
     pub fn is_here(&self) -> bool {
         matches!(self.reach, Reach::Here)
@@ -216,6 +243,7 @@ mod tests {
             Reach::Here,
             Reach::Wasm {
                 module: "x.wasm".into(),
+                fuel: None,
             },
             Reach::Subprocess {
                 command: "python3".into(),

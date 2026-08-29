@@ -29,6 +29,17 @@ pub enum ExecError {
         /// How long it was given.
         millis: u64,
     },
+    /// The implementation used up the work it was allowed.
+    ///
+    /// The sandbox working rather than the proof being wrong: a guest with no
+    /// process to kill is stopped this way instead.
+    #[error("`{id}` used up its budget of {budget} before answering")]
+    Exhausted {
+        /// The implementation that would not stop.
+        id: String,
+        /// How much work it was allowed.
+        budget: u64,
+    },
     /// The implementation reported a failure of its own.
     #[error("`{id}` failed: {message}")]
     Failed {
@@ -83,7 +94,7 @@ impl ExecError {
     pub fn is_environmental(&self) -> bool {
         matches!(
             self,
-            ExecError::Unreachable { .. } | ExecError::Timeout { .. }
+            ExecError::Unreachable { .. } | ExecError::Timeout { .. } | ExecError::Exhausted { .. }
         )
     }
 }

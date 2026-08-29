@@ -129,6 +129,14 @@ pub struct Dispatcher {
     options: Options,
     /// Processes kept alive between calls, for environments that asked to be.
     workers: crate::worker::Workers,
+    /// Compiled WebAssembly guests, kept so only the first call pays for one.
+    ///
+    /// Built on first use rather than up front. Standing up a WebAssembly
+    /// engine is not free — on macOS it installs a Mach exception handler for
+    /// the whole process — and a dispatcher with no sandboxed proof registered
+    /// should cost nothing for a capability it never uses.
+    #[cfg(feature = "wasm")]
+    wasm: std::sync::OnceLock<crate::wasm::WasmHost>,
 }
 
 impl Dispatcher {
@@ -139,6 +147,8 @@ impl Dispatcher {
             registry,
             options: Options::default(),
             workers: crate::worker::Workers::new(),
+            #[cfg(feature = "wasm")]
+            wasm: std::sync::OnceLock::new(),
         }
     }
 
@@ -384,10 +394,13 @@ impl Dispatcher {
                 }
             }
             // Whether the program is actually there is discovered by trying to
-            // start it, which gives a precise reason rather than a guess.
+            // start it, which gives a precise reason rather than a guess. The
+            // same goes for a module that will not load.
             Reach::Subprocess { .. } => Ok(()),
+            #[cfg(feature = "wasm")]
+            Reach::Wasm { .. } => Ok(()),
             other => Err(format!(
-                "reaching a `{}` environment is not built into this binary yet",
+                "reaching a `{}` environment is not built into this binary",
                 other.kind()
             )),
         }
@@ -438,10 +451,17 @@ impl Dispatcher {
                 crate::subprocess::invoke(&self.ws, environment, implementation, args, expected)
                     .await
             }
+            #[cfg(feature = "wasm")]
+            Reach::Wasm { .. } => {
+                self.wasm
+                    .get_or_init(crate::wasm::WasmHost::new)
+                    .invoke(&self.ws, environment, implementation, args, expected)
+                    .await
+            }
             other => Err(ExecError::Unreachable {
                 environment: environment.id.to_string(),
                 detail: format!(
-                    "reaching a `{}` environment is not built in yet",
+                    "reaching a `{}` environment is not built into this binary",
                     other.kind()
                 ),
             }),

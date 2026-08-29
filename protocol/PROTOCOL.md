@@ -358,7 +358,7 @@ what entry name. A manifest is that announcement written down:
 Relative paths in a manifest resolve against the manifest's own directory, so it
 means the same thing wherever it is loaded from.
 
-Complexity is **declared, not measured**. The dispatcher believes the claim; §7.3
+Complexity is **declared, not measured**. The dispatcher believes the claim; §7.4
 is how the claims get checked against each other.
 
 At the dispatch boundary, arguments are checked against the signature's
@@ -429,7 +429,59 @@ worker.
 the whole risk, so it is opt-in: a module that holds nothing between calls says
 so by not asking.
 
-### 7.3 Conformance **(frozen)**
+### 7.3 WebAssembly **(frozen)**
+
+Every other environment is trusted. A function compiled into the host can do
+whatever the host can; a subprocess can read the same files. That is usually the
+right trade, and it is the wrong one for a proof that arrived from somewhere.
+
+A WebAssembly guest gets linear memory and nothing else: no files, no sockets,
+no clock, no way to reach the host except by returning. The messages are §7.1's,
+unchanged. Only the carriage differs — instead of a pipe, the request is written
+into the guest's own memory and the answer is read back out of it.
+
+A guest MUST export exactly these three things:
+
+```wat
+(memory (export "memory") …)
+(func (export "unitype_alloc") (param $len i32) (result i32))
+(func (export "unitype_invoke") (param $ptr i32) (param $len i32) (result i64))
+```
+
+The exchange:
+
+1. The host calls `unitype_alloc(len)` and gets back an offset with room for
+   `len` bytes.
+2. The host writes the request there — the same JSON line as §7.1, without the
+   newline, which has nothing left to frame.
+3. The host calls `unitype_invoke(ptr, len)`.
+4. The guest returns where its answer is, packed as `ptr << 32 | len`, because
+   one number is all a WebAssembly function can return.
+5. The host reads that many bytes and reads them as §7.1's response.
+
+The guest MUST keep the answer's bytes valid until `unitype_invoke` returns,
+which is all it has to do: the instance is discarded afterwards, so there is
+nothing to free and nobody to free it. A guest compiled from a language with an
+allocator SHOULD simply leak both blocks.
+
+A host MUST check the returned `(ptr, len)` against the size of the guest's
+memory before reading, and MUST treat a pair that does not fit as a protocol
+failure naming the guest. This is the one place a guest could reach outside its
+own world, and it is the host's job to see that it cannot.
+
+**Instances are not reused.** A module MAY be compiled once and kept — compiling
+is expensive and instantiating is not — but each call MUST get a fresh instance.
+Nothing survives from one call to the next, for the same reason as §7.1's one
+process per call: a proof cannot get a later call wrong by remembering an
+earlier one. §7.2's opt-in does not apply here; there is no worker to keep.
+
+**Budget, not timeout.** There is no operating system process to kill, so a
+guest MUST run under a bound on the work it may do, and a host MUST stop one
+that exceeds it. Exceeding the budget says the sandbox worked, not that the
+proof is wrong, so it is an environmental failure and MAY be retried elsewhere —
+unlike a proof that returns the wrong thing, which never is.
+
+### 7.4 Conformance **(frozen)**
 
 A signature says what shape comes back, not what is in it — `sort` and `reverse`
 have the same type. So the proofs of one proposition are also checked against
@@ -458,7 +510,7 @@ A proof that could not be run — no interpreter on this machine — is **skippe
 not counted as disagreeing. An implementation reporting a failure *is* counted:
 a proof that does not answer has not proved anything.
 
-### 7.4 Code generation *(specified, in progress)*
+### 7.5 Code generation *(specified, in progress)*
 
 Each target language has a **profile**: how the symbolic types are spelled, how
 constructors are written, which identifiers are reserved and how to escape one,

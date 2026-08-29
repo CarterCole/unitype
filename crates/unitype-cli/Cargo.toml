@@ -11,6 +11,13 @@ repository.workspace = true
 name = "unitype"
 path = "src/main.rs"
 
+[features]
+default = []
+# Carries the sandbox through to the command, so `unitype run` can reach a
+# guest. Off by default: it is a large dependency to build for a capability not
+# every workspace uses.
+wasm = ["unitype-runtime/wasm"]
+
 [dependencies]
 unitype-core.workspace = true
 unitype-runtime.workspace = true
