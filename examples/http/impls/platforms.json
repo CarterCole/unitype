@@ -1,0 +1,78 @@
+{
+  "version": "1.0",
+  "doc": "What `http::request` is called, place by place.",
+  "environments": [
+    {
+      "id": "shell",
+      "language": "sh",
+      "doc": "A shell with curl on the path. The oldest of these, and the only one that is a program rather than a function.",
+      "reach": {"k": "subprocess", "command": "sh", "args": ["-c", "exec ./curl_impl.sh"], "timeout_ms": 30000}
+    },
+    {
+      "id": "node",
+      "language": "typescript",
+      "doc": "Node 18 or later, where fetch is a global and needs no package.",
+      "reach": {"k": "subprocess", "command": "node", "args": ["fetch_impl.mjs"], "persistent": true, "timeout_ms": 30000}
+    },
+    {
+      "id": "browser",
+      "language": "typescript",
+      "doc": "A browser tab. The same `fetch` as Node's, reached differently, which is exactly why the language and the environment are separate things.",
+      "reach": {"k": "remote", "endpoint": "ws://localhost:8787/unitype"}
+    },
+    {
+      "id": "python",
+      "language": "python",
+      "doc": "CPython with the `requests` package installed.",
+      "reach": {"k": "subprocess", "command": "python3", "args": ["requests_impl.py"], "persistent": true, "timeout_ms": 30000}
+    },
+    {
+      "id": "rust",
+      "language": "rust",
+      "doc": "A Rust binary linking `reqwest`.",
+      "reach": {"k": "subprocess", "command": "./target/release/http_impl", "args": [], "persistent": true, "timeout_ms": 30000}
+    }
+  ],
+  "implementations": [
+    {
+      "id": "request.curl",
+      "proves": "http::request",
+      "environment": "shell",
+      "entry": "curl",
+      "cost": {"time": "o_n", "space": "o_n", "notes": "Linear in the size of the body it moves."},
+      "notes": "Where this is called `curl`. A whole program, not a function: the arguments are flags and the response is stdout, so the proof is mostly translation."
+    },
+    {
+      "id": "request.fetch_node",
+      "proves": "http::request",
+      "environment": "node",
+      "entry": "fetch",
+      "cost": {"time": "o_n", "space": "o_n"},
+      "notes": "Where this is called `fetch`. Built in since Node 18; before that it was `node-fetch`, or `http.request` with a callback."
+    },
+    {
+      "id": "request.fetch_browser",
+      "proves": "http::request",
+      "environment": "browser",
+      "entry": "fetch",
+      "cost": {"time": "o_n", "space": "o_n"},
+      "notes": "The same name as Node's and a different set of rules: a browser will not let this reach just anywhere, so a proof that works in Node can fail here for reasons that have nothing to do with the proposition."
+    },
+    {
+      "id": "request.requests",
+      "proves": "http::request",
+      "environment": "python",
+      "entry": "requests.request",
+      "cost": {"time": "o_n", "space": "o_n"},
+      "notes": "Where this is called `requests.request`. Not in the standard library; `urllib.request.urlopen` is the one that is."
+    },
+    {
+      "id": "request.reqwest",
+      "proves": "http::request",
+      "environment": "rust",
+      "entry": "reqwest::Client::execute",
+      "cost": {"time": "o_n", "space": "o_n"},
+      "notes": "Where this is called `reqwest`. The client is meant to be kept and reused, which is why this environment holds a process open."
+    }
+  ]
+}

@@ -539,4 +539,72 @@ mod tests {
             "three words should be plenty here"
         );
     }
+
+    #[test]
+    fn a_proposition_can_be_said_out_loud_too() {
+        // A signature has an address, so it should have words. Without this a
+        // person can say the name of a type and not the name of a call, which
+        // is the half of the vocabulary they actually have to look up.
+        let ws = check(
+            r#"{"universes":[{"name":"demo","functions":[
+                {"name":"sort","params":[{"name":"xs","ty":"[i64]"}],"ret":"[i64]"}]}]}"#,
+        );
+        let sort = ws.sig_hash(&"demo::sort".parse().unwrap()).unwrap();
+        let words = ws
+            .alias_index()
+            .alias_for(&sort)
+            .expect("a proposition is in the index");
+        assert_eq!(words.split('-').count(), 3, "{words}");
+    }
+
+    #[test]
+    fn the_same_call_asked_twice_is_one_proposition() {
+        // Two universes asking for the same thing arrive at one address,
+        // whatever each of them called it — the point being that neither had
+        // to know about the other.
+        let ws = check(
+            r#"{"universes":[
+                {"name":"a","functions":[
+                    {"name":"sort","params":[{"name":"xs","ty":"[i64]"}],"ret":"[i64]"}]},
+                {"name":"b","functions":[
+                    {"name":"order","params":[{"name":"ys","ty":"[i64]"}],"ret":"[i64]"}]}]}"#,
+        );
+        let sort = ws.sig_hash(&"a::sort".parse().unwrap()).unwrap();
+        assert_eq!(ws.sig_hash(&"b::order".parse().unwrap()), Some(sort));
+        assert_eq!(
+            ws.sigs_with_hash(&sort)
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            ["a::sort", "b::order"]
+        );
+    }
+
+    #[test]
+    fn a_proposition_over_named_types_belongs_to_its_universe() {
+        // The limit of the above, stated on purpose rather than discovered.
+        // A signature mentioning a named type carries that name in its address,
+        // so two universes each with their own `Req` ask two different
+        // questions however alike the two `Req`s are. Sharing a proposition
+        // across universes means sharing the types it is over — which is what
+        // a universe like `http` is for.
+        let ws = check(
+            r#"{"universes":[
+                {"name":"a","types":[{"k":"struct","name":"Req",
+                    "fields":[{"name":"url","ty":"str"}]}],
+                 "functions":[{"name":"send","params":[{"name":"r","ty":"Req"}],"ret":"i32"}]},
+                {"name":"b","types":[{"k":"struct","name":"Req",
+                    "fields":[{"name":"url","ty":"str"}]}],
+                 "functions":[{"name":"send","params":[{"name":"r","ty":"Req"}],"ret":"i32"}]}]}"#,
+        );
+        let a = ws.sig_hash(&"a::send".parse().unwrap()).unwrap();
+        let b = ws.sig_hash(&"b::send".parse().unwrap()).unwrap();
+        assert_ne!(a, b);
+
+        // The data they carry is the same, though, and that much is visible.
+        assert_eq!(
+            ws.shape_hash(&"a::Req".parse().unwrap()),
+            ws.shape_hash(&"b::Req".parse().unwrap()),
+        );
+    }
 }

@@ -1,0 +1,54 @@
+{
+  "name": "http",
+  "doc": "An HTTP request, and the one thing you do with it.\n\nEvery platform has this and every platform calls it something else. The point of writing it down here is that the name is the only part that differs: `curl`, `fetch`, `requests.request` and `reqwest` all take a method, a URL, some headers and a body, and all give back a status, some headers and a body. Once that is said once, it has an address, and the address is the same everywhere.",
+  "types": [
+    {
+      "k": "alias",
+      "name": "Method",
+      "doc": "The verbs, as the ones that exist rather than as free text.",
+      "target": {
+        "k": "union",
+        "members": [
+          {"k": "literal", "value": {"str": "GET"}},
+          {"k": "literal", "value": {"str": "HEAD"}},
+          {"k": "literal", "value": {"str": "POST"}},
+          {"k": "literal", "value": {"str": "PUT"}},
+          {"k": "literal", "value": {"str": "PATCH"}},
+          {"k": "literal", "value": {"str": "DELETE"}},
+          {"k": "literal", "value": {"str": "OPTIONS"}}
+        ]
+      }
+    },
+    {
+      "k": "struct",
+      "name": "Request",
+      "doc": "What every one of these platforms takes, under whatever name it uses.",
+      "fields": [
+        {"name": "method", "ty": "Method"},
+        {"name": "url", "ty": "str"},
+        {"name": "headers", "ty": "map<str, str>",
+         "doc": "Names are matched case-insensitively by the protocol; they are carried here as written."},
+        {"name": "body", "ty": "bytes?",
+         "doc": "Bytes rather than text: a body is not always text, and deciding that it is loses files."}
+      ]
+    },
+    {
+      "k": "struct",
+      "name": "Response",
+      "doc": "What every one of them gives back.",
+      "fields": [
+        {"name": "status", "ty": "i32"},
+        {"name": "headers", "ty": "map<str, str>"},
+        {"name": "body", "ty": "bytes"}
+      ]
+    }
+  ],
+  "functions": [
+    {
+      "name": "request",
+      "doc": "Send one request, get one response.\n\nThis is the proposition. `curl`, `fetch`, `requests.request` and `reqwest` are proofs of it — the same claim, proved four times in four places. A future, because none of them answer immediately and pretending otherwise is how the asynchrony leaks back out later.",
+      "params": [{"name": "req", "ty": "Request"}],
+      "ret": {"k": "future", "of": "Response"}
+    }
+  ]
+}

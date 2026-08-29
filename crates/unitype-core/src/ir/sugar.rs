@@ -13,6 +13,8 @@
 //! | `"geo::Point"` | a reference to another universe |
 //! | `"i64?"`     | optional                       |
 //! | `"[i64]"`    | a list                         |
+//! | `"map<str, i64>"` | a map                     |
+//! | `"future<T>"` | a future                      |
 //!
 //! Expansion happens as a pass over the parsed JSON before it is read into the
 //! IR, directed by the schema so that a string is only ever expanded where a
@@ -289,6 +291,28 @@ fn name_to_ref_fields(s: &str) -> Json {
     Json::Object(obj)
 }
 
+/// The inside of `name<...>`, if that is what this is.
+fn angled<'a>(t: &'a str, name: &str) -> Option<&'a str> {
+    t.strip_prefix(name)?.strip_prefix('<')?.strip_suffix('>')
+}
+
+/// Splits at the first comma that is not inside brackets of some kind.
+///
+/// `map<str, map<str, i64>>` has two commas and only the first one separates
+/// this map's key from its value.
+fn split_once_at_depth_zero(t: &str) -> Option<(&str, &str)> {
+    let mut depth = 0usize;
+    for (at, c) in t.char_indices() {
+        match c {
+            '<' | '[' | '(' | '{' => depth += 1,
+            '>' | ']' | ')' | '}' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => return Some((&t[..at], &t[at + 1..])),
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Expands one shorthand string into the canonical object form.
 pub fn parse_type_sugar(s: &str) -> Result<Json, SugarError> {
     let t = s.trim();
@@ -312,6 +336,34 @@ pub fn parse_type_sugar(s: &str) -> Result<Json, SugarError> {
             .ok_or(SugarError::Malformed(s.to_string(), "unclosed `[`"))?;
         let mut obj = Map::new();
         obj.insert("k".into(), Json::String("list".into()));
+        obj.insert("of".into(), parse_type_sugar(inner)?);
+        return Ok(Json::Object(obj));
+    }
+
+    // `map<K, V>` and `future<T>`, which are what a type prints as. Reading
+    // back what the system writes is worth having: a person who copies a type
+    // out of `unitype ls` and pastes it into a universe should not be told it
+    // is not a type.
+    if let Some(inner) = angled(t, "map") {
+        let (key, value) = split_once_at_depth_zero(inner).ok_or(SugarError::Malformed(
+            s.to_string(),
+            "`map` needs a key and a value",
+        ))?;
+        let mut obj = Map::new();
+        obj.insert("k".into(), Json::String("map".into()));
+        obj.insert("key".into(), parse_type_sugar(key)?);
+        obj.insert("value".into(), parse_type_sugar(value)?);
+        return Ok(Json::Object(obj));
+    }
+    if let Some(inner) = angled(t, "future") {
+        if split_once_at_depth_zero(inner).is_some() {
+            return Err(SugarError::Malformed(
+                s.to_string(),
+                "`future` takes one type",
+            ));
+        }
+        let mut obj = Map::new();
+        obj.insert("k".into(), Json::String("future".into()));
         obj.insert("of".into(), parse_type_sugar(inner)?);
         return Ok(Json::Object(obj));
     }
@@ -354,6 +406,32 @@ mod tests {
         assert_eq!(sugar("str"), Type::String);
         assert_eq!(sugar("float"), Type::F64);
         assert_eq!(sugar("bool"), Type::Bool);
+    }
+
+    #[test]
+    fn a_type_reads_back_the_way_it_prints() {
+        // The property worth having: whatever `Display` writes, this reads.
+        for spelled in [
+            "map<str, i64>",
+            "future<bool>",
+            "map<str, map<str, i64>>",
+            "future<[str]>",
+            "map<str, [i64]>?",
+            "[map<str, str>]",
+        ] {
+            assert_eq!(sugar(spelled).to_string(), spelled, "{spelled}");
+        }
+    }
+
+    #[test]
+    fn a_map_needs_both_halves_and_a_future_needs_one() {
+        assert!(parse_type_sugar("map<str>").is_err());
+        assert!(parse_type_sugar("future<a, b>").is_err());
+        // The comma that separates belongs to this map, not to the inner one.
+        assert_eq!(
+            sugar("map<str, map<i64, bool>>").to_string(),
+            "map<str, map<i64, bool>>"
+        );
     }
 
     #[test]

@@ -13,6 +13,10 @@ fn demo() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/demo")
 }
 
+fn http() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/http")
+}
+
 fn unitype(args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_unitype"))
         .arg("--project")
@@ -514,4 +518,76 @@ fn what_the_project_says_is_the_same_thing_is_listed() {
         }),
         "{classes}"
     );
+}
+
+#[test]
+fn one_call_has_one_name_and_every_platform_spells_it_differently() {
+    // The thing this example exists to show: an HTTP request is one
+    // proposition with one address, and `curl`, `fetch` and `requests` are
+    // what that one proposition is called in the places that prove it.
+    let output = in_project(&http(), &["--json", "words", "http::request"]);
+    let found: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
+
+    assert_eq!(found["kind"], "proposition");
+    assert!(
+        found["address"]
+            .as_str()
+            .expect("an address")
+            .starts_with("ut1:"),
+        "{found}"
+    );
+    // Three words, said out loud, for a thing nobody agreed on a name for.
+    let words = found["words"].as_str().expect("words");
+    assert_eq!(words.split('-').count(), 3, "{words}");
+
+    let called: Vec<(&str, &str)> = found["called"]
+        .as_array()
+        .expect("a list")
+        .iter()
+        .map(|c| {
+            (
+                c["language"].as_str().expect("a language"),
+                c["called"].as_str().expect("a name"),
+            )
+        })
+        .collect();
+    for expected in [
+        ("sh", "curl"),
+        ("typescript", "fetch"),
+        ("python", "requests.request"),
+        ("rust", "reqwest::Client::execute"),
+    ] {
+        assert!(
+            called.contains(&expected),
+            "{expected:?} missing from {called:?}"
+        );
+    }
+}
+
+#[test]
+fn asking_for_a_name_does_not_require_knowing_what_kind_of_thing_it_is() {
+    // A declaration and a proposition both have addresses. `words` takes
+    // either, because a person asking what something is called should not have
+    // to know which of the two they are holding.
+    let declaration = in_project(&http(), &["--json", "words", "http::Request"]);
+    let declaration: serde_json::Value =
+        serde_json::from_slice(&declaration.stdout).expect("valid JSON");
+    assert_eq!(declaration["kind"], "declaration");
+
+    let proposition = in_project(&http(), &["--json", "words", "http::request"]);
+    let proposition: serde_json::Value =
+        serde_json::from_slice(&proposition.stdout).expect("valid JSON");
+    assert_eq!(proposition["kind"], "proposition");
+
+    // Different things, so different addresses, even though the names differ
+    // only by a capital letter.
+    assert_ne!(declaration["address"], proposition["address"]);
+    assert_ne!(declaration["words"], proposition["words"]);
+}
+
+#[test]
+fn a_proposition_nobody_proves_says_so_rather_than_looking_broken() {
+    let said = String::from_utf8_lossy(&in_project(&demo(), &["words", "demo::mergesort"]).stdout)
+        .to_string();
+    assert!(said.contains("goes by no name yet"), "{said}");
 }

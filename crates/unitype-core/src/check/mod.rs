@@ -291,12 +291,36 @@ impl CheckedWorkspace {
             .unwrap_or_default()
     }
 
-    /// Word aliases for every declaration in this workspace.
+    /// Every proposition sharing an address.
+    ///
+    /// More than one means two universes are asking for the same thing under
+    /// different names — an HTTP request declared in two places is one
+    /// proposition, however each of them spells it.
+    pub fn sigs_with_hash(&self, hash: &TypeId) -> Vec<&QualifiedName> {
+        self.sigs
+            .iter()
+            .filter(|s| s.hash == *hash)
+            .map(|s| &s.name)
+            .collect()
+    }
+
+    /// Word aliases for everything in this workspace that has an address.
     ///
     /// Shortening is relative to what is loaded: an alias is as short as it can
-    /// be while still picking out one declaration here.
+    /// be while still picking out one thing here.
+    ///
+    /// Propositions are in here alongside declarations, in one index rather
+    /// than two. The words are a handle a person says out loud, and a handle
+    /// that means one thing in one sentence and another in the next is not a
+    /// handle. Sharing the index costs a little alias length and buys the
+    /// guarantee that three words name one thing.
     pub fn alias_index(&self) -> AliasIndex {
-        AliasIndex::new(self.defs.iter().filter_map(|d| d.shape))
+        AliasIndex::new(
+            self.defs
+                .iter()
+                .filter_map(|d| d.shape)
+                .chain(self.sigs.iter().map(|s| s.hash)),
+        )
     }
 
     /// The declaration a reference points at, if it points at anything.

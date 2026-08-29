@@ -78,9 +78,9 @@ today.
 - **Reflection.** A built-in universe describes the representation, and is
   checked against it, so it cannot drift.
 
-534 tests, including the subtyping laws and the inference laws as property
+542 tests, including the subtyping laws and the inference laws as property
 tests, and pinned golden vectors that make canonical drift impossible to do by
-accident. 545 with the sandbox turned on.
+accident. 553 with the sandbox turned on.
 
 **Not built.** A Go backend.
 
@@ -129,6 +129,31 @@ cargo run -p unitype-cli -- --project examples/demo conform
 # that describes declarations.
 cargo run -p unitype-cli -- --project examples/demo reflect geo::Point
 ```
+
+One call, and what every platform decided to call it:
+
+```bash
+cargo run -p unitype-cli -- --project examples/http words http::request
+```
+
+```
+http::request(req: http::Request) -> future<http::Response>
+
+  address   ut1:cd212e2df458227e6cc86b268247421129122977094fe54b560f7a24a0d3a9f6
+  words     essay-border-siren
+
+  Called:
+    python      requests.request          in python
+    rust        reqwest::Client::execute  in rust
+    sh          curl                      in shell
+    typescript  fetch                     in browser
+    typescript  fetch                     in node
+```
+
+`curl` is a program, `fetch` is a global, `requests` is a package you install —
+three different kinds of thing, which is why an environment and a language are
+separate here. Underneath they answer the same proposition, and `essay-border-siren`
+is what that proposition is called when you have to say it to a person.
 
 ## What it looks like
 
@@ -222,7 +247,8 @@ crates/unitype-core/        symbolic IR, canonical form, addressing, checker
 crates/unitype-runtime/     implementation registry, executors, policy dispatch
 crates/unitype-codegen/     TypeScript, Python, and Rust backends
 crates/unitype-cli/         the `unitype` command
-examples/demo/              a worked example: shapes, two proofs of sort, a bridge
+examples/demo/              a worked example: shapes, three proofs of sort, a bridge
+examples/http/              one call, and what each platform calls it
 ```
 
 Why Rust: futures are a first-class type constructor here rather than an
@@ -244,7 +270,9 @@ trusts.
   shape fails loudly instead of propagating.
 - **Word aliases are for people, not for machines.** They are derived, stable,
   and lengthen on collision like an abbreviated git hash — but `ut1:` addresses
-  remain the authority.
+  remain the authority. Propositions get them too: a call is as much a thing you
+  have to name out loud as a type is, and more often the thing nobody agreed a
+  name for.
 - **A type is an ordinary thing to compute with.** A built-in universe describes
   the representation, so a declaration is a value that validates, addresses, and
   travels like any other. A test checks the real declarations against that
