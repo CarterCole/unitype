@@ -14,10 +14,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use heck::ToUpperCamelCase;
 use unitype_core::QualifiedName;
 use unitype_core::check::CheckedWorkspace;
 use unitype_core::ir::{
-    AliasDef, EnumDef, Expr, Field, FunctionSig, InterfaceDef, StructDef, Type, TypeDef, Universe,
+    AliasDef, EnumDef, Expr, Field, FunctionSig, InterfaceDef, LiteralValue, StructDef, Type,
+    TypeDef, Universe,
 };
 use unitype_core::lang::{LanguageProfile, profile};
 use unitype_core::value::Value;
@@ -332,8 +334,35 @@ fn emit_alias(w: &mut CodeWriter, def: &AliasDef, profile: &LanguageProfile) {
         w.comment("/// ", doc);
     }
     match &def.target {
-        // An untagged union has to be a real enum in Rust, tried in order.
+        // A union of nothing but strings is a set of names, and Rust has a
+        // word for that: an enum whose variants carry nothing, each one
+        // travelling as the string it stands for. Anything else would accept
+        // every string there is.
+        Type::Union { members } if members.iter().all(is_string_literal) => {
+            let mut taken = BTreeSet::new();
+            w.line(DERIVES);
+            w.block(
+                format!("pub enum {} {{", profile.name(&def.name)),
+                "}",
+                |w| {
+                    for member in members {
+                        let Type::Literal {
+                            value: LiteralValue::Str(text),
+                        } = member
+                        else {
+                            continue;
+                        };
+                        let case = distinct(named_after(text), &mut taken);
+                        w.write(format_args!("#[serde(rename = {text:?})]"));
+                        w.write(format_args!("{case},"));
+                    }
+                },
+            );
+        }
+        // Any other untagged union has to be a real enum in Rust, tried in
+        // order.
         Type::Union { members } => {
+            let mut taken = BTreeSet::new();
             w.line(DERIVES);
             w.line("#[serde(untagged)]");
             w.block(
@@ -342,7 +371,10 @@ fn emit_alias(w: &mut CodeWriter, def: &AliasDef, profile: &LanguageProfile) {
                 |w| {
                     for member in members {
                         let spelled = profile.spell(member);
-                        let case = variant_name(member, &spelled);
+                        // Two arms can spell alike — two literals of one base
+                        // type do — and an enum cannot name two variants the
+                        // same thing.
+                        let case = distinct(variant_name(member, &spelled), &mut taken);
                         w.write(format_args!("{case}({spelled}),"));
                     }
                 },
@@ -354,6 +386,39 @@ fn emit_alias(w: &mut CodeWriter, def: &AliasDef, profile: &LanguageProfile) {
             profile.spell(other)
         )),
     }
+}
+
+fn is_string_literal(ty: &Type) -> bool {
+    matches!(
+        ty,
+        Type::Literal {
+            value: LiteralValue::Str(_)
+        }
+    )
+}
+
+/// A variant name for a string a union admits.
+///
+/// The string itself goes on the wire, by way of a rename, so this only has to
+/// be something Rust will accept and a reader will recognise.
+fn named_after(text: &str) -> String {
+    let name = text.to_upper_camel_case();
+    match name.chars().next() {
+        None => "Empty".to_string(),
+        Some(first) if first.is_ascii_alphabetic() => name,
+        Some(_) => format!("V{name}"),
+    }
+}
+
+/// A name nothing else in the same enum has taken, numbered if it has to be.
+fn distinct(name: String, taken: &mut BTreeSet<String>) -> String {
+    let mut candidate = name.clone();
+    let mut n = 2;
+    while !taken.insert(candidate.clone()) {
+        candidate = format!("{name}{n}");
+        n += 1;
+    }
+    candidate
 }
 
 /// A variant name for one arm of an untagged union.
@@ -650,6 +715,52 @@ mod tests {
         assert!(out.contains("#[serde(untagged)]"), "{out}");
         assert!(out.contains("pub enum AnyShape {"), "{out}");
         assert!(out.contains("Circle(Circle),"), "{out}");
+    }
+
+    #[test]
+    fn a_union_of_strings_becomes_the_names_it_admits() {
+        let out = generate(
+            r#"{"universes":[{"name":"demo","types":[
+                {"k":"alias","name":"Method","target":{"k":"union","members":[
+                    {"k":"literal","value":{"str":"GET"}},
+                    {"k":"literal","value":{"str":"POST"}},
+                    {"k":"literal","value":{"str":"get"}},
+                    {"k":"literal","value":{"str":"2xx"}}]}}]}]}"#,
+        );
+        assert!(
+            out.contains("#[serde(rename = \"GET\")]\n    Get,"),
+            "{out}"
+        );
+        assert!(
+            out.contains("#[serde(rename = \"POST\")]\n    Post,"),
+            "{out}"
+        );
+        assert!(
+            out.contains("#[serde(rename = \"get\")]\n    Get2,"),
+            "two strings that fold to one name still need two variants: {out}"
+        );
+        assert!(
+            out.contains("V2xx,"),
+            "a name cannot start with a digit: {out}"
+        );
+        assert!(
+            !out.contains("untagged"),
+            "untagged over `String` would accept every string there is: {out}"
+        );
+    }
+
+    #[test]
+    fn arms_that_spell_alike_still_get_names_of_their_own() {
+        let out = generate(
+            r#"{"universes":[{"name":"demo","types":[
+                {"k":"alias","name":"Level","target":{"k":"union","members":[
+                    {"k":"literal","value":{"int":1}},
+                    {"k":"literal","value":{"int":2}},
+                    "str"]}}]}]}"#,
+        );
+        assert!(out.contains("I64(i64),"), "{out}");
+        assert!(out.contains("I642(i64),"), "{out}");
+        assert!(out.contains("String(String),"), "{out}");
     }
 
     #[test]

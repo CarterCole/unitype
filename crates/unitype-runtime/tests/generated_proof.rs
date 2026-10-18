@@ -12,10 +12,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use unitype_codegen::{Backend, GenOptions, python};
+use unitype_codegen::{Backend, GenOptions, python, typescript};
 use unitype_core::check::{CheckedWorkspace, check_workspace};
 use unitype_core::value::Value;
-use unitype_core::{BigO, Ident, ImplProfile, QualifiedName, Workspace};
+use unitype_core::{BigO, ImplProfile, QualifiedName, Workspace};
 use unitype_runtime::environment::Reach;
 use unitype_runtime::implementation::Implementation;
 use unitype_runtime::{Dispatcher, Environment, Policy, Registry};
@@ -75,9 +75,75 @@ if __name__ == "__main__":
     dir
 }
 
-/// A dispatcher pointed at that module, kept alive or not.
+/// Whether this Node runs TypeScript as it is, by dropping the types.
+fn have_node() -> bool {
+    let Ok(output) = std::process::Command::new("node").arg("--version").output() else {
+        return false;
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .trim_start_matches('v')
+        .split('.')
+        .next()
+        .and_then(|major| major.parse::<u32>().ok())
+        .is_some_and(|major| major >= 24)
+}
+
+/// Writes the generated TypeScript out, plus a module that uses its harness.
+fn generated_node_module(name: &str) -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("makes a directory");
+
+    for file in typescript::TypeScript
+        .generate(&workspace(), &GenOptions::default())
+        .expect("generates")
+    {
+        let at = dir.join(file.path.file_name().expect("a file name"));
+        std::fs::write(at, file.contents).expect("writes");
+    }
+
+    // Says the directory holds modules, so Node does not have to work it out.
+    std::fs::write(dir.join("package.json"), "{\"type\": \"module\"}\n").expect("writes");
+
+    // Again the only thing written by hand, and written against the generated
+    // `Tally` so that the declaration is loaded rather than merely present.
+    std::fs::write(
+        dir.join("proof.ts"),
+        r#"import { unitypeMain } from "./unitype_harness.ts";
+import type { Tally } from "./demo.ts";
+
+function tally(words: string[]): Tally {
+  return { total: words.length, seen: [...new Set(words)].sort() };
+}
+
+unitypeMain({ tally });
+"#,
+    )
+    .expect("writes the proof");
+    dir
+}
+
+/// A dispatcher pointed at the Python module, kept alive or not.
 fn dispatcher(dir: &Path, persistent: bool) -> Dispatcher {
-    let mut environment = Environment::subprocess("py", "python", "python3", &["proof.py"]);
+    dispatcher_for(
+        Environment::subprocess("py", "python", "python3", &["proof.py"]),
+        dir,
+        persistent,
+    )
+}
+
+/// A dispatcher pointed at the Node module, kept alive or not.
+fn node_dispatcher(dir: &Path, persistent: bool) -> Dispatcher {
+    dispatcher_for(
+        Environment::subprocess("node", "typescript", "node", &["proof.ts"]),
+        dir,
+        persistent,
+    )
+}
+
+fn dispatcher_for(mut environment: Environment, dir: &Path, persistent: bool) -> Dispatcher {
+    let reached = environment.id.clone();
     if let Reach::Subprocess {
         cwd,
         persistent: keep,
@@ -96,7 +162,7 @@ fn dispatcher(dir: &Path, persistent: bool) -> Dispatcher {
         .register(Implementation::new(
             "tally.py",
             "demo::tally".parse::<QualifiedName>().unwrap(),
-            Ident::new("py").unwrap(),
+            reached,
             "tally",
             ImplProfile::new(BigO::ON, BigO::ON),
         ))
@@ -204,5 +270,59 @@ if __name__ == "__main__":
             .as_ref()
             .is_err_and(|e| e.to_string().contains("not a")),
         "{failed:?}"
+    );
+}
+
+#[tokio::test]
+async fn the_generated_node_harness_is_reachable_as_a_proof_too() {
+    if !have_node() {
+        eprintln!("no node that reads TypeScript on this machine; skipping");
+        return;
+    }
+
+    let dir = generated_node_module("generated_node_oneshot");
+    let answer = node_dispatcher(&dir, false)
+        .call(
+            &"demo::tally".parse().unwrap(),
+            vec![words(&["a", "b", "a"])],
+            &Policy::Default,
+        )
+        .await
+        .expect("answers");
+
+    assert_eq!(answer.value.get("total"), Some(&Value::Int(3)));
+    assert_eq!(
+        answer.value.get("seen"),
+        Some(&words(&["a", "b"])),
+        "{:?}",
+        answer.value
+    );
+}
+
+#[tokio::test]
+async fn the_generated_node_harness_serves_a_worker_without_changing() {
+    if !have_node() {
+        return;
+    }
+
+    let dir = generated_node_module("generated_node_worker");
+    let dispatcher = node_dispatcher(&dir, true);
+
+    for (input, total) in [(&["a"][..], 1), (&["a", "b"][..], 2)] {
+        let answer = dispatcher
+            .call(
+                &"demo::tally".parse().unwrap(),
+                vec![words(input)],
+                &Policy::Default,
+            )
+            .await
+            .expect("answers");
+        assert_eq!(answer.value.get("total"), Some(&Value::Int(total)));
+    }
+
+    assert_eq!(
+        dispatcher.workers().running().await,
+        1,
+        "two calls, one interpreter"
     );
 }

@@ -9,6 +9,10 @@
 //! what unitype itself says the value is. If a backend drifts, the languages
 //! stop agreeing here rather than somewhere expensive.
 //!
+//! All three are run: Python by the interpreter, TypeScript by a Node that
+//! reads it directly, Rust by building a small crate around the module. A file
+//! that only looks right is not evidence of anything.
+//!
 //! Where an interpreter is missing, its half is skipped and said so. The point
 //! of generating for a language is that the language is not this program's
 //! problem, which cuts both ways.
@@ -23,14 +27,35 @@ use unitype_core::{Ident, Workspace};
 
 /// A universe with the cases most likely to drift between backends: an
 /// inherited field, a discriminating literal, a field that may be absent, and
-/// a list.
-const UNIVERSE: &str = r#"{"universes":[{"name":"demo","types":[
-    {"k":"struct","name":"Shape","fields":[{"name":"id","ty":"str"}]},
+/// a list — and the cases most likely to stop a file loading at all: prose
+/// long enough to wrap, prose that tries to end its own comment, a union of
+/// strings, and a body.
+const UNIVERSE: &str = r#"{"universes":[{"name":"demo",
+  "doc":"Shapes, and the things done to them.",
+  "types":[
+    {"k":"struct","name":"Shape",
+     "doc":"Anything with an outline. Said at enough length that the comment has to wrap onto a second line, and with a */ in it that must not end the comment early.",
+     "fields":[{"name":"id","ty":"str","doc":"What it is called."}]},
     {"k":"struct","name":"Circle","extends":"Shape","fields":[
         {"name":"kind","ty":{"k":"literal","value":{"str":"circle"}}},
         {"name":"radius","ty":"float"},
         {"name":"tags","ty":"[str]"},
-        {"name":"note","ty":"str?"}]}]}]}"#;
+        {"name":"note","ty":"str?"}]},
+    {"k":"alias","name":"Colour","doc":"The ones there are.","target":{"k":"union","members":[
+        {"k":"literal","value":{"str":"red"}},
+        {"k":"literal","value":{"str":"blue"}}]}},
+    {"k":"struct","name":"Label","fields":[
+        {"name":"text","ty":"str"},{"name":"sides","ty":"i64"}]}],
+  "functions":[
+    {"name":"label_of","doc":"Describes a circle.",
+     "params":[{"name":"c","ty":"Circle"}],"ret":"Label",
+     "body":{"k":"make_record","ty":"Label","fields":[
+        {"name":"text","value":{"k":"field","of":{"k":"var","name":"c"},"name":"id"}},
+        {"name":"sides","value":{"k":"lit","value":0}}]}},
+    {"name":"area","params":[{"name":"c","ty":"Circle"}],"ret":"float"}]}]}"#;
+
+/// What the body above produces for the circle every test builds.
+const LABEL: &str = r#"{"text":"c-1","sides":0}"#;
 
 fn workspace() -> CheckedWorkspace {
     check_workspace(Workspace::from_json(UNIVERSE).expect("reads")).expect("checks")
@@ -136,11 +161,6 @@ fn the_generated_python_produces_the_shape_it_promised() {
     let dir = scratch("python_wire");
     let root = emit(&python::Python, &dir);
 
-    // The generated module uses a relative import for its own package, so it is
-    // exercised as a plain module here with that line removed.
-    let generated = std::fs::read_to_string(root.join("demo.py")).expect("reads");
-    std::fs::write(root.join("demo.py"), generated).expect("writes");
-
     std::fs::write(
         root.join("check.py"),
         r#"import dataclasses, json
@@ -164,40 +184,181 @@ print(json.dumps(shape))
     );
 }
 
+/// Whether this Node runs TypeScript as it is, by dropping the types.
+fn node_reads_typescript() -> bool {
+    let Ok(output) = Command::new("node").arg("--version").output() else {
+        return false;
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .trim_start_matches('v')
+        .split('.')
+        .next()
+        .and_then(|major| major.parse::<u32>().ok())
+        .is_some_and(|major| major >= 24)
+}
+
 #[test]
-fn the_generated_typescript_produces_the_shape_it_promised() {
-    if !have("node") {
-        eprintln!("no node on this machine; skipping");
+fn the_generated_typescript_loads_and_produces_the_shape_it_promised() {
+    if !node_reads_typescript() {
+        eprintln!("no node that reads TypeScript on this machine; skipping");
         return;
     }
 
     let dir = scratch("typescript_wire");
     let root = emit(&typescript::TypeScript, &dir);
 
-    // The declarations are types only, so what is checked is that a value
-    // written against them produces the right bytes. Node runs the JavaScript
-    // that the TypeScript describes.
+    // Says the directory holds modules, so Node does not have to work it out.
+    std::fs::write(root.join("package.json"), "{\"type\": \"module\"}\n").expect("writes");
+
+    // The generated file itself is what gets loaded. A value written against
+    // an interface proves nothing if the file declaring the interface would
+    // not have parsed.
     std::fs::write(
         root.join("check.mjs"),
-        r#"// Written against the generated `Circle` interface: every field it
-// requires, and nothing for the one that may be absent.
+        r#"import { label_of } from "./demo.ts";
+
+// Written against the generated `Circle` interface: every field it requires,
+// and nothing for the one that may be absent.
 const circle = {
   id: "c-1",
   kind: "circle",
   radius: 2.5,
   tags: ["round", "blue"],
 };
-process.stdout.write(JSON.stringify(circle));
+process.stdout.write(JSON.stringify({ circle, label: label_of(circle) }));
 "#,
     )
     .expect("writes the driver");
 
-    let produced = run("node", &["check.mjs"], &root);
+    let produced: serde_json::Value =
+        serde_json::from_str(&run("node", &["check.mjs"], &root)).expect("valid JSON");
     assert_eq!(
-        normalize(&produced),
+        normalize(&produced["circle"].to_string()),
         normalize(&expected_json()),
         "what a value written against the generated interface serializes to \
          differs from what unitype says it is"
+    );
+    assert_eq!(
+        normalize(&produced["label"].to_string()),
+        normalize(LABEL),
+        "the body, as TypeScript, answered differently"
+    );
+}
+
+#[test]
+fn the_generated_python_runs_the_body_it_was_given() {
+    if !have("python3") {
+        return;
+    }
+
+    let dir = scratch("python_body");
+    let root = emit(&python::Python, &dir);
+    std::fs::write(
+        root.join("check.py"),
+        r#"import dataclasses, json
+from demo import Circle, label_of
+
+circle = Circle(id="c-1", kind="circle", radius=2.5, tags=["round", "blue"])
+print(json.dumps(dataclasses.asdict(label_of(circle))))
+"#,
+    )
+    .expect("writes the driver");
+
+    assert_eq!(
+        normalize(&run("python3", &["check.py"], &root)),
+        normalize(LABEL),
+        "the body, as Python, answered differently"
+    );
+}
+
+#[test]
+fn the_generated_rust_compiles_and_produces_the_shape_it_promised() {
+    let dir = scratch("rust_wire");
+    let root = emit(&rust::Rust, &dir);
+    std::fs::create_dir_all(dir.join("src")).expect("makes src");
+    std::fs::rename(root.join("demo.rs"), dir.join("src/demo.rs")).expect("moves the module");
+
+    // A crate of its own, with an empty workspace table so that it is not
+    // taken for a member of the one it happens to sit inside.
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[package]
+name = "wire-check"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[workspace]
+"#,
+    )
+    .expect("writes the manifest");
+    std::fs::write(
+        dir.join("src/main.rs"),
+        r#"#[allow(dead_code, unused_variables)]
+mod demo;
+
+fn main() {
+    // Read the way it arrives, written the way it leaves: what comes out is
+    // whatever the generated struct believes the shape to be.
+    let arrived = std::env::args().nth(1).expect("a circle");
+    let circle: demo::Circle = serde_json::from_str(&arrived).expect("reads as a Circle");
+    let label = demo::label_of(circle.clone());
+
+    let red: demo::Colour = serde_json::from_str("\"red\"").expect("red is one of them");
+    let green = serde_json::from_str::<demo::Colour>("\"green\"").is_ok();
+
+    println!(
+        "{}",
+        serde_json::json!({ "circle": circle, "label": label, "red": red, "green": green })
+    );
+}
+"#,
+    )
+    .expect("writes the driver");
+
+    // Built somewhere that survives between runs, so the dependencies are
+    // compiled once rather than every time.
+    let target = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("rust_wire_target");
+    let output = Command::new(env!("CARGO"))
+        .args(["run", "--quiet", "--offline", "--"])
+        .arg(expected_json())
+        .env("CARGO_TARGET_DIR", &target)
+        .current_dir(&dir)
+        .output()
+        .expect("runs cargo");
+    let said = String::from_utf8_lossy(&output.stderr);
+
+    if !output.status.success() && !said.contains("error[") && !said.contains("could not compile") {
+        // Nothing was wrong with the code: the dependencies are not on this
+        // machine and there is no network to fetch them with.
+        eprintln!("serde is not available offline; skipping\n{said}");
+        return;
+    }
+    assert!(
+        output.status.success(),
+        "the generated Rust did not build:\n{said}"
+    );
+
+    let produced: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
+    assert_eq!(
+        normalize(&produced["circle"].to_string()),
+        normalize(&expected_json()),
+        "the generated struct read and wrote a different shape than unitype \
+         says the value has"
+    );
+    assert_eq!(
+        normalize(&produced["label"].to_string()),
+        normalize(LABEL),
+        "the body, as Rust, answered differently"
+    );
+    assert_eq!(produced["red"], "red", "a name travels as the string it is");
+    assert_eq!(
+        produced["green"], false,
+        "a string the union does not admit should be refused"
     );
 }
 
