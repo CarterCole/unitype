@@ -30,9 +30,21 @@ def bubble_sort(xs):
     return xs
 
 
+def reverse(xs):
+    """Turns a list around.
+
+    It proves ``reverse<T>``, a claim about every ``T`` at once, which it can
+    only do by never looking at one. ``conform`` checks that it does not: it
+    passes tokens, then the same shape relabelled, and the answers have to
+    match up.
+    """
+    return list(reversed(xs))
+
+
 # What this module can prove, by the entry name a manifest points at.
 PROVES = {
     "bubble_sort": bubble_sort,
+    "reverse": reverse,
 }
 
 

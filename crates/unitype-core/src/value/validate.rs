@@ -240,11 +240,16 @@ impl CheckedWorkspace {
                             _ => mismatch(errors),
                         }
                     }
-                    TypeDef::Enum(d) => match value {
+                    TypeDef::Enum(_) => match value {
                         Value::Variant {
                             tag,
                             value: payload,
-                        } => match d.variants.iter().find(|v| v.name.as_str() == tag) {
+                        } => match self
+                            .variants_of(r)
+                            .unwrap_or_default()
+                            .iter()
+                            .find(|v| v.name.as_str() == tag)
+                        {
                             Some(variant) => self.check_value(
                                 payload,
                                 &variant.payload,
@@ -252,8 +257,9 @@ impl CheckedWorkspace {
                                 errors,
                             ),
                             None => {
+                                let variants = self.variants_of(r).unwrap_or_default();
                                 let known: Vec<&str> =
-                                    d.variants.iter().map(|v| v.name.as_str()).collect();
+                                    variants.iter().map(|v| v.name.as_str()).collect();
                                 errors.push(ValueError::saying(
                                     path,
                                     ty,
@@ -416,6 +422,8 @@ mod tests {
             {"name":"w","ty":"float"}]},
         {"k":"alias","name":"AnyShape","target":{"k":"union","members":["Circle","Rect"]}},
         {"k":"enum","name":"Color","variants":[{"name":"Red"},{"name":"Custom","payload":"str"}]},
+        {"k":"enum","name":"Maybe","params":[{"name":"T"}],"variants":[
+            {"name":"nothing"},{"name":"just","payload":{"k":"param","name":"T"}}]},
         {"k":"struct","name":"Order","fields":[
             {"name":"items","ty":"[Circle]"}]}]}]}"#;
 
@@ -439,6 +447,31 @@ mod tests {
             .err()
             .map(|e| e.iter().map(ToString::to_string).collect())
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_generic_enum_checks_its_payload_at_the_argument_not_at_the_parameter() {
+        let ws = ws();
+        let maybe_int = Type::Ref(TypeRef {
+            universe: Some(Ident::new("demo").unwrap()),
+            name: Ident::new("Maybe").unwrap(),
+            args: vec![Type::I64],
+        });
+        assert!(
+            ws.validate(&Value::variant("just", Value::Int(1)), &maybe_int)
+                .is_ok(),
+            "a `Maybe<i64>` holding an integer is exactly what it says"
+        );
+        let wrong = ws
+            .validate(
+                &Value::variant("just", Value::Str("one".into())),
+                &maybe_int,
+            )
+            .unwrap_err();
+        assert!(
+            wrong.iter().any(|e| e.to_string().contains("i64")),
+            "and holding a string is refused by name: {wrong:?}"
+        );
     }
 
     #[test]

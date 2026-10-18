@@ -33,7 +33,7 @@ use crate::check::CheckedWorkspace;
 use crate::check::error::describe;
 use crate::check::subst::{bind, substitute, substitute_ref};
 use crate::ident::QualifiedName;
-use crate::ir::{Field, LiteralValue, Type, TypeDef, TypeRef, fits_f64_exactly};
+use crate::ir::{Field, LiteralValue, Type, TypeDef, TypeRef, Variant, fits_f64_exactly};
 
 /// How deep an alias may expand before the checker gives up.
 ///
@@ -108,6 +108,31 @@ impl CheckedWorkspace {
                     name: f.name.clone(),
                     ty: substitute(&f.ty, &subst),
                     doc: f.doc.clone(),
+                })
+                .collect(),
+        )
+    }
+
+    /// Every variant a reference's target has, with its generic arguments
+    /// applied.
+    ///
+    /// `None` for anything that is not an enum. The counterpart of
+    /// [`CheckedWorkspace::fields_of`]: a `Maybe<i64>` carries an `i64`, not a
+    /// `T`, and anything checking a payload has to see it that way.
+    pub fn variants_of(&self, r: &TypeRef) -> Option<Vec<Variant>> {
+        let ix = self.ref_target(r).and_then(|q| self.resolve(&q))?;
+        let def = self.def_at(ix);
+        let TypeDef::Enum(d) = def else {
+            return None;
+        };
+        let subst = bind(def.params(), &r.args);
+        Some(
+            d.variants
+                .iter()
+                .map(|v| Variant {
+                    name: v.name.clone(),
+                    payload: substitute(&v.payload, &subst),
+                    doc: v.doc.clone(),
                 })
                 .collect(),
         )

@@ -276,7 +276,10 @@ fn scratch_project(name: &str, extra_proof: Option<&str>) -> PathBuf {
     write(
         dir.join("universes/demo.json"),
         r#"{"name":"demo","functions":[
-            {"name":"sort","params":[{"name":"xs","ty":"[int]"}],"ret":"[int]"}]}"#,
+            {"name":"sort","params":[{"name":"xs","ty":"[int]"}],"ret":"[int]"},
+            {"name":"reverse","params_decl":[{"name":"T"}],
+             "params":[{"name":"xs","ty":{"k":"list","of":{"k":"param","name":"T"}}}],
+             "ret":{"k":"list","of":{"k":"param","name":"T"}}}]}"#,
     );
     write(
         dir.join("impls/demo.json"),
@@ -314,7 +317,7 @@ fn proofs_of_the_demo_agree_with_each_other() {
         return;
     }
     let report = json(&["conform"]);
-    let sort = &report.as_array().expect("a list")[0];
+    let sort = &report["suites"].as_array().expect("a list")[0];
     assert_eq!(sort["signature"], "demo::sort");
     assert_eq!(sort["agreed"], true, "{sort}");
     // Named rather than counted: which proofs take part depends on how this
@@ -388,7 +391,7 @@ fn a_disagreement_is_found_even_where_nobody_said_what_the_answer_should_be() {
     let output = in_project(&dir, &["--json", "conform"]);
     let report: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
 
-    let case = report[0]["cases"]
+    let case = report["suites"][0]["cases"]
         .as_array()
         .expect("cases")
         .iter()
@@ -398,6 +401,76 @@ fn a_disagreement_is_found_even_where_nobody_said_what_the_answer_should_be() {
         case["agreed"], false,
         "two proofs saying different things is a disagreement whether or not \
          anybody worked out the right answer first: {case}"
+    );
+}
+
+#[test]
+fn a_generic_proposition_is_checked_without_a_vector_file() {
+    // Nothing under `conform/` mentions `reverse`. Its signature is enough.
+    let report = json(&["conform", "--sig", "demo::reverse"]);
+    assert_eq!(
+        report["suites"].as_array().map(Vec::len),
+        Some(0),
+        "no file, so no suite: {report}"
+    );
+    let theorem = &report["theorems"].as_array().expect("a list")[0];
+    assert_eq!(theorem["signature"], "demo::reverse");
+    assert_eq!(theorem["params"], serde_json::json!(["T"]));
+    assert_eq!(theorem["held"], true, "{theorem}");
+    let proofs = theorem["proofs"].as_array().expect("a list");
+    assert!(
+        proofs.iter().any(|p| p == "reverse.rust"),
+        "the compiled-in proof should have been held to it: {theorem}"
+    );
+    if have_python() {
+        assert!(
+            proofs.iter().any(|p| p == "reverse.py"),
+            "and so should the Python one: {theorem}"
+        );
+        for trial in theorem["trials"].as_array().expect("a list") {
+            assert_eq!(
+                trial["verdicts"]["reverse.py"], "held",
+                "ran, rather than being skipped into holding: {trial}"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_proof_that_only_works_at_one_type_has_not_proved_the_generic_claim() {
+    // Sorting integers is a fine thing to do to a `[i64]`. Claiming it proves
+    // `reverse<T>` says it works at every `T`, and at `str` it does not — and
+    // even where it ran, it sorted, which a proof that cannot see the elements
+    // could not have done.
+    let dir = scratch_project(
+        "conform_not_parametric",
+        Some(
+            r#",{"id":"reverse.cheat","proves":"demo::reverse","environment":"here",
+                "entry":"builtin::merge_sort","cost":{"time":"o_n_log_n","space":"o_n"}}"#,
+        ),
+    );
+    let output = in_project(&dir, &["conform"]);
+
+    assert_eq!(
+        output.status.code(),
+        Some(4),
+        "the same exit as a disagreement"
+    );
+    let said = String::from_utf8_lossy(&output.stdout);
+    assert!(said.contains("demo::reverse<T>"), "{said}");
+    assert!(said.contains("reverse.cheat"), "{said}");
+    assert!(
+        said.contains("naturality"),
+        "the law it broke is named: {said}"
+    );
+    assert!(
+        said.contains("demo::sort  1 proof, 3 cases  — all agree"),
+        "the other proposition is still reported on its own terms: {said}"
+    );
+    let complained = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        complained.contains("free theorem"),
+        "and the summary says what kind of failure it was: {complained}"
     );
 }
 

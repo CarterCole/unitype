@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use crate::ident::Ident;
-use crate::ir::{Type, TypeParamDecl, TypeRef};
+use crate::ir::{FunctionSig, NamedParam, Type, TypeParamDecl, TypeRef};
 
 /// A binding of generic parameters to arguments.
 pub type Subst = HashMap<Ident, Type>;
@@ -42,12 +42,59 @@ pub fn substitute_ref(r: &TypeRef, subst: &Subst) -> TypeRef {
     }
 }
 
+impl FunctionSig {
+    /// This proposition at these type arguments.
+    ///
+    /// `reverse<T>` is a claim about every `T` at once, which is not something
+    /// a value can be checked against: a value has one type. Applying it to a
+    /// type gives the particular claim `reverse<i64>`, with no parameters left
+    /// to bind. Arity is the caller's business, as with [`bind`].
+    pub fn instantiate(&self, args: &[Type]) -> FunctionSig {
+        let subst = bind(&self.params_decl, args);
+        FunctionSig {
+            params_decl: Vec::new(),
+            params: self
+                .params
+                .iter()
+                .map(|p| NamedParam {
+                    name: p.name.clone(),
+                    ty: substitute(&p.ty, &subst),
+                    doc: p.doc.clone(),
+                })
+                .collect(),
+            ret: substitute(&self.ret, &subst),
+            ..self.clone()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn id(s: &str) -> Ident {
         Ident::new(s).unwrap()
+    }
+
+    #[test]
+    fn applying_a_proposition_to_a_type_leaves_nothing_generic() {
+        let generic = FunctionSig {
+            name: id("first"),
+            doc: None,
+            params_decl: vec![TypeParamDecl::new(id("T"))],
+            params: vec![NamedParam::new(
+                id("xs"),
+                Type::Param { name: id("T") }.list(),
+            )],
+            ret: Type::Param { name: id("T") }.optional(),
+            refines: None,
+            body: None,
+            meta: Default::default(),
+        };
+        let at_strings = generic.instantiate(&[Type::String]);
+        assert!(at_strings.params_decl.is_empty());
+        assert_eq!(at_strings.params[0].ty, Type::String.list());
+        assert_eq!(at_strings.ret, Type::String.optional());
     }
 
     #[test]

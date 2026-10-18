@@ -69,20 +69,24 @@ today.
   because the engine is a large thing to build for a capability not every
   workspace wants.
 - **Code generation.** TypeScript, Python, and Rust — checked by running the
-  generated code and comparing what it produces against what unitype says the
-  value is.
+  generated code in all three and comparing what it produces against what
+  unitype says the value is. The Python and Node harnesses are each reached
+  through the dispatcher as a proof.
 - **The `unitype` command**, over all of it.
 - **Conformance.** The proofs of one proposition checked against each other,
   since `sort` and `reverse` have the same type and only running both tells them
   apart.
+- **Free theorems.** A generic proposition is checked from its signature alone.
+  A proof of `reverse<T>` cannot look at a `T`, so every `T` it returns must be
+  one it was given, and relabelling them must commute with it — which the
+  harness checks without a vector file, by passing tokens and then the same
+  shape relabelled. A proof that sorts when it sees integers is caught.
 - **Reflection.** A built-in universe describes the representation, and is
   checked against it, so it cannot drift.
 
-542 tests, including the subtyping laws and the inference laws as property
+569 tests, including the subtyping laws and the inference laws as property
 tests, and pinned golden vectors that make canonical drift impossible to do by
-accident. 553 with the sandbox turned on.
-
-**Not built.** A Go backend.
+accident. 580 with the sandbox turned on.
 
 ```bash
 cargo test
@@ -122,7 +126,10 @@ cargo run -p unitype-cli -- --project examples/demo bridge \
 cargo run -p unitype-cli -- --project examples/demo cast --lang rust \
     --type demo::Circle --data '{"id":"c-1","kind":"circle","radius":2.5}'
 
-# Do the two proofs of sort actually agree? (Exit code 4 if not.)
+# Do the two proofs of sort actually agree? And do the two proofs of
+# reverse<T> — one Rust, one Python — obey the theorem their signature
+# states, with nobody having written down a single expected answer?
+# (Exit code 4 if not.)
 cargo run -p unitype-cli -- --project examples/demo conform
 
 # A declaration, shown as the value it is — and checked against the type
@@ -267,7 +274,9 @@ trusts.
   all proofs of a proposition actually agree.
 - **A proof that lies is caught.** Arguments and results are checked against the
   signature at the dispatch boundary, so an implementation returning the wrong
-  shape fails loudly instead of propagating.
+  shape fails loudly instead of propagating. A proof of a generic proposition
+  is held to more: its signature is a theorem about it, and `conform` checks
+  the theorem.
 - **Word aliases are for people, not for machines.** They are derived, stable,
   and lengthen on collision like an abbreviated git hash — but `ut1:` addresses
   remain the authority. Propositions get them too: a call is as much a thing you

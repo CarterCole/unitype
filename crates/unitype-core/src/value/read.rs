@@ -154,10 +154,10 @@ impl CheckedWorkspace {
                     value: payload,
                 },
             ) => {
-                let Some(TypeDef::Enum(d)) = self.ref_target(r).and_then(|q| self.def(&q)) else {
+                let Some(variants) = self.variants_of(r) else {
                     return value.clone();
                 };
-                match d.variants.iter().find(|v| v.name.as_str() == tag) {
+                match variants.iter().find(|v| v.name.as_str() == tag) {
                     Some(variant) => Value::variant(
                         tag.clone(),
                         self.canonical(payload, &variant.payload.clone()),
@@ -317,11 +317,13 @@ impl CheckedWorkspace {
                         let fields = self.fields_of(r).unwrap_or_default();
                         self.interpret(json, &Type::Record { fields })
                     }
-                    TypeDef::Enum(d) => match json {
+                    TypeDef::Enum(_) => match json {
                         // A bare string names a variant that carries nothing,
                         // which is how enums are usually written by hand.
                         Json::String(tag)
-                            if d.variants
+                            if self
+                                .variants_of(r)
+                                .unwrap_or_default()
                                 .iter()
                                 .any(|v| v.name.as_str() == tag && v.payload == Type::Unit) =>
                         {
@@ -332,7 +334,8 @@ impl CheckedWorkspace {
                             else {
                                 return Value::from_json(json);
                             };
-                            let Some(variant) = d.variants.iter().find(|v| v.name.as_str() == tag)
+                            let variants = self.variants_of(r).unwrap_or_default();
+                            let Some(variant) = variants.iter().find(|v| v.name.as_str() == tag)
                             else {
                                 return Value::from_json(json);
                             };

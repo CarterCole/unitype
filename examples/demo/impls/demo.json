@@ -59,6 +59,22 @@
         "notes": "Rust's sort, compiled to WebAssembly."
       },
       "notes": "The portable proof. Same code as the fast one, running somewhere it cannot reach anything. Needs `--features wasm` and `examples/wasm-guest` built; without either it is simply unavailable, which is what an environment that is not there should look like."
+    },
+    {
+      "id": "reverse.rust",
+      "proves": "demo::reverse",
+      "environment": "here",
+      "entry": "builtin::reverse",
+      "cost": { "time": "o_n", "space": "o_n" },
+      "notes": "Never looks at an element, which is what `reverse<T>` requires and what `conform` checks."
+    },
+    {
+      "id": "reverse.py",
+      "proves": "demo::reverse",
+      "environment": "python",
+      "entry": "reverse",
+      "cost": { "time": "o_n", "space": "o_n" },
+      "notes": "The same claim in Python, held to the same theorem."
     }
   ]
 }

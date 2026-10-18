@@ -523,6 +523,48 @@ integer spelled as a TypeScript `number` is exact only to 2^53, that a Python
 A profile is data, so a language this specification never mentions is added by
 writing one.
 
+### 7.6 Free theorems *(specified, in progress)*
+
+A generic proposition says more than a vector file can. A proof of
+`reverse<T> : [T] -> [T]` is given no way to look at a `T` — no comparison, no
+field, nothing but the shape around it — so whatever it does, it does the same
+way at every `T`. That is a theorem about every proof of the proposition, and
+it follows from the signature alone (Reynolds's abstraction theorem; Wadler,
+*Theorems for free!*). Two consequences are checkable by running a proof, and
+neither needs anyone to say what the right answer is:
+
+- **Conservation.** Every `T` in the result was one of the `T`s in the
+  arguments.
+- **Naturality.** For any relabelling `g` of the `T`s, `f(map g xs) = map g (f
+  xs)`.
+
+The harness instantiates each parameter at `i64`, fills every parameter
+position with a distinct token, and runs the proof. Which token landed where
+is read off the result by walking the declared return type, which is what makes
+conservation checkable and predicts the answer at every other type. The proof
+is then run at `str` with the tokens made distinct strings, at `bool` with them
+all made equal, and at `i64` with them collapsed onto two values, and each
+answer must be the first one relabelled the same way. One type is enough to
+test a parametric proof at; the other three are there to catch a proof that is
+not parametric — one that sorts when it sees integers, compares two elements
+and branches, or only works at the type its author had in mind.
+
+Trials are deterministic: lists and maps of sizes 0, 1, 2, 3 and 5; optionals
+alternately absent and present; enums cycling through their variants. A trial
+where a proof could not be run is skipped, not counted; a proof that fails at a
+relabelled type has broken naturality, since a proof of a claim about every type
+that only works at one has not proved the claim.
+
+What is not covered, and is reported as such rather than checked wrongly: a
+**bounded** parameter can be looked at through its bound, so the theorem weakens
+to naturality over bound-respecting relabellings; a parameter under an
+**untagged union** cannot be found in a value; and a parameter type that cannot
+be filled from nothing — a function, an interface — cannot be tried.
+
+A call to a generic proposition is made *at* type arguments (§7's boundary
+checks run against the instantiated signature), and the proof is not told
+which: a proof of a generic proposition is one that did not need to know.
+
 ---
 
 ## 8. Links *(specified, in progress)*

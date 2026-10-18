@@ -162,7 +162,8 @@ enum Command {
         data: Option<String>,
     },
 
-    /// Check that the proofs of each proposition agree.
+    /// Check that the proofs of each proposition agree, and that proofs of a
+    /// generic one obey its free theorem.
     Conform {
         /// Only this proposition, as `universe::name`.
         #[arg(long, value_name = "SIGNATURE")]

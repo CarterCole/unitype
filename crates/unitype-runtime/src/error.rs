@@ -134,6 +134,20 @@ pub enum DispatchError {
         /// What was wrong with it.
         errors: Vec<ValueError>,
     },
+    /// The wrong number of type arguments.
+    ///
+    /// A generic proposition is a claim about every type at once, and a value
+    /// has one type, so the call has to say which type it is at before anything
+    /// can be checked against it.
+    #[error("`{sig}` takes {expected} type argument(s), but {got} were given")]
+    TypeArity {
+        /// The signature being called.
+        sig: QualifiedName,
+        /// How many it takes.
+        expected: usize,
+        /// How many were given.
+        got: usize,
+    },
     /// The wrong number of arguments.
     #[error("`{sig}` takes {expected} argument(s), but {got} were given")]
     Arity {

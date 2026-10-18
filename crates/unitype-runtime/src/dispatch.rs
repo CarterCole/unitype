@@ -235,23 +235,63 @@ impl Dispatcher {
     }
 
     /// Calls a proposition, choosing a proof by policy.
+    ///
+    /// For a generic proposition use [`Dispatcher::call_at`]: this is the same
+    /// call with no type arguments, which is only enough when there is nothing
+    /// to bind.
     pub fn call<'a>(
         &'a self,
         sig: &'a QualifiedName,
         args: Vec<Value>,
         policy: &'a Policy,
     ) -> BoxFuture<'a, Result<Invocation, DispatchError>> {
-        Box::pin(async move { self.dispatch(sig, args, policy).await })
+        Box::pin(async move { self.dispatch(sig, &[], args, policy).await })
+    }
+
+    /// Calls a generic proposition at particular types.
+    ///
+    /// `reverse<T>` says something about every `T`; `reverse<i64>` is the
+    /// claim a list of integers can actually be checked against. The type
+    /// arguments bind the proposition's parameters in order, and both sides of
+    /// the boundary are then checked against the instantiated signature. The
+    /// proof itself is not told: a proof of a generic proposition is one that
+    /// did not need to know.
+    pub fn call_at<'a>(
+        &'a self,
+        sig: &'a QualifiedName,
+        type_args: &'a [Type],
+        args: Vec<Value>,
+        policy: &'a Policy,
+    ) -> BoxFuture<'a, Result<Invocation, DispatchError>> {
+        Box::pin(async move { self.dispatch(sig, type_args, args, policy).await })
     }
 
     async fn dispatch(
         &self,
         name: &QualifiedName,
+        type_args: &[Type],
         args: Vec<Value>,
         policy: &Policy,
     ) -> Result<Invocation, DispatchError> {
-        let Some(sig) = self.ws.sig(name) else {
+        let Some(declared) = self.ws.sig(name) else {
             return Err(DispatchError::UnknownSignature(name.clone()));
+        };
+
+        if declared.params_decl.len() != type_args.len() {
+            return Err(DispatchError::TypeArity {
+                sig: name.clone(),
+                expected: declared.params_decl.len(),
+                got: type_args.len(),
+            });
+        }
+        // Only a generic signature has anything to substitute, so only one
+        // pays for the copy.
+        let instantiated;
+        let sig = if type_args.is_empty() {
+            declared
+        } else {
+            instantiated = declared.instantiate(type_args);
+            &instantiated
         };
 
         if sig.params.len() != args.len() {
@@ -916,6 +956,106 @@ mod tests {
         assert!(
             answer.implementation.as_str().ends_with("#body"),
             "the body proved it, and the dispatcher answered what the body asked"
+        );
+    }
+
+    const GENERIC_WS: &str = r#"{"universes":[{"name":"demo","functions":[
+        {"name":"reverse","params_decl":[{"name":"T"}],
+         "params":[{"name":"xs","ty":{"k":"list","of":{"k":"param","name":"T"}}}],
+         "ret":{"k":"list","of":{"k":"param","name":"T"}}}]}]}"#;
+
+    /// One proof of a generic proposition, which never looks at an element.
+    fn reversing_dispatcher() -> Dispatcher {
+        let ws = Arc::new(
+            check_workspace(Workspace::from_json(GENERIC_WS).expect("reads")).expect("checks"),
+        );
+        let mut registry = Registry::new();
+        registry.register_native_sync("reverse", |mut args| {
+            let Value::List(items) = args.remove(0) else {
+                return Err(ExecError::Untyped("expected a list".into()));
+            };
+            Ok(Value::List(items.into_iter().rev().collect()))
+        });
+        registry
+            .register(Implementation::new(
+                "reverse.here",
+                q("demo::reverse"),
+                here(),
+                "reverse",
+                ImplProfile::new(BigO::ON, BigO::ON),
+            ))
+            .unwrap();
+        Dispatcher::new(ws, Arc::new(registry))
+    }
+
+    #[tokio::test]
+    async fn a_generic_proposition_is_called_at_a_type() {
+        let dispatcher = reversing_dispatcher();
+        let words = Value::List(vec![Value::Str("a".into()), Value::Str("b".into())]);
+
+        let at_strings = dispatcher
+            .call_at(
+                &q("demo::reverse"),
+                &[Type::String],
+                vec![words],
+                &Policy::Default,
+            )
+            .await
+            .expect("answers");
+        assert_eq!(
+            at_strings.value,
+            Value::List(vec![Value::Str("b".into()), Value::Str("a".into())])
+        );
+
+        let at_ints = dispatcher
+            .call_at(
+                &q("demo::reverse"),
+                &[Type::I64],
+                vec![list(&[1, 2])],
+                &Policy::Default,
+            )
+            .await
+            .expect("answers");
+        assert_eq!(at_ints.value, list(&[2, 1]));
+    }
+
+    #[tokio::test]
+    async fn a_generic_proposition_called_without_its_type_says_what_is_missing() {
+        // A list of integers is not a `[T]`; it is a `[i64]`. The call has to
+        // say so before either side of the boundary can be checked.
+        let err = reversing_dispatcher()
+            .call(&q("demo::reverse"), vec![list(&[1, 2])], &Policy::Default)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                DispatchError::TypeArity {
+                    expected: 1,
+                    got: 0,
+                    ..
+                }
+            ),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_boundary_is_checked_at_the_type_the_call_named() {
+        // Calling at `str` with integers is a mistake in the call, and it is
+        // caught before any proof runs.
+        let err = reversing_dispatcher()
+            .call_at(
+                &q("demo::reverse"),
+                &[Type::String],
+                vec![list(&[1, 2])],
+                &Policy::Default,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, DispatchError::BadArgument { index: 0, .. }),
+            "{err}"
         );
     }
 }

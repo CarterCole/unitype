@@ -70,6 +70,13 @@
       "ret": "[int]"
     },
     {
+      "name": "reverse",
+      "doc": "Turns a list around. Generic, which says more than it looks like it does: a proof of this may not look at the elements, so the harness can hold it to that without being told a single expected answer.",
+      "params_decl": [{ "name": "T" }],
+      "params": [{ "name": "xs", "ty": { "k": "list", "of": { "k": "param", "name": "T" } } }],
+      "ret": { "k": "list", "of": { "k": "param", "name": "T" } }
+    },
+    {
       "name": "label_of",
       "doc": "Describes a rectangle. Written as a body rather than implemented, so it needs nobody to prove it and runs in every language once generated.",
       "params": [{ "name": "r", "ty": "Rect" }],

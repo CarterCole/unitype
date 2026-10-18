@@ -296,7 +296,7 @@ pub async fn run(dispatcher: &Dispatcher, suite: &Suite) -> Result<Report, Confo
 }
 
 /// Whether a failure was the environment's rather than the proof's.
-fn unavailable(error: &crate::error::DispatchError) -> bool {
+pub(crate) fn unavailable(error: &crate::error::DispatchError) -> bool {
     match error {
         crate::error::DispatchError::Exec { source, .. } => source.is_environmental(),
         crate::error::DispatchError::Unusable { .. }
