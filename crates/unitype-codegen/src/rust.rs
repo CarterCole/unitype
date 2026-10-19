@@ -192,7 +192,7 @@ fn emit_struct(
         w.block(
             format!("pub struct {} {{", profile.name(&def.name)),
             "}",
-            |w| emit_fields(w, &fields, profile),
+            |w| emit_fields(w, ws, &fields, profile),
         );
     }
 
@@ -229,7 +229,12 @@ fn emit_struct(
     }
 }
 
-fn emit_fields(w: &mut CodeWriter, fields: &[Field], profile: &LanguageProfile) {
+fn emit_fields(
+    w: &mut CodeWriter,
+    ws: &CheckedWorkspace,
+    fields: &[Field],
+    profile: &LanguageProfile,
+) {
     for field in fields {
         if let Some(doc) = &field.doc {
             w.comment("/// ", doc);
@@ -245,9 +250,21 @@ fn emit_fields(w: &mut CodeWriter, fields: &[Field], profile: &LanguageProfile) 
             w.write(format_args!("#[serde(rename = {:?})]", field.name.as_str()));
         }
         // Absent and null are one state, so an absent field neither has to be
-        // sent nor has to arrive.
-        if matches!(field.ty, Type::Optional { .. }) {
-            w.line("#[serde(default, skip_serializing_if = \"Option::is_none\")]");
+        // sent nor has to arrive. What may be absent is what the canonical
+        // form leaves out: anything that expands to `T?`, `null` or `any`. A
+        // `()` holds nothing else, so it is never sent at all.
+        let skip = match ws.expand_alias(&field.ty) {
+            Type::Optional { .. } => {
+                Some("#[serde(default, skip_serializing_if = \"Option::is_none\")]")
+            }
+            Type::Any => {
+                Some("#[serde(default, skip_serializing_if = \"serde_json::Value::is_null\")]")
+            }
+            Type::Unit => Some("#[serde(default, skip_serializing)]"),
+            _ => None,
+        };
+        if let Some(attribute) = skip {
+            w.line(attribute);
         }
         w.write(format_args!(
             "pub {}: {},",
@@ -1299,6 +1316,32 @@ mod tests {
             ),
             "what was given first, as given, then the rest as declared, \
              inherited ones included: {out}"
+        );
+    }
+
+    #[test]
+    fn an_alias_an_any_and_a_null_need_not_be_sent_or_arrive_either() {
+        let out = generate(ABSENT);
+        assert!(
+            out.contains(
+                "#[serde(default, skip_serializing_if = \"Option::is_none\")]\n    pub when: Later,"
+            ),
+            "an alias of an optional is still one: {out}"
+        );
+        assert!(
+            out.contains(
+                "#[serde(default, skip_serializing_if = \"serde_json::Value::is_null\")]\n    \
+                 pub extra: serde_json::Value,"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains("#[serde(default, skip_serializing)]\n    pub nothing: (),"),
+            "a `()` holds nothing else, so it is never sent: {out}"
+        );
+        assert!(
+            out.contains("pub struct Entry {\n    pub at: i64,"),
+            "a field that has to be there is still sent and still has to arrive: {out}"
         );
     }
 

@@ -32,9 +32,10 @@ use unitype_core::{Ident, Workspace};
 /// strings, and bodies: one that builds a record, some that fold a list,
 /// compare and add, say what to do when something is absent, and take an enum
 /// apart, and some that put a value where one that may be absent is wanted,
-/// leave out a field that may be absent, or are a constant with something
-/// absent beside things that are there — which Python and TypeScript take as
-/// they are and Rust has to be told about.
+/// leave out fields that may be absent (an optional, an alias of one, an `any`
+/// and a `null`), or are a constant with something absent beside things that
+/// are there — which Python and TypeScript take as they are and Rust has to be
+/// told about.
 const UNIVERSE: &str = r#"{"universes":[{"name":"demo",
   "doc":"Shapes, and the things done to them.",
   "types":[
@@ -56,6 +57,10 @@ const UNIVERSE: &str = r#"{"universes":[{"name":"demo",
     {"k":"struct","name":"Mark","fields":[
         {"name":"at","ty":"i64"},{"name":"before","ty":"i64?"}]},
     {"k":"struct","name":"Pin","extends":"Mark","fields":[{"name":"label","ty":"str?"}]},
+    {"k":"alias","name":"Later","target":"i64?"},
+    {"k":"struct","name":"Loose","fields":[
+        {"name":"at","ty":"i64"},{"name":"when","ty":"Later"},
+        {"name":"extra","ty":"any"},{"name":"nothing","ty":"null"}]},
     {"k":"enum","name":"Size","variants":[{"name":"small"},{"name":"large","payload":"i64"}]}],
   "functions":[
     {"name":"label_of","doc":"Describes a circle.",
@@ -127,6 +132,8 @@ const UNIVERSE: &str = r#"{"universes":[{"name":"demo",
      "body":{"k":"make_list","items":[{"k":"var","name":"x"},{"k":"lit","value":null}]}},
     {"name":"pin_at","params":[{"name":"x","ty":"i64"}],"ret":"Pin",
      "body":{"k":"make_record","ty":"Pin","fields":[{"name":"at","value":{"k":"var","name":"x"}}]}},
+    {"name":"loose_at","params":[{"name":"x","ty":"i64"}],"ret":"Loose",
+     "body":{"k":"make_record","ty":"Loose","fields":[{"name":"at","value":{"k":"var","name":"x"}}]}},
     {"name":"gaps","params":[],"ret":"[[i64?]]","body":{"k":"lit","value":[[1,null],[2]]}},
     {"name":"pair","params":[],"ret":{"k":"tuple","items":["i64?","i64?","str"]},
      "body":{"k":"lit","value":{"$tuple":[3,null,"x"]}}}]}]}"#;
@@ -140,14 +147,15 @@ const LABEL: &str = r#"{"text":"c-1","sides":0}"#;
 /// `last_of([1,2,3])` and `last_of([])`, `radius_of` the circle, `positive(3)`
 /// and `positive(-1)`, `note_or_else` of the circle with `"x"` and with nothing
 /// and of the circle noted `"hi"`, `hint` of each size, `noted_as` of the noted
-/// circle and the plain one with `"hi"`, `with_gap(5)`, `pin_at(5)`, `gaps()`
-/// and `pair()`.
+/// circle and the plain one with `"hi"`, `with_gap(5)`, `pin_at(5)`,
+/// `loose_at(5)`, `gaps()` and `pair()`.
 const FORMS: &str = r#"{"total":10,"ordered":true,"unordered":false,"note":"none",
     "small":0,"large":42,"two_tags":true,
     "mark":{"at":5,"before":5},"last":3,"last_empty":null,"radius":2.5,
     "positive":3,"not_positive":null,"fallback":"x","no_fallback":null,"noted":"hi",
     "small_hint":null,"large_hint":21,"noted_as":true,"not_noted_as":false,
-    "with_gap":[5,null],"pin":{"at":5},"gaps":[[1,null],[2]],"pair":[3,null,"x"]}"#;
+    "with_gap":[5,null],"pin":{"at":5},"loose":{"at":5},"gaps":[[1,null],[2]],
+    "pair":[3,null,"x"]}"#;
 
 fn workspace() -> CheckedWorkspace {
     check_workspace(Workspace::from_json(UNIVERSE).expect("reads")).expect("checks")
@@ -158,6 +166,24 @@ fn circle_type() -> Type {
         Ident::new("demo").unwrap(),
         Ident::new("Circle").unwrap(),
     ))
+}
+
+/// A `Loose` with nothing in any field that may be absent, as unitype writes
+/// it: with none of those fields there at all, so reading it back takes a
+/// struct that does not need them to arrive.
+fn loose_json() -> String {
+    let ws = workspace();
+    let loose = Type::Ref(TypeRef::qualified(
+        Ident::new("demo").unwrap(),
+        Ident::new("Loose").unwrap(),
+    ));
+    let value = ws
+        .read_json(
+            r#"{"at":5,"when":null,"extra":null,"nothing":null}"#,
+            &loose,
+        )
+        .expect("a real Loose");
+    ws.write_json(&value, &loose).expect("writes")
 }
 
 /// The value every language is asked to produce, and what unitype says it is.
@@ -309,8 +335,8 @@ fn the_generated_typescript_loads_and_produces_the_shape_it_promised() {
     std::fs::write(
         root.join("check.mjs"),
         r#"import {
-  gaps, hint, label_of, last_of, mark, measure, note_or, note_or_else, noted_as, ordered, pair,
-  pin_at, positive, radius_of, total, two_tags, with_gap,
+  gaps, hint, label_of, last_of, loose_at, mark, measure, note_or, note_or_else, noted_as, ordered,
+  pair, pin_at, positive, radius_of, total, two_tags, with_gap,
 } from "./demo.ts";
 
 // Written against the generated `Circle` interface: every field it requires,
@@ -345,6 +371,7 @@ const forms = {
   not_noted_as: noted_as(circle, "hi"),
   with_gap: with_gap(5),
   pin: pin_at(5),
+  loose: loose_at(5),
   gaps: gaps(),
   pair: pair(),
 };
@@ -385,8 +412,8 @@ fn the_generated_python_runs_the_body_it_was_given() {
         root.join("check.py"),
         r#"import dataclasses, json
 from demo import (
-    Circle, gaps, hint, label_of, last_of, mark, measure, note_or, note_or_else, noted_as,
-    ordered, pair, pin_at, positive, radius_of, total, two_tags, with_gap,
+    Circle, gaps, hint, label_of, last_of, loose_at, mark, measure, note_or, note_or_else,
+    noted_as, ordered, pair, pin_at, positive, radius_of, total, two_tags, with_gap,
 )
 
 
@@ -420,6 +447,7 @@ forms = {
     "not_noted_as": noted_as(circle, "hi"),
     "with_gap": with_gap(5),
     "pin": sent(pin_at(5)),
+    "loose": sent(loose_at(5)),
     "gaps": gaps(),
     "pair": pair(),
 }
@@ -482,6 +510,9 @@ fn main() {
         ..circle.clone()
     };
 
+    let arrived = std::env::args().nth(2).expect("a loose record");
+    let loose: demo::Loose = serde_json::from_str(&arrived).expect("reads as a Loose");
+
     let red: demo::Colour = serde_json::from_str("\"red\"").expect("red is one of them");
     let green = serde_json::from_str::<demo::Colour>("\"green\"").is_ok();
 
@@ -508,13 +539,17 @@ fn main() {
         "not_noted_as": demo::noted_as(circle.clone(), "hi".to_string()),
         "with_gap": demo::with_gap(5),
         "pin": demo::pin_at(5),
+        "loose": demo::loose_at(5),
         "gaps": demo::gaps(),
         "pair": demo::pair(),
     });
 
     println!(
         "{}",
-        serde_json::json!({ "circle": circle, "label": label, "red": red, "green": green, "forms": forms })
+        serde_json::json!({
+            "circle": circle, "loose": loose, "label": label, "red": red, "green": green,
+            "forms": forms,
+        })
     );
 }
 "#,
@@ -524,24 +559,41 @@ fn main() {
     // Built somewhere that survives between runs, so the dependencies are
     // compiled once rather than every time.
     let target = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("rust_wire_target");
-    let output = Command::new(env!("CARGO"))
-        .args(["run", "--quiet", "--offline", "--"])
-        .arg(expected_json())
-        .env("CARGO_TARGET_DIR", &target)
-        .current_dir(&dir)
-        .output()
-        .expect("runs cargo");
-    let said = String::from_utf8_lossy(&output.stderr);
-
-    if !output.status.success() && !said.contains("error[") && !said.contains("could not compile") {
+    let cargo = |args: &[&str]| {
+        Command::new(env!("CARGO"))
+            .args(args)
+            .env("CARGO_TARGET_DIR", &target)
+            .current_dir(&dir)
+            .output()
+            .expect("runs cargo")
+    };
+    // Built before it is run, so that a check that fails when it runs is not
+    // taken for dependencies that could not be found.
+    let built = cargo(&["build", "--quiet", "--offline"]);
+    let said = String::from_utf8_lossy(&built.stderr);
+    if !built.status.success() && !said.contains("error[") && !said.contains("could not compile") {
         // Nothing was wrong with the code: the dependencies are not on this
         // machine and there is no network to fetch them with.
         eprintln!("serde is not available offline; skipping\n{said}");
         return;
     }
     assert!(
-        output.status.success(),
+        built.status.success(),
         "the generated Rust did not build:\n{said}"
+    );
+
+    let output = cargo(&[
+        "run",
+        "--quiet",
+        "--offline",
+        "--",
+        &expected_json(),
+        &loose_json(),
+    ]);
+    assert!(
+        output.status.success(),
+        "the generated Rust failed when it ran:\n{}",
+        String::from_utf8_lossy(&output.stderr)
     );
 
     let produced: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
@@ -550,6 +602,12 @@ fn main() {
         normalize(&expected_json()),
         "the generated struct read and wrote a different shape than unitype \
          says the value has"
+    );
+    assert_eq!(
+        normalize(&produced["loose"].to_string()),
+        normalize(&loose_json()),
+        "fields that may be absent have to read when they are not there, and \
+         be left out again when they are written"
     );
     assert_eq!(
         normalize(&produced["label"].to_string()),
