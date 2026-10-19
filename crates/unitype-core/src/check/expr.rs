@@ -63,6 +63,19 @@ pub(crate) fn verify(ws: &CheckedWorkspace, diags: &mut Diagnostics) {
 }
 
 impl CheckedWorkspace {
+    /// The type an expression produces where `env` says what each name holds,
+    /// or `None` if it is not well-typed there.
+    ///
+    /// Nothing is reported. This is for asking about a body the checker has
+    /// already passed — a backend that has to say in its own language what one
+    /// part of the body produces, for instance — not for finding out whether it
+    /// would pass.
+    pub fn type_of_expr(&self, expr: &Expr, env: &HashMap<Ident, Type>) -> Option<Type> {
+        let mut diags = Diagnostics::default();
+        let produced = self.type_of(expr, env, &TypePath::root(), &mut diags);
+        produced.filter(|_| diags.is_ok())
+    }
+
     /// The type an expression produces, or `None` if it is not well-typed.
     ///
     /// Problems are reported into `diags` as they are found; returning `None`
@@ -771,6 +784,28 @@ mod tests {
             msgs.iter().any(|m| m.contains("does not produce")),
             "{msgs:?}"
         );
+    }
+
+    #[test]
+    fn asking_what_an_expression_produces_says_so_without_reporting_anything() {
+        use std::collections::HashMap;
+
+        use crate::Ident;
+        use crate::ir::{Expr, Type, TypeRef};
+
+        let ws = check(&universe("")).expect("checks");
+        let env = HashMap::from([(
+            Ident::new("u").unwrap(),
+            Type::Ref(TypeRef::qualified(
+                Ident::new("demo").unwrap(),
+                Ident::new("User").unwrap(),
+            )),
+        )]);
+        assert_eq!(
+            ws.type_of_expr(&Expr::var("u").field("first"), &env),
+            Some(Type::String)
+        );
+        assert_eq!(ws.type_of_expr(&Expr::var("nope"), &env), None);
     }
 
     #[test]
