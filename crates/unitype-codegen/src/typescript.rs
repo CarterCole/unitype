@@ -139,6 +139,14 @@ fn imports(universe: &Universe) -> Vec<(String, Vec<String>)> {
     for sig in &universe.functions {
         sig.params.iter().for_each(|p| note(&p.ty));
         note(&sig.ret);
+        // What a fold carries is the one type a body names.
+        if let Some(body) = &sig.body {
+            body.walk(&mut |e| {
+                if let Some(ty) = carried(e) {
+                    note(&ty);
+                }
+            });
+        }
     }
 
     found
@@ -533,8 +541,11 @@ pub(crate) fn expression(expr: &Expr, profile: &LanguageProfile) -> String {
             body,
             ..
         } => format!(
-            "{}.reduce(({}, {}) => {}, {})",
+            "{}.reduce{}(({}, {}) => {}, {})",
             expression(list, profile),
+            carried(expr)
+                .map(|t| format!("<{}>", profile.spell(&t)))
+                .unwrap_or_default(),
             profile.name(acc),
             profile.name(item),
             arrow(expression(body, profile)),
@@ -574,6 +585,24 @@ pub(crate) fn expression(expr: &Expr, profile: &LanguageProfile) -> String {
             format!("(($m) => {chain})({subject})")
         }
     }
+}
+
+/// What a fold's `reduce` is told it carries, if anything.
+///
+/// TypeScript takes what a fold carries from its starting value, which can say
+/// less than the fold does: from `null` it would carry only `null`, from one
+/// variant only that variant, and from a record that leaves a field out a
+/// record without it. So where the fold says what it carries, or starts from a
+/// struct or an enum it builds, which is what the checker takes it to carry,
+/// the `reduce` says so too. Any other fold is left as TypeScript reads it.
+fn carried(fold: &Expr) -> Option<Type> {
+    let Expr::Fold { init, ty, .. } = fold else {
+        return None;
+    };
+    ty.clone().or_else(|| match init.as_ref() {
+        Expr::MakeRecord { ty, .. } | Expr::MakeVariant { ty, .. } => Some(Type::Ref(ty.clone())),
+        _ => None,
+    })
 }
 
 /// The body of an arrow function, bracketed if it would otherwise be read as a
@@ -950,6 +979,80 @@ mod tests {
                          "var":"x","body":{"k":"var","name":"x"}}}]}]}"#,
         );
         assert!(out.contains("=== null"), "absent has to stay absent: {out}");
+    }
+
+    #[test]
+    fn a_fold_carries_what_it_says_rather_than_what_it_starts_from() {
+        let out = generate(
+            r#"{"universes":[{"name":"demo","functions":[
+                {"name":"last_of","params":[{"name":"xs","ty":"[i64]"}],"ret":"i64?",
+                 "body":{"k":"fold","list":{"k":"var","name":"xs"},"init":{"k":"lit","value":null},
+                         "ty":"int?","acc":"p","item":"x","body":{"k":"var","name":"x"}}},
+                {"name":"total","params":[{"name":"xs","ty":"[i64]"}],"ret":"i64",
+                 "body":{"k":"fold","list":{"k":"var","name":"xs"},"init":{"k":"lit","value":0},
+                         "acc":"t","item":"x","body":{"k":"prim","op":"add","args":[
+                            {"k":"var","name":"t"},{"k":"var","name":"x"}]}}}]}]}"#,
+        );
+        assert!(
+            out.contains("xs.reduce<number | null>((p, x) => x, null)"),
+            "starting from `null` alone, it could only ever carry `null`: {out}"
+        );
+        assert!(
+            out.contains("xs.reduce((t, x) => (t + x), 0)"),
+            "a count that starts at `0` already says it counts numbers: {out}"
+        );
+    }
+
+    #[test]
+    fn a_fold_that_starts_from_a_value_it_builds_carries_the_whole_type() {
+        let out = generate(
+            r#"{"universes":[{"name":"demo","types":[
+                {"k":"enum","name":"Size","variants":[{"name":"small"},{"name":"large","payload":"i64"}]},
+                {"k":"struct","name":"Seen","fields":[{"name":"at","ty":"i64"},{"name":"first","ty":"i64?"}]}],
+              "functions":[
+                {"name":"biggest","params":[{"name":"xs","ty":"[i64]"}],"ret":"Size",
+                 "body":{"k":"fold","list":{"k":"var","name":"xs"},
+                         "init":{"k":"make_variant","ty":"Size","tag":"small"},"acc":"s","item":"x",
+                         "body":{"k":"make_variant","ty":"Size","tag":"large","value":{"k":"var","name":"x"}}}},
+                {"name":"seen","params":[{"name":"xs","ty":"[i64]"}],"ret":"Seen",
+                 "body":{"k":"fold","list":{"k":"var","name":"xs"},
+                         "init":{"k":"make_record","ty":"Seen","fields":[
+                            {"name":"at","value":{"k":"lit","value":0}}]},"acc":"s","item":"x",
+                         "body":{"k":"make_record","ty":"Seen","fields":[
+                            {"name":"at","value":{"k":"var","name":"x"}},
+                            {"name":"first","value":{"k":"field","of":{"k":"var","name":"s"},"name":"first"}}]}}}]}]}"#,
+        );
+        assert!(
+            out.contains(
+                "xs.reduce<Size>((s, x) => ({ $tag: \"large\", value: x }), { $tag: \"small\" })"
+            ),
+            "one variant is not the whole enum: {out}"
+        );
+        assert!(
+            out.contains("xs.reduce<Seen>("),
+            "a record that leaves a field out does not say the field is there: {out}"
+        );
+    }
+
+    #[test]
+    fn a_type_only_a_fold_names_is_imported_too() {
+        let out = generate(
+            r#"{"universes":[
+                {"name":"geo","types":[{"k":"struct","name":"Point",
+                 "fields":[{"name":"x","ty":"i64"}]}]},
+                {"name":"demo","functions":[
+                {"name":"furthest","params":[{"name":"xs","ty":"[i64]"}],"ret":"i64",
+                 "body":{"k":"field","name":"x","of":{"k":"fold","list":{"k":"var","name":"xs"},
+                         "init":{"k":"make_record","ty":"geo::Point","fields":[
+                            {"name":"x","value":{"k":"lit","value":0}}]},"acc":"p","item":"x",
+                         "body":{"k":"make_record","ty":"geo::Point","fields":[
+                            {"name":"x","value":{"k":"var","name":"x"}}]}}}}]}]}"#,
+        );
+        assert!(out.contains("xs.reduce<Point>("), "{out}");
+        assert!(
+            out.contains(r#"import type { Point } from "./geo";"#),
+            "no signature names it, but the fold does: {out}"
+        );
     }
 
     #[test]
