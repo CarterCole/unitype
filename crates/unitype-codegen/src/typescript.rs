@@ -93,8 +93,8 @@ fn universe_file(
 
     for def in ordered_defs(universe) {
         match def {
-            TypeDef::Struct(d) => emit_struct(&mut w, d, profile),
-            TypeDef::Interface(d) => emit_interface(&mut w, d, profile),
+            TypeDef::Struct(d) => emit_struct(&mut w, ws, d, profile),
+            TypeDef::Interface(d) => emit_interface(&mut w, ws, d, profile),
             TypeDef::Enum(d) => emit_enum(&mut w, d, profile),
             TypeDef::Alias(d) => emit_alias(&mut w, d, profile),
         }
@@ -164,7 +164,12 @@ fn jsdoc(w: &mut CodeWriter, text: &str) {
     w.line(" */");
 }
 
-fn emit_struct(w: &mut CodeWriter, def: &StructDef, profile: &LanguageProfile) {
+fn emit_struct(
+    w: &mut CodeWriter,
+    ws: &CheckedWorkspace,
+    def: &StructDef,
+    profile: &LanguageProfile,
+) {
     if let Some(doc) = &def.doc {
         jsdoc(w, doc);
     }
@@ -195,10 +200,15 @@ fn emit_struct(w: &mut CodeWriter, def: &StructDef, profile: &LanguageProfile) {
         w.line(head.trim_end_matches(" {").to_string() + " {}");
         return;
     }
-    w.block(head, "}", |w| emit_fields(w, &own, profile));
+    w.block(head, "}", |w| emit_fields(w, ws, &own, profile));
 }
 
-fn emit_interface(w: &mut CodeWriter, def: &InterfaceDef, profile: &LanguageProfile) {
+fn emit_interface(
+    w: &mut CodeWriter,
+    ws: &CheckedWorkspace,
+    def: &InterfaceDef,
+    profile: &LanguageProfile,
+) {
     if let Some(doc) = &def.doc {
         jsdoc(w, doc);
     }
@@ -217,10 +227,15 @@ fn emit_interface(w: &mut CodeWriter, def: &InterfaceDef, profile: &LanguageProf
         w.line(head.trim_end_matches(" {").to_string() + " {}");
         return;
     }
-    w.block(head, "}", |w| emit_fields(w, &own, profile));
+    w.block(head, "}", |w| emit_fields(w, ws, &own, profile));
 }
 
-fn emit_fields(w: &mut CodeWriter, fields: &[&Field], profile: &LanguageProfile) {
+fn emit_fields(
+    w: &mut CodeWriter,
+    ws: &CheckedWorkspace,
+    fields: &[&Field],
+    profile: &LanguageProfile,
+) {
     for field in fields {
         if let Some(doc) = &field.doc {
             jsdoc(w, doc);
@@ -229,8 +244,13 @@ fn emit_fields(w: &mut CodeWriter, fields: &[&Field], profile: &LanguageProfile)
             w.comment("// ", caveat);
         }
         // A field that may be absent is optional *and* nullable, because the
-        // wire has one way of being absent and TypeScript has two.
-        let optional = matches!(field.ty, Type::Optional { .. });
+        // wire has one way of being absent and TypeScript has two. What may be
+        // absent is what the canonical form leaves out, and so what a body may
+        // leave out: anything that expands to `T?`, `null` or `any`.
+        let optional = matches!(
+            ws.expand_alias(&field.ty),
+            Type::Optional { .. } | Type::Unit | Type::Any
+        );
         w.write(format_args!(
             "{}{}: {};",
             profile.name(&field.name),
@@ -802,6 +822,35 @@ mod tests {
         assert!(
             out.contains("note?: string | null;"),
             "the wire has one way of being absent and TypeScript has two: {out}"
+        );
+    }
+
+    #[test]
+    fn an_alias_an_any_and_a_null_may_be_absent_too() {
+        let out = generate(
+            r#"{"universes":[{"name":"demo","types":[
+                {"k":"alias","name":"Later","target":"i64?"},
+                {"k":"struct","name":"Entry","fields":[
+                    {"name":"at","ty":"i64"},{"name":"when","ty":"Later"},
+                    {"name":"extra","ty":"any"},{"name":"nothing","ty":"null"}]}],
+              "functions":[
+                {"name":"entry","params":[{"name":"x","ty":"i64"}],"ret":"Entry",
+                 "body":{"k":"make_record","ty":"Entry","fields":[
+                    {"name":"at","value":{"k":"var","name":"x"}}]}}]}]}"#,
+        );
+        assert!(
+            out.contains("when?: Later;"),
+            "an alias of an optional is still one: {out}"
+        );
+        assert!(out.contains("extra?: unknown;"), "{out}");
+        assert!(out.contains("nothing?: null;"), "{out}");
+        assert!(
+            out.contains("return { at: x };"),
+            "a body may leave all three out, so the interface has to let it: {out}"
+        );
+        assert!(
+            out.contains("at: number;"),
+            "a field that has to be there still has to be there: {out}"
         );
     }
 
