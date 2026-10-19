@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 2ac9b5047a7c863b9a92f945f06ca340dc542d3c71b2359a4322766bf2e7f803 # shrinks to (decls, universe_names, decl_names, order) = ([Decl { universe: 0, kind: Struct, parts: [Prim("i64")] }, Decl { universe: 0, kind: Struct, parts: [Prim("i64")] }, Decl { universe: 0, kind: Struct, parts: [Prim("i64")] }, Decl { universe: 0, kind: Struct, parts: [Union([Ref(0), Ref(3)])] }, Decl { universe: 2, kind: Struct, parts: [MapFromStr(Ref(0)), Union([Ref(5), Prim("bool"), List(Prim("bool"))])] }, Decl { universe: 0, kind: Struct, parts: [Tuple([Prim("str"), Ref(5), Prim("bool")])] }], ["north", "east", "south"], ["Zebra", "Apple", "Mango", "Kiwi", "Fig", "Quince"], [0, 1, 2, 3, 4, 5])
