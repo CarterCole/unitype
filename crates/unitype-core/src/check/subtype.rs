@@ -20,18 +20,22 @@
 //!
 //! Lists, optionals, futures, and both halves of a map are covariant.
 //! Functions are contravariant in parameters and covariant in returns. A
-//! declaration's own generic arguments are invariant: v1 has no way to declare
-//! variance, and guessing it would be unsound.
+//! declaration's own generic arguments vary the way its definition uses them:
+//! a `Box<T>` that holds a `T` is covariant, a `Sink<T>` that takes one is
+//! contravariant, a parameter used both ways is invariant, and one used nowhere
+//! accepts any argument at all. Nothing declares this. It is inferred from
+//! where each parameter occurs, which is a fact about the declaration rather
+//! than a guess about it.
 //!
-//! Covariant map keys and covariant field overrides are sound here because
-//! values are immutable wire data. A system that mutated through these types
-//! would need stricter rules.
+//! Covariant map keys, covariant field overrides, and covariant generic
+//! arguments are sound here because values are immutable wire data. A system
+//! that mutated through these types would need stricter rules.
 
 use std::collections::HashSet;
 
-use crate::check::CheckedWorkspace;
 use crate::check::error::describe;
 use crate::check::subst::{bind, substitute, substitute_ref};
+use crate::check::{CheckedWorkspace, Variance};
 use crate::ident::QualifiedName;
 use crate::ir::{Field, LiteralValue, Type, TypeDef, TypeRef, Variant, fits_f64_exactly};
 
@@ -291,7 +295,7 @@ impl CheckedWorkspace {
         seen: &mut HashSet<(TypeRef, TypeRef)>,
     ) -> bool {
         if from == to {
-            return self.args_equivalent(&a.args, &b.args, seen);
+            return self.args_related(to, &a.args, &b.args, seen);
         }
         // Inheritance is a claim within one world.
         if from.universe != to.universe {
@@ -306,21 +310,32 @@ impl CheckedWorkspace {
         self.defs[ix.0].ancestors.iter().any(|ancestor| {
             let ancestor = substitute_ref(ancestor, &subst);
             self.ref_target(&ancestor).as_ref() == Some(to)
-                && self.args_equivalent(&ancestor.args, &b.args, seen)
+                && self.args_related(to, &ancestor.args, &b.args, seen)
         })
     }
 
-    /// Generic arguments are invariant, so each pair must go both ways.
-    fn args_equivalent(
+    /// Generic arguments to one declaration, each compared the way that
+    /// declaration uses it.
+    ///
+    /// An argument whose variance is not known yet has to fit both ways, which
+    /// is never wrong, only strict.
+    fn args_related(
         &self,
+        of: &QualifiedName,
         a: &[Type],
         b: &[Type],
         seen: &mut HashSet<(TypeRef, TypeRef)>,
     ) -> bool {
+        let variance = self.variance_of(of).unwrap_or_default();
         a.len() == b.len()
-            && a.iter()
-                .zip(b)
-                .all(|(x, y)| self.sub(x, y, seen) && self.sub(y, x, seen))
+            && a.iter().zip(b).enumerate().all(|(i, (x, y))| {
+                match variance.get(i).copied().unwrap_or(Variance::Invariant) {
+                    Variance::Unused => true,
+                    Variance::Covariant => self.sub(x, y, seen),
+                    Variance::Contravariant => self.sub(y, x, seen),
+                    Variance::Invariant => self.sub(x, y, seen) && self.sub(y, x, seen),
+                }
+            })
     }
 }
 
@@ -344,6 +359,29 @@ mod tests {
                 {"name":"value","ty":"i64"},{"name":"kids","ty":"[Tree]"}]},
             {"k":"struct","name":"Box","params":[{"name":"T"}],
              "fields":[{"name":"item","ty":{"k":"param","name":"T"}}]},
+            {"k":"struct","name":"Labelled","params":[{"name":"T"}],
+             "extends":{"name":"Box","args":[{"k":"param","name":"T"}]},
+             "fields":[{"name":"label","ty":"str"}]},
+            {"k":"struct","name":"Sink","params":[{"name":"T"}],"fields":[
+                {"name":"take","ty":{"k":"function",
+                    "params":[{"k":"param","name":"T"}],"ret":"unit"}}]},
+            {"k":"struct","name":"Cell","params":[{"name":"T"}],"fields":[
+                {"name":"get","ty":{"k":"function","params":[],"ret":{"k":"param","name":"T"}}},
+                {"name":"set","ty":{"k":"function",
+                    "params":[{"k":"param","name":"T"}],"ret":"unit"}}]},
+            {"k":"struct","name":"Tag","params":[{"name":"T"}],
+             "fields":[{"name":"label","ty":"str"}]},
+            {"k":"struct","name":"Branch","params":[{"name":"T"}],"fields":[
+                {"name":"value","ty":{"k":"param","name":"T"}},
+                {"name":"kids","ty":{"k":"list","of":
+                    {"k":"ref","name":"Branch","args":[{"k":"param","name":"T"}]}}}]},
+            {"k":"struct","name":"Ping","params":[{"name":"T"}],"fields":[
+                {"name":"reply","ty":{"k":"function","ret":"unit","params":[
+                    {"k":"ref","name":"Pong","args":[{"k":"param","name":"T"}]}]}}]},
+            {"k":"struct","name":"Pong","params":[{"name":"T"}],"fields":[
+                {"name":"value","ty":{"k":"param","name":"T"}},
+                {"name":"back","ty":{"k":"function","ret":"unit","params":[
+                    {"k":"ref","name":"Ping","args":[{"k":"param","name":"T"}]}]}}]},
             {"k":"alias","name":"Id","target":"str"},
             {"k":"enum","name":"Color","variants":[{"name":"Red"}]}]},
         {"name":"other","types":[
@@ -545,16 +583,79 @@ mod tests {
         assert!(!ws.is_subtype(&ty("Tree"), &ty("Shape")));
     }
 
+    /// A declaration applied to two arguments.
+    fn both(name: &str, narrow: Type, wide: Type) -> (Type, Type) {
+        (
+            ty(name).with_args(vec![narrow]),
+            ty(name).with_args(vec![wide]),
+        )
+    }
+
     #[test]
-    fn generic_arguments_do_not_vary() {
+    fn a_generic_that_holds_its_argument_narrows_with_it() {
         let ws = ws();
-        let of_circle = ty("Box").with_args(vec![ty("Circle")]);
-        let of_shape = ty("Box").with_args(vec![ty("Shape")]);
-        assert!(ws.is_subtype(&of_circle, &of_circle));
+        let (ints, longs) = both("Box", Type::I32, Type::I64);
+        assert!(ws.is_subtype(&ints, &longs));
+        assert!(!ws.is_subtype(&longs, &ints));
+        let (circles, shapes) = both("Box", ty("Circle"), ty("Shape"));
+        assert!(ws.is_subtype(&circles, &shapes));
+        assert!(!ws.is_subtype(&shapes, &circles));
+    }
+
+    #[test]
+    fn a_generic_that_takes_its_argument_widens_against_it() {
+        let ws = ws();
+        let (for_circles, for_shapes) = both("Sink", ty("Circle"), ty("Shape"));
         assert!(
-            !ws.is_subtype(&of_circle, &of_shape),
-            "without declared variance, guessing would be unsound"
+            ws.is_subtype(&for_shapes, &for_circles),
+            "something that takes any shape takes a circle"
         );
+        assert!(!ws.is_subtype(&for_circles, &for_shapes));
+    }
+
+    #[test]
+    fn a_generic_that_uses_its_argument_both_ways_does_not_vary() {
+        let ws = ws();
+        let (circles, shapes) = both("Cell", ty("Circle"), ty("Shape"));
+        assert!(ws.is_subtype(&circles, &circles));
+        assert!(!ws.is_subtype(&circles, &shapes));
+        assert!(!ws.is_subtype(&shapes, &circles));
+    }
+
+    #[test]
+    fn an_argument_used_nowhere_accepts_anything() {
+        let ws = ws();
+        let (numbers, strings) = both("Tag", Type::I64, Type::String);
+        assert!(ws.is_subtype(&numbers, &strings));
+        assert!(ws.is_subtype(&strings, &numbers));
+    }
+
+    #[test]
+    fn a_recursive_generic_narrows_through_itself() {
+        let ws = ws();
+        let (circles, shapes) = both("Branch", ty("Circle"), ty("Shape"));
+        assert!(ws.is_subtype(&circles, &shapes));
+        assert!(!ws.is_subtype(&shapes, &circles));
+    }
+
+    #[test]
+    fn a_mutually_recursive_pair_varies_once_it_settles() {
+        let ws = ws();
+        let (pong_circles, pong_shapes) = both("Pong", ty("Circle"), ty("Shape"));
+        assert!(ws.is_subtype(&pong_circles, &pong_shapes));
+        let (ping_circles, ping_shapes) = both("Ping", ty("Circle"), ty("Shape"));
+        assert!(ws.is_subtype(&ping_shapes, &ping_circles));
+        assert!(!ws.is_subtype(&ping_circles, &ping_shapes));
+    }
+
+    #[test]
+    fn a_generic_child_fits_a_parent_at_a_wider_argument() {
+        let ws = ws();
+        let circles = ty("Labelled").with_args(vec![ty("Circle")]);
+        let (_, shapes) = both("Box", ty("Circle"), ty("Shape"));
+        assert!(ws.is_subtype(&circles, &shapes));
+        let (_, numbers) = both("Box", Type::I32, Type::I64);
+        assert!(!ws.is_subtype(&circles, &numbers));
     }
 
     #[test]

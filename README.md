@@ -55,8 +55,9 @@ today.
 
 - **The symbolic core.** Types, values, canonical form, content addressing, word
   aliases.
-- **The checker.** Inheritance, subtyping, refinement, generic bounds, and
-  structural addressing that erases names across a whole workspace.
+- **The checker.** Inheritance, subtyping, refinement, generic bounds,
+  variance inferred from where each parameter occurs, and structural
+  addressing that erases names across a whole workspace.
 - **Bridges.** Derived from two declarations, composed along a path, and run
   through the same expression language a person writes a proof in.
 - **Reading.** Text becomes a value *against* a type, which is what lets an
@@ -84,9 +85,9 @@ today.
 - **Reflection.** A built-in universe describes the representation, and is
   checked against it, so it cannot drift.
 
-569 tests, including the subtyping laws and the inference laws as property
+595 tests, including the subtyping laws and the inference laws as property
 tests, and pinned golden vectors that make canonical drift impossible to do by
-accident. 580 with the sandbox turned on.
+accident. 606 with the sandbox turned on.
 
 ```bash
 cargo test

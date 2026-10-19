@@ -85,6 +85,20 @@ Notes on the choices, each of which affects what is representable:
 A `map` key type must be `string`, `i32`, `i64`, a non-boolean literal, or a
 union of those, so that a map is representable as an object in every target.
 
+**Variance.** `optional`, `list`, `future`, both halves of a `map`, `tuple`
+items, `record` fields, `union` members, and a function's result are
+covariant; a function's parameters are contravariant. A declared generic's
+arguments vary the way the declaration uses them. Nothing declares this: each
+parameter is covariant if it occurs only in covariant positions, contravariant
+if only in contravariant ones, invariant if in both, and unused if nowhere, in
+which case any argument fits any other. A struct or interface counts its
+fields, inherited ones included, and the arguments it passes to its
+supertypes; an enum counts its payloads; an alias counts its target. An
+occurrence inside another generic composes with that generic's variance, so
+declarations that mention each other are solved together, from unused upward
+until nothing changes. This is sound because values are immutable data, and it
+changes no serialization and no address.
+
 ### 1.2 Identifiers **(frozen)**
 
 An identifier matches `[A-Za-z_][A-Za-z0-9_]*`, ASCII only.
