@@ -55,8 +55,9 @@ today.
 
 - **The symbolic core.** Types, values, canonical form, content addressing, word
   aliases.
-- **The checker.** Inheritance, subtyping, refinement, generic bounds, and
-  structural addressing that erases names across a whole workspace.
+- **The checker.** Inheritance, subtyping, refinement, generic bounds,
+  variance inferred from where each parameter occurs, and structural
+  addressing that erases names across a whole workspace.
 - **Bridges.** Derived from two declarations, composed along a path, and run
   through the same expression language a person writes a proof in.
 - **The expression language.** Total by construction, and now able to say

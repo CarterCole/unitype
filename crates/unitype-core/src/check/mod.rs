@@ -23,6 +23,7 @@ mod resolve;
 mod shape;
 mod subst;
 mod subtype;
+mod variance;
 
 use std::collections::HashMap;
 
@@ -36,6 +37,7 @@ pub use apply::CallError;
 pub use error::{CheckError, CheckErrorKind, Diagnostics, PathSeg, TypePath};
 pub use subst::{Subst, bind, substitute, substitute_ref};
 pub use subtype::SubtypeFailure;
+pub use variance::Variance;
 
 /// A position in a checked workspace's declaration table.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -56,6 +58,9 @@ pub(crate) struct DefEntry {
     /// Every field including inherited ones, parents first, with overrides
     /// applied where they were declared.
     pub(crate) flat_fields: Vec<Field>,
+    /// How each generic parameter may vary, in declaration order. Empty until
+    /// inheritance is flattened, since inherited fields are occurrences too.
+    pub(crate) variance: Vec<Variance>,
     pub(crate) decl: TypeId,
     pub(crate) shape: Option<TypeId>,
 }
@@ -98,6 +103,9 @@ pub fn check_workspace(ws: Workspace) -> Result<CheckedWorkspace, Diagnostics> {
     if !diags.is_ok() {
         return Err(diags);
     }
+    // Everything from here on may ask whether one type fits another, and a
+    // generic's arguments fit according to its variance.
+    variance::compute(&mut checked);
 
     inherit::verify(&checked, &mut diags);
     bounds::verify(&checked, &mut diags);
@@ -151,6 +159,7 @@ impl CheckedWorkspace {
                     loc: (ui, di),
                     ancestors: Vec::new(),
                     flat_fields: Vec::new(),
+                    variance: Vec::new(),
                     decl: decl_hash(def),
                     shape: None,
                 });
@@ -252,6 +261,15 @@ impl CheckedWorkspace {
     pub fn flat_fields(&self, name: &QualifiedName) -> Option<&[Field]> {
         self.resolve(name)
             .map(|ix| self.defs[ix.0].flat_fields.as_slice())
+    }
+
+    /// How each of a declaration's generic arguments may vary, in parameter
+    /// order.
+    ///
+    /// Inferred from where each parameter occurs, not declared.
+    pub fn variance_of(&self, name: &QualifiedName) -> Option<&[Variance]> {
+        self.resolve(name)
+            .map(|ix| self.defs[ix.0].variance.as_slice())
     }
 
     /// The address of a declaration as authored.

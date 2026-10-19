@@ -10,7 +10,7 @@ use proptest::prelude::*;
 
 use unitype_core::canon::normalize_type;
 use unitype_core::check::{CheckedWorkspace, check_workspace};
-use unitype_core::ir::{Field, Type, TypeRef};
+use unitype_core::ir::{Field, StructDef, Type, TypeDef, TypeParamDecl, TypeRef};
 use unitype_core::{Ident, Workspace};
 
 const WS: &str = r#"{"universes":[
@@ -23,7 +23,16 @@ const WS: &str = r#"{"universes":[
         {"k":"struct","name":"Tree","fields":[
             {"name":"value","ty":"i64"},{"name":"kids","ty":"[Tree]"}]},
         {"k":"enum","name":"Color","variants":[{"name":"Red"},{"name":"Blue"}]},
-        {"k":"alias","name":"Id","target":"str"}]},
+        {"k":"alias","name":"Id","target":"str"},
+        {"k":"struct","name":"Keep","params":[{"name":"T"}],
+         "fields":[{"name":"item","ty":{"k":"param","name":"T"}}]},
+        {"k":"struct","name":"Sink","params":[{"name":"T"}],"fields":[
+            {"name":"take","ty":{"k":"function","params":[{"k":"param","name":"T"}],"ret":"unit"}}]},
+        {"k":"struct","name":"Cell","params":[{"name":"T"}],"fields":[
+            {"name":"get","ty":{"k":"function","params":[],"ret":{"k":"param","name":"T"}}},
+            {"name":"set","ty":{"k":"function","params":[{"k":"param","name":"T"}],"ret":"unit"}}]},
+        {"k":"struct","name":"Tag","params":[{"name":"T"}],
+         "fields":[{"name":"label","ty":"str"}]}]},
     {"name":"other","types":[
         {"k":"struct","name":"Shape","fields":[{"name":"id","ty":"str"}]}]}]}"#;
 
@@ -37,6 +46,20 @@ fn named(universe: &str, name: &str) -> Type {
         Ident::new(name).unwrap(),
     ))
 }
+
+/// A generic declaration in `demo`, applied to one argument.
+fn applied(name: &str, arg: Type) -> Type {
+    match named("demo", name) {
+        Type::Ref(r) => Type::Ref(TypeRef {
+            args: vec![arg],
+            ..r
+        }),
+        _ => unreachable!("a name is a reference"),
+    }
+}
+
+/// The generics above, one for each way an argument can vary.
+const GENERICS: [&str; 4] = ["Keep", "Sink", "Cell", "Tag"];
 
 /// Types drawn from the workspace above plus the primitives, so that generated
 /// types actually resolve.
@@ -84,9 +107,120 @@ fn arb_type() -> impl Strategy<Value = Type> {
                         .collect(),
                 }
             }),
+            (prop::sample::select(&GENERICS[..]), inner.clone())
+                .prop_map(|(name, arg)| applied(name, arg)),
         ]
     })
     .prop_map(|t| normalize_type(&t))
+}
+
+/// Somewhere a generic parameter `T` can sit.
+///
+/// `exact` keeps to constructors that relate their parts exactly: a list of
+/// `A` fits a list of `B` precisely when `A` fits `B`. An optional or a union
+/// can absorb a difference in what it holds — `T?` is one type at `i64` and at
+/// `i64?` — so they only join in when `exact` is off.
+fn arb_context(exact: bool) -> impl Strategy<Value = Type> {
+    let leaf = prop_oneof![
+        3 => Just(Type::Param { name: ident("T") }),
+        1 => Just(Type::I64),
+        1 => Just(Type::String),
+    ];
+    leaf.prop_recursive(3, 16, 2, move |inner| {
+        let exact_ones = prop_oneof![
+            inner.clone().prop_map(Type::list),
+            inner.clone().prop_map(Type::future),
+            inner.clone().prop_map(|v| v.map_from(Type::String)),
+            (inner.clone(), inner.clone()).prop_map(|(a, b)| Type::Tuple { items: vec![a, b] }),
+            inner.clone().prop_map(|v| Type::Record {
+                fields: vec![Field::new(ident("a"), v)]
+            }),
+            (inner.clone(), inner.clone()).prop_map(|(p, r)| Type::Function {
+                params: vec![p],
+                ret: Box::new(r)
+            }),
+            (prop::sample::select(&GENERICS[..]), inner.clone())
+                .prop_map(|(name, arg)| applied(name, arg)),
+        ];
+        if exact {
+            exact_ones.boxed()
+        } else {
+            prop_oneof![
+                3 => exact_ones,
+                1 => inner.clone().prop_map(Type::optional),
+                1 => (inner.clone(), inner.clone())
+                    .prop_map(|(a, b)| Type::Union { members: vec![a, b] }),
+            ]
+            .boxed()
+        }
+    })
+    .prop_map(|t| normalize_type(&t))
+}
+
+/// Arguments for a generic, drawn small enough that pairs are often related.
+fn arb_argument() -> impl Strategy<Value = Type> {
+    let leaf = prop_oneof![
+        Just(Type::Never),
+        Just(Type::Any),
+        Just(Type::Unit),
+        Just(Type::I32),
+        Just(Type::I64),
+        Just(Type::F64),
+        Just(Type::String),
+        Just(Type::lit_str("circle")),
+        Just(named("demo", "Shape")),
+        Just(named("demo", "Circle")),
+        Just(named("demo", "Rect")),
+        Just(named("demo", "Identified")),
+    ];
+    leaf.prop_recursive(2, 6, 2, |inner| {
+        prop_oneof![
+            inner.clone().prop_map(Type::optional),
+            inner.clone().prop_map(Type::list),
+            (inner.clone(), inner.clone()).prop_map(|(a, b)| Type::Union {
+                members: vec![a, b]
+            }),
+        ]
+    })
+    .prop_map(|t| normalize_type(&t))
+}
+
+fn ident(s: &str) -> Ident {
+    Ident::new(s).unwrap()
+}
+
+/// The workspace above with one more generic struct, `G<T>`, holding these
+/// fields, and a list of itself as well when `recursive` is set.
+fn with_generic(fields: &[Type], recursive: bool) -> CheckedWorkspace {
+    let mut fields: Vec<Field> = fields
+        .iter()
+        .enumerate()
+        .map(|(i, ty)| Field::new(ident(&format!("f{i}")), ty.clone()))
+        .collect();
+    if recursive {
+        let itself = applied("G", Type::Param { name: ident("T") });
+        fields.push(Field::new(ident("kids"), itself.list()));
+    }
+    let mut ws = Workspace::from_json(WS).expect("reads");
+    ws.universes[0].types.push(TypeDef::Struct(StructDef {
+        name: ident("G"),
+        doc: None,
+        params: vec![TypeParamDecl::new(ident("T"))],
+        extends: None,
+        implements: Vec::new(),
+        fields,
+        meta: Default::default(),
+    }));
+    check_workspace(ws).expect("a generated generic checks")
+}
+
+/// `G<arg>`, and the record of its fields at `arg`.
+fn generic_and_fields(ws: &CheckedWorkspace, arg: &Type) -> (Type, Type) {
+    let Type::Ref(r) = applied("G", arg.clone()) else {
+        unreachable!("applied gives a reference");
+    };
+    let fields = ws.fields_of(&r).expect("G is a struct");
+    (Type::Ref(r), normalize_type(&Type::Record { fields }))
 }
 
 proptest! {
@@ -180,6 +314,53 @@ proptest! {
             ws.is_subtype(&takes_b, &takes_a),
             "accepting more and promising less should be usable in place of the reverse"
         );
+    }
+
+    /// A generic fits another application of itself exactly when its fields
+    /// do, once the arguments are put in.
+    ///
+    /// The nominal rule reads only the arguments and the inferred variance;
+    /// the structural one reads every field. Agreeing is what makes the
+    /// inference both safe and no stricter than the fields are.
+    #[test]
+    fn a_generic_fits_exactly_when_its_fields_do(
+        fields in prop::collection::vec(arb_context(true), 1..4),
+        recursive in any::<bool>(),
+        a in arb_argument(),
+        b in arb_argument(),
+    ) {
+        let ws = with_generic(&fields, recursive);
+        let (ga, fa) = generic_and_fields(&ws, &a);
+        let (gb, fb) = generic_and_fields(&ws, &b);
+        prop_assert_eq!(
+            ws.is_subtype(&ga, &gb),
+            ws.is_subtype(&fa, &fb),
+            "G<{}> into G<{}> disagreed with its fields {} into {}",
+            a, b, fa, fb
+        );
+    }
+
+    /// Wherever a parameter sits, a generic fitting means its fields fit.
+    ///
+    /// The other direction can fail here, and should: `T?` is one type at
+    /// `i64` and at `i64?`, but the nominal rule judges by the arguments.
+    #[test]
+    fn a_generic_fits_only_where_its_fields_do(
+        fields in prop::collection::vec(arb_context(false), 1..4),
+        recursive in any::<bool>(),
+        a in arb_argument(),
+        b in arb_argument(),
+    ) {
+        let ws = with_generic(&fields, recursive);
+        let (ga, fa) = generic_and_fields(&ws, &a);
+        let (gb, fb) = generic_and_fields(&ws, &b);
+        if ws.is_subtype(&ga, &gb) {
+            prop_assert!(
+                ws.is_subtype(&fa, &fb),
+                "G<{}> fits G<{}>, but its fields {} do not fit {}",
+                a, b, fa, fb
+            );
+        }
     }
 
     /// The boundary between universes is not crossed by accident, whatever the

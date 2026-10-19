@@ -507,6 +507,39 @@ mod tests {
     }
 
     #[test]
+    fn an_override_may_narrow_a_generic_argument_the_way_it_varies() {
+        const GENERICS: &str = r#"
+            {"k":"struct","name":"Shape","fields":[]},
+            {"k":"struct","name":"Circle","extends":"Shape","fields":[]},
+            {"k":"struct","name":"Box","params":[{"name":"T"}],
+             "fields":[{"name":"item","ty":{"k":"param","name":"T"}}]},
+            {"k":"struct","name":"Sink","params":[{"name":"T"}],"fields":[
+                {"name":"take","ty":{"k":"function",
+                    "params":[{"k":"param","name":"T"}],"ret":"unit"}}]}"#;
+        let with = |base: &str, child: &str| {
+            format!(
+                r#"{{"universes":[{{"name":"demo","types":[{GENERICS},
+                    {{"k":"struct","name":"Base","fields":[{{"name":"f","ty":{base}}}]}},
+                    {{"k":"struct","name":"Child","extends":"Base",
+                     "fields":[{{"name":"f","ty":{child}}}]}}]}}]}}"#
+            )
+        };
+        let box_of = |t: &str| format!(r#"{{"k":"ref","name":"Box","args":["{t}"]}}"#);
+        let sink_of = |t: &str| format!(r#"{{"k":"ref","name":"Sink","args":["{t}"]}}"#);
+
+        let held = check(&with(&box_of("Shape"), &box_of("Circle")));
+        assert!(held.is_ok(), "{:?}", held.err());
+        let taken = check(&with(&sink_of("Circle"), &sink_of("Shape")));
+        assert!(taken.is_ok(), "{:?}", taken.err());
+
+        let msgs = errors(&with(&sink_of("Shape"), &sink_of("Circle")));
+        assert!(
+            msgs[0].contains("is not a subtype of the inherited"),
+            "a sink for circles cannot stand in for a sink for shapes: {msgs:?}"
+        );
+    }
+
+    #[test]
     fn an_override_replaces_the_field_where_it_already_was() {
         let ws = check(
             r#"{"universes":[{"name":"demo","types":[
