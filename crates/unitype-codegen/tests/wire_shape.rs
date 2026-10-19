@@ -29,9 +29,14 @@ use unitype_core::{Ident, Workspace};
 /// inherited field, a discriminating literal, a field that may be absent, and
 /// a list — and the cases most likely to stop a file loading at all: prose
 /// long enough to wrap, prose that tries to end its own comment, a union of
-/// strings, and bodies: one that builds a record, and some that fold a list,
+/// strings, and bodies: one that builds a record, some that fold a list,
 /// compare and add, say what to do when something is absent, and take an enum
-/// apart.
+/// apart, and some that put a value where one that may be absent is wanted,
+/// leave out fields that may be absent (an optional, an alias of one, an `any`
+/// and a `null`), or are a constant with something absent beside things that
+/// are there — which Python and TypeScript take as they are and Rust has to be
+/// told about — and two that bind a value, a pair and a fold that starts from
+/// either of two variants, which TypeScript has to be told about.
 const UNIVERSE: &str = r#"{"universes":[{"name":"demo",
   "doc":"Shapes, and the things done to them.",
   "types":[
@@ -50,6 +55,13 @@ const UNIVERSE: &str = r#"{"universes":[{"name":"demo",
         {"name":"text","ty":"str"},{"name":"sides","ty":"i64"}]},
     {"k":"struct","name":"Step","fields":[
         {"name":"ok","ty":"bool"},{"name":"prev","ty":"i64"},{"name":"started","ty":"bool"}]},
+    {"k":"struct","name":"Mark","fields":[
+        {"name":"at","ty":"i64"},{"name":"before","ty":"i64?"}]},
+    {"k":"struct","name":"Pin","extends":"Mark","fields":[{"name":"label","ty":"str?"}]},
+    {"k":"alias","name":"Later","target":"i64?"},
+    {"k":"struct","name":"Loose","fields":[
+        {"name":"at","ty":"i64"},{"name":"when","ty":"Later"},
+        {"name":"extra","ty":"any"},{"name":"nothing","ty":"null"}]},
     {"k":"enum","name":"Size","variants":[{"name":"small"},{"name":"large","payload":"i64"}]}],
   "functions":[
     {"name":"label_of","doc":"Describes a circle.",
@@ -93,16 +105,72 @@ const UNIVERSE: &str = r#"{"universes":[{"name":"demo",
             {"k":"prim","op":"len","args":[{"k":"field","of":{"k":"var","name":"c"},"name":"tags"}]},
             {"k":"lit","value":2}]},
         {"k":"prim","op":"ne","args":[
-            {"k":"field","of":{"k":"var","name":"c"},"name":"id"},{"k":"lit","value":"x"}]}]}}]}]}"#;
+            {"k":"field","of":{"k":"var","name":"c"},"name":"id"},{"k":"lit","value":"x"}]}]}},
+    {"name":"mark","params":[{"name":"x","ty":"i64"}],"ret":"Mark",
+     "body":{"k":"make_record","ty":"Mark","fields":[
+        {"name":"at","value":{"k":"var","name":"x"}},
+        {"name":"before","value":{"k":"var","name":"x"}}]}},
+    {"name":"last_of","params":[{"name":"xs","ty":"[i64]"}],"ret":"i64?",
+     "body":{"k":"fold","list":{"k":"var","name":"xs"},"init":{"k":"lit","value":null},
+             "ty":"int?","acc":"p","item":"x","body":{"k":"var","name":"x"}}},
+    {"name":"radius_of","params":[{"name":"c","ty":"Circle"}],"ret":"float?",
+     "body":{"k":"field","of":{"k":"var","name":"c"},"name":"radius"}},
+    {"name":"positive","params":[{"name":"x","ty":"i64"}],"ret":"i64?",
+     "body":{"k":"if","cond":{"k":"prim","op":"gt","args":[{"k":"var","name":"x"},{"k":"lit","value":0}]},
+             "then":{"k":"var","name":"x"},"else":{"k":"lit","value":null}}},
+    {"name":"note_or_else","params":[{"name":"c","ty":"Circle"},{"name":"fallback","ty":"str?"}],
+     "ret":"str?",
+     "body":{"k":"case","value":{"k":"field","of":{"k":"var","name":"c"},"name":"note"},"var":"n",
+             "some":{"k":"var","name":"n"},"none":{"k":"var","name":"fallback"}}},
+    {"name":"hint","params":[{"name":"s","ty":"Size"}],"ret":"i64?",
+     "body":{"k":"match","ty":"Size","value":{"k":"var","name":"s"},"arms":[
+        {"tag":"small","body":{"k":"lit","value":null}},
+        {"tag":"large","var":"n","body":{"k":"var","name":"n"}}]}},
+    {"name":"noted_as","params":[{"name":"c","ty":"Circle"},{"name":"s","ty":"str"}],"ret":"bool",
+     "body":{"k":"prim","op":"eq","args":[
+        {"k":"field","of":{"k":"var","name":"c"},"name":"note"},{"k":"var","name":"s"}]}},
+    {"name":"with_gap","params":[{"name":"x","ty":"i64"}],"ret":"[i64?]",
+     "body":{"k":"make_list","items":[{"k":"var","name":"x"},{"k":"lit","value":null}]}},
+    {"name":"pin_at","params":[{"name":"x","ty":"i64"}],"ret":"Pin",
+     "body":{"k":"make_record","ty":"Pin","fields":[{"name":"at","value":{"k":"var","name":"x"}}]}},
+    {"name":"loose_at","params":[{"name":"x","ty":"i64"}],"ret":"Loose",
+     "body":{"k":"make_record","ty":"Loose","fields":[{"name":"at","value":{"k":"var","name":"x"}}]}},
+    {"name":"gaps","params":[],"ret":"[[i64?]]","body":{"k":"lit","value":[[1,null],[2]]}},
+    {"name":"pair","params":[],"ret":{"k":"tuple","items":["i64?","i64?","str"]},
+     "body":{"k":"lit","value":{"$tuple":[3,null,"x"]}}},
+    {"name":"bound_pair","params":[{"name":"x","ty":"i64"}],"ret":{"k":"tuple","items":["i64","str"]},
+     "body":{"k":"let","name":"p",
+             "value":{"k":"make_tuple","items":[{"k":"var","name":"x"},{"k":"lit","value":"x"}]},
+             "body":{"k":"var","name":"p"}}},
+    {"name":"settled","params":[{"name":"xs","ty":"[i64]"}],"ret":"i64",
+     "body":{"k":"let","name":"s",
+             "value":{"k":"fold","list":{"k":"var","name":"xs"},
+                      "init":{"k":"if","cond":{"k":"prim","op":"gt","args":[
+                                 {"k":"prim","op":"len","args":[{"k":"var","name":"xs"}]},{"k":"lit","value":2}]},
+                              "then":{"k":"make_variant","ty":"Size","tag":"small"},
+                              "else":{"k":"make_variant","ty":"Size","tag":"large","value":{"k":"lit","value":1}}},
+                      "acc":"a","item":"x","body":{"k":"var","name":"a"}},
+             "body":{"k":"call","sig":"demo::measure","args":[{"k":"var","name":"s"}]}}}]}]}"#;
 
 /// What the body above produces for the circle every test builds.
 const LABEL: &str = r#"{"text":"c-1","sides":0}"#;
 
 /// What the other bodies produce, asked the same questions in every language:
 /// `total([1,2,3,4])`, `ordered([1,2,2,5])`, `ordered([3,1])`, `note_or` and
-/// `two_tags` of the circle, and `measure` of each size.
+/// `two_tags` of the circle, and `measure` of each size; then `mark(5)`,
+/// `last_of([1,2,3])` and `last_of([])`, `radius_of` the circle, `positive(3)`
+/// and `positive(-1)`, `note_or_else` of the circle with `"x"` and with nothing
+/// and of the circle noted `"hi"`, `hint` of each size, `noted_as` of the noted
+/// circle and the plain one with `"hi"`, `with_gap(5)`, `pin_at(5)`,
+/// `loose_at(5)`, `gaps()` and `pair()`; then `bound_pair(5)`, and `settled` of
+/// `[1,2,3]` and of `[4]`.
 const FORMS: &str = r#"{"total":10,"ordered":true,"unordered":false,"note":"none",
-    "small":0,"large":42,"two_tags":true}"#;
+    "small":0,"large":42,"two_tags":true,
+    "mark":{"at":5,"before":5},"last":3,"last_empty":null,"radius":2.5,
+    "positive":3,"not_positive":null,"fallback":"x","no_fallback":null,"noted":"hi",
+    "small_hint":null,"large_hint":21,"noted_as":true,"not_noted_as":false,
+    "with_gap":[5,null],"pin":{"at":5},"loose":{"at":5},"gaps":[[1,null],[2]],
+    "pair":[3,null,"x"],"bound_pair":[5,"x"],"settled_small":0,"settled_large":2}"#;
 
 fn workspace() -> CheckedWorkspace {
     check_workspace(Workspace::from_json(UNIVERSE).expect("reads")).expect("checks")
@@ -113,6 +181,24 @@ fn circle_type() -> Type {
         Ident::new("demo").unwrap(),
         Ident::new("Circle").unwrap(),
     ))
+}
+
+/// A `Loose` with nothing in any field that may be absent, as unitype writes
+/// it: with none of those fields there at all, so reading it back takes a
+/// struct that does not need them to arrive.
+fn loose_json() -> String {
+    let ws = workspace();
+    let loose = Type::Ref(TypeRef::qualified(
+        Ident::new("demo").unwrap(),
+        Ident::new("Loose").unwrap(),
+    ));
+    let value = ws
+        .read_json(
+            r#"{"at":5,"when":null,"extra":null,"nothing":null}"#,
+            &loose,
+        )
+        .expect("a real Loose");
+    ws.write_json(&value, &loose).expect("writes")
 }
 
 /// The value every language is asked to produce, and what unitype says it is.
@@ -263,7 +349,10 @@ fn the_generated_typescript_loads_and_produces_the_shape_it_promised() {
     // not have parsed.
     std::fs::write(
         root.join("check.mjs"),
-        r#"import { label_of, measure, note_or, ordered, total, two_tags } from "./demo.ts";
+        r#"import {
+  bound_pair, gaps, hint, label_of, last_of, loose_at, mark, measure, note_or, note_or_else,
+  noted_as, ordered, pair, pin_at, positive, radius_of, settled, total, two_tags, with_gap,
+} from "./demo.ts";
 
 // Written against the generated `Circle` interface: every field it requires,
 // and nothing for the one that may be absent.
@@ -273,6 +362,7 @@ const circle = {
   radius: 2.5,
   tags: ["round", "blue"],
 };
+const noted = { ...circle, note: "hi" };
 const forms = {
   total: total([1, 2, 3, 4]),
   ordered: ordered([1, 2, 2, 5]),
@@ -281,6 +371,27 @@ const forms = {
   small: measure({ $tag: "small" }),
   large: measure({ $tag: "large", value: 21 }),
   two_tags: two_tags(circle),
+  mark: mark(5),
+  last: last_of([1, 2, 3]),
+  last_empty: last_of([]),
+  radius: radius_of(circle),
+  positive: positive(3),
+  not_positive: positive(-1),
+  fallback: note_or_else(circle, "x"),
+  no_fallback: note_or_else(circle, null),
+  noted: note_or_else(noted, null),
+  small_hint: hint({ $tag: "small" }),
+  large_hint: hint({ $tag: "large", value: 21 }),
+  noted_as: noted_as(noted, "hi"),
+  not_noted_as: noted_as(circle, "hi"),
+  with_gap: with_gap(5),
+  pin: pin_at(5),
+  loose: loose_at(5),
+  gaps: gaps(),
+  pair: pair(),
+  bound_pair: bound_pair(5),
+  settled_small: settled([1, 2, 3]),
+  settled_large: settled([4]),
 };
 process.stdout.write(JSON.stringify({ circle, label: label_of(circle), forms }));
 "#,
@@ -318,9 +429,20 @@ fn the_generated_python_runs_the_body_it_was_given() {
     std::fs::write(
         root.join("check.py"),
         r#"import dataclasses, json
-from demo import Circle, label_of, measure, note_or, ordered, total, two_tags
+from demo import (
+    Circle, bound_pair, gaps, hint, label_of, last_of, loose_at, mark, measure, note_or,
+    note_or_else, noted_as, ordered, pair, pin_at, positive, radius_of, settled, total, two_tags,
+    with_gap,
+)
+
+
+def sent(record):
+    # Absent and null are one state, so a field with nothing in it is not sent.
+    return {k: v for k, v in dataclasses.asdict(record).items() if v is not None}
+
 
 circle = Circle(id="c-1", kind="circle", radius=2.5, tags=["round", "blue"])
+noted = dataclasses.replace(circle, note="hi")
 forms = {
     "total": total([1, 2, 3, 4]),
     "ordered": ordered([1, 2, 2, 5]),
@@ -329,6 +451,27 @@ forms = {
     "small": measure({"$tag": "small"}),
     "large": measure({"$tag": "large", "value": 21}),
     "two_tags": two_tags(circle),
+    "mark": dataclasses.asdict(mark(5)),
+    "last": last_of([1, 2, 3]),
+    "last_empty": last_of([]),
+    "radius": radius_of(circle),
+    "positive": positive(3),
+    "not_positive": positive(-1),
+    "fallback": note_or_else(circle, "x"),
+    "no_fallback": note_or_else(circle, None),
+    "noted": note_or_else(noted, None),
+    "small_hint": hint({"$tag": "small"}),
+    "large_hint": hint({"$tag": "large", "value": 21}),
+    "noted_as": noted_as(noted, "hi"),
+    "not_noted_as": noted_as(circle, "hi"),
+    "with_gap": with_gap(5),
+    "pin": sent(pin_at(5)),
+    "loose": sent(loose_at(5)),
+    "gaps": gaps(),
+    "pair": pair(),
+    "bound_pair": bound_pair(5),
+    "settled_small": settled([1, 2, 3]),
+    "settled_large": settled([4]),
 }
 print(json.dumps({"label": dataclasses.asdict(label_of(circle)), "forms": forms}))
 "#,
@@ -384,6 +527,13 @@ fn main() {
     let arrived = std::env::args().nth(1).expect("a circle");
     let circle: demo::Circle = serde_json::from_str(&arrived).expect("reads as a Circle");
     let label = demo::label_of(circle.clone());
+    let noted = demo::Circle {
+        note: Some("hi".to_string()),
+        ..circle.clone()
+    };
+
+    let arrived = std::env::args().nth(2).expect("a loose record");
+    let loose: demo::Loose = serde_json::from_str(&arrived).expect("reads as a Loose");
 
     let red: demo::Colour = serde_json::from_str("\"red\"").expect("red is one of them");
     let green = serde_json::from_str::<demo::Colour>("\"green\"").is_ok();
@@ -396,11 +546,35 @@ fn main() {
         "small": demo::measure(demo::Size::small),
         "large": demo::measure(demo::Size::large(21)),
         "two_tags": demo::two_tags(circle.clone()),
+        "mark": demo::mark(5),
+        "last": demo::last_of(vec![1, 2, 3]),
+        "last_empty": demo::last_of(vec![]),
+        "radius": demo::radius_of(circle.clone()),
+        "positive": demo::positive(3),
+        "not_positive": demo::positive(-1),
+        "fallback": demo::note_or_else(circle.clone(), Some("x".to_string())),
+        "no_fallback": demo::note_or_else(circle.clone(), None),
+        "noted": demo::note_or_else(noted.clone(), None),
+        "small_hint": demo::hint(demo::Size::small),
+        "large_hint": demo::hint(demo::Size::large(21)),
+        "noted_as": demo::noted_as(noted.clone(), "hi".to_string()),
+        "not_noted_as": demo::noted_as(circle.clone(), "hi".to_string()),
+        "with_gap": demo::with_gap(5),
+        "pin": demo::pin_at(5),
+        "loose": demo::loose_at(5),
+        "gaps": demo::gaps(),
+        "pair": demo::pair(),
+        "bound_pair": demo::bound_pair(5),
+        "settled_small": demo::settled(vec![1, 2, 3]),
+        "settled_large": demo::settled(vec![4]),
     });
 
     println!(
         "{}",
-        serde_json::json!({ "circle": circle, "label": label, "red": red, "green": green, "forms": forms })
+        serde_json::json!({
+            "circle": circle, "loose": loose, "label": label, "red": red, "green": green,
+            "forms": forms,
+        })
     );
 }
 "#,
@@ -410,24 +584,41 @@ fn main() {
     // Built somewhere that survives between runs, so the dependencies are
     // compiled once rather than every time.
     let target = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("rust_wire_target");
-    let output = Command::new(env!("CARGO"))
-        .args(["run", "--quiet", "--offline", "--"])
-        .arg(expected_json())
-        .env("CARGO_TARGET_DIR", &target)
-        .current_dir(&dir)
-        .output()
-        .expect("runs cargo");
-    let said = String::from_utf8_lossy(&output.stderr);
-
-    if !output.status.success() && !said.contains("error[") && !said.contains("could not compile") {
+    let cargo = |args: &[&str]| {
+        Command::new(env!("CARGO"))
+            .args(args)
+            .env("CARGO_TARGET_DIR", &target)
+            .current_dir(&dir)
+            .output()
+            .expect("runs cargo")
+    };
+    // Built before it is run, so that a check that fails when it runs is not
+    // taken for dependencies that could not be found.
+    let built = cargo(&["build", "--quiet", "--offline"]);
+    let said = String::from_utf8_lossy(&built.stderr);
+    if !built.status.success() && !said.contains("error[") && !said.contains("could not compile") {
         // Nothing was wrong with the code: the dependencies are not on this
         // machine and there is no network to fetch them with.
         eprintln!("serde is not available offline; skipping\n{said}");
         return;
     }
     assert!(
-        output.status.success(),
+        built.status.success(),
         "the generated Rust did not build:\n{said}"
+    );
+
+    let output = cargo(&[
+        "run",
+        "--quiet",
+        "--offline",
+        "--",
+        &expected_json(),
+        &loose_json(),
+    ]);
+    assert!(
+        output.status.success(),
+        "the generated Rust failed when it ran:\n{}",
+        String::from_utf8_lossy(&output.stderr)
     );
 
     let produced: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
@@ -436,6 +627,12 @@ fn main() {
         normalize(&expected_json()),
         "the generated struct read and wrote a different shape than unitype \
          says the value has"
+    );
+    assert_eq!(
+        normalize(&produced["loose"].to_string()),
+        normalize(&loose_json()),
+        "fields that may be absent have to read when they are not there, and \
+         be left out again when they are written"
     );
     assert_eq!(
         normalize(&produced["label"].to_string()),

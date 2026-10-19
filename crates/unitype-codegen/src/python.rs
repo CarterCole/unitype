@@ -102,7 +102,7 @@ fn universe_file(
 
     for def in ordered_defs(universe) {
         match def {
-            TypeDef::Struct(d) => emit_struct(&mut w, d, profile),
+            TypeDef::Struct(d) => emit_struct(&mut w, ws, d, profile),
             TypeDef::Interface(d) => emit_interface(&mut w, d, profile),
             TypeDef::Enum(d) => emit_enum(&mut w, d, profile),
             TypeDef::Alias(d) => emit_alias(&mut w, d, profile),
@@ -152,7 +152,12 @@ fn imports(universe: &Universe) -> Vec<(String, Vec<String>)> {
         .collect()
 }
 
-fn emit_struct(w: &mut CodeWriter, def: &StructDef, profile: &LanguageProfile) {
+fn emit_struct(
+    w: &mut CodeWriter,
+    ws: &CheckedWorkspace,
+    def: &StructDef,
+    profile: &LanguageProfile,
+) {
     // Keyword-only, so a parent's optional field cannot stop a child adding a
     // required one.
     w.line("@dataclass(kw_only=True)");
@@ -178,7 +183,7 @@ fn emit_struct(w: &mut CodeWriter, def: &StructDef, profile: &LanguageProfile) {
             }
             return;
         }
-        emit_fields(w, &def.fields, profile);
+        emit_fields(w, ws, &def.fields, profile);
     });
 }
 
@@ -213,7 +218,12 @@ fn emit_interface(w: &mut CodeWriter, def: &InterfaceDef, profile: &LanguageProf
     );
 }
 
-fn emit_fields(w: &mut CodeWriter, fields: &[Field], profile: &LanguageProfile) {
+fn emit_fields(
+    w: &mut CodeWriter,
+    ws: &CheckedWorkspace,
+    fields: &[Field],
+    profile: &LanguageProfile,
+) {
     for f in fields {
         if profile.name(&f.name) != f.name.as_str() {
             w.comment(
@@ -234,11 +244,14 @@ fn emit_fields(w: &mut CodeWriter, fields: &[Field], profile: &LanguageProfile) 
 
         let spelled = profile.spell(&f.ty);
         // A field that may be absent defaults to absent, so a caller need not
-        // spell out what they do not have.
+        // spell out what they do not have. That is anything that expands to
+        // `T?`, `null` or `any`, which is what a body may leave out.
+        let absent = matches!(
+            ws.expand_alias(&f.ty),
+            Type::Optional { .. } | Type::Unit | Type::Any
+        );
         match &f.ty {
-            Type::Optional { .. } => {
-                w.write(format_args!("{}: {spelled} = None", profile.name(&f.name)))
-            }
+            _ if absent => w.write(format_args!("{}: {spelled} = None", profile.name(&f.name))),
             Type::List { .. } => w.write(format_args!(
                 "{}: {spelled} = field(default_factory=list)",
                 profile.name(&f.name)
@@ -745,6 +758,29 @@ mod tests {
             "the wire tags it `$tag`, which no attribute could be called: {out}"
         );
         assert!(out.contains("Colour = ColourRed | ColourCustom"), "{out}");
+    }
+
+    #[test]
+    fn an_alias_an_any_and_a_null_default_to_absent_too() {
+        let out = generate(
+            r#"{"universes":[{"name":"demo","types":[
+                {"k":"alias","name":"Later","target":"i64?"},
+                {"k":"struct","name":"Entry","fields":[
+                    {"name":"at","ty":"i64"},{"name":"when","ty":"Later"},
+                    {"name":"extra","ty":"any"},{"name":"nothing","ty":"null"}]}],
+              "functions":[
+                {"name":"entry","params":[{"name":"x","ty":"i64"}],"ret":"Entry",
+                 "body":{"k":"make_record","ty":"Entry","fields":[
+                    {"name":"at","value":{"k":"var","name":"x"}}]}}]}]}"#,
+        );
+        assert!(out.contains("when: Later = None"), "{out}");
+        assert!(out.contains("extra: typing.Any = None"), "{out}");
+        assert!(out.contains("nothing: None = None"), "{out}");
+        assert!(
+            out.contains("return Entry(at=x)"),
+            "a body may leave all three out, so the class has to let it: {out}"
+        );
+        assert!(out.contains("    at: int\n"), "{out}");
     }
 
     #[test]

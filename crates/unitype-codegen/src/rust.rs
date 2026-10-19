@@ -12,10 +12,9 @@
 //! what it gives is traits, and an interface becomes one, so the polymorphism
 //! that does exist lands where Rust can actually use it.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use heck::ToUpperCamelCase;
-use unitype_core::QualifiedName;
 use unitype_core::check::CheckedWorkspace;
 use unitype_core::ir::{
     AliasDef, EnumDef, Expr, Field, FunctionSig, InterfaceDef, LiteralValue, PrimOp, StructDef,
@@ -23,6 +22,7 @@ use unitype_core::ir::{
 };
 use unitype_core::lang::{LanguageProfile, profile};
 use unitype_core::value::Value;
+use unitype_core::{Ident, QualifiedName};
 
 use crate::writer::CodeWriter;
 use crate::{Backend, GenError, GenOptions, GeneratedFile, header, ordered_defs, selected};
@@ -102,7 +102,7 @@ fn universe_file(
 
     if options.stubs {
         for sig in &universe.functions {
-            emit_signature(&mut w, universe, sig, profile);
+            emit_signature(&mut w, ws, universe, sig, profile);
             w.blank();
         }
     }
@@ -192,7 +192,7 @@ fn emit_struct(
         w.block(
             format!("pub struct {} {{", profile.name(&def.name)),
             "}",
-            |w| emit_fields(w, &fields, profile),
+            |w| emit_fields(w, ws, &fields, profile),
         );
     }
 
@@ -229,7 +229,12 @@ fn emit_struct(
     }
 }
 
-fn emit_fields(w: &mut CodeWriter, fields: &[Field], profile: &LanguageProfile) {
+fn emit_fields(
+    w: &mut CodeWriter,
+    ws: &CheckedWorkspace,
+    fields: &[Field],
+    profile: &LanguageProfile,
+) {
     for field in fields {
         if let Some(doc) = &field.doc {
             w.comment("/// ", doc);
@@ -245,9 +250,21 @@ fn emit_fields(w: &mut CodeWriter, fields: &[Field], profile: &LanguageProfile) 
             w.write(format_args!("#[serde(rename = {:?})]", field.name.as_str()));
         }
         // Absent and null are one state, so an absent field neither has to be
-        // sent nor has to arrive.
-        if matches!(field.ty, Type::Optional { .. }) {
-            w.line("#[serde(default, skip_serializing_if = \"Option::is_none\")]");
+        // sent nor has to arrive. What may be absent is what the canonical
+        // form leaves out: anything that expands to `T?`, `null` or `any`. A
+        // `()` holds nothing else, so it is never sent at all.
+        let skip = match ws.expand_alias(&field.ty) {
+            Type::Optional { .. } => {
+                Some("#[serde(default, skip_serializing_if = \"Option::is_none\")]")
+            }
+            Type::Any => {
+                Some("#[serde(default, skip_serializing_if = \"serde_json::Value::is_null\")]")
+            }
+            Type::Unit => Some("#[serde(default, skip_serializing)]"),
+            _ => None,
+        };
+        if let Some(attribute) = skip {
+            w.line(attribute);
         }
         w.write(format_args!(
             "pub {}: {},",
@@ -447,6 +464,7 @@ fn variant_name(member: &Type, spelled: &str) -> String {
 
 fn emit_signature(
     w: &mut CodeWriter,
+    ws: &CheckedWorkspace,
     universe: &Universe,
     sig: &FunctionSig,
     profile: &LanguageProfile,
@@ -473,7 +491,15 @@ fn emit_signature(
     );
 
     match &sig.body {
-        Some(body) => w.block(head, "}", |w| w.line(expression(body, profile))),
+        Some(body) => {
+            let env: Env = sig
+                .params
+                .iter()
+                .map(|p| (p.name.clone(), p.ty.clone()))
+                .collect();
+            let text = Body { ws, profile }.expression(body, &env, Some(&sig.ret));
+            w.block(head, "}", |w| w.line(text));
+        }
         None => {
             w.comment(
                 "/// ",
@@ -486,152 +512,440 @@ fn emit_signature(
     }
 }
 
-/// Writes an expression body as Rust.
-pub(crate) fn expression(expr: &Expr, profile: &LanguageProfile) -> String {
-    match expr {
-        Expr::Lit { value } => literal(value),
-        Expr::Var { name } => profile.name(name),
-        Expr::Field { of, name } => {
-            // Cloned because a body produces a value rather than borrowing one,
-            // and the alternative is deciding lifetimes for generated code.
-            format!("{}.{}.clone()", expression(of, profile), profile.name(name))
-        }
-        Expr::MakeRecord { ty, fields } => {
-            let parts: Vec<String> = fields
-                .iter()
-                .map(|f| {
-                    format!(
-                        "{}: {}",
-                        profile.name(&f.name),
-                        expression(&f.value, profile)
-                    )
-                })
-                .collect();
-            format!("{} {{ {} }}", profile.name(&ty.name), parts.join(", "))
-        }
-        Expr::MakeList { items } => {
-            let parts: Vec<String> = items.iter().map(|i| expression(i, profile)).collect();
-            format!("vec![{}]", parts.join(", "))
-        }
-        Expr::MakeTuple { items } => {
-            let parts: Vec<String> = items.iter().map(|i| expression(i, profile)).collect();
-            if parts.len() == 1 {
-                format!("({},)", parts[0])
-            } else {
-                format!("({})", parts.join(", "))
-            }
-        }
-        Expr::MakeVariant { ty, tag, value } => match value {
-            Some(v) => format!(
-                "{}::{tag}({})",
-                profile.name(&ty.name),
-                expression(v, profile)
-            ),
-            None => format!("{}::{tag}", profile.name(&ty.name)),
-        },
-        Expr::Call { sig, args } => {
-            let parts: Vec<String> = args.iter().map(|a| expression(a, profile)).collect();
-            format!("{}({})", profile.name(&sig.name), parts.join(", "))
-        }
-        Expr::Let { name, value, body } => format!(
-            "{{ let {} = {}; {} }}",
-            profile.name(name),
-            expression(value, profile),
-            expression(body, profile)
-        ),
-        Expr::If {
-            cond,
-            then,
-            otherwise,
-        } => format!(
-            "if {} {{ {} }} else {{ {} }}",
-            expression(cond, profile),
-            expression(then, profile),
-            expression(otherwise, profile)
-        ),
-        Expr::MapThrough {
-            functor,
-            value,
-            var,
-            body,
-        } => {
-            use unitype_core::ir::Functor;
-            let subject = expression(value, profile);
-            let bound = profile.name(var);
-            let inner = expression(body, profile);
-            match functor {
-                Functor::List => {
-                    format!("{subject}.into_iter().map(|{bound}| {inner}).collect()")
+/// What each name in scope holds, at some point in a body.
+type Env = HashMap<Ident, Type>;
+
+/// Writing a body as Rust.
+///
+/// The checker takes a `T` wherever a `T?` is wanted, because a value that is
+/// there is one of the things a value that may be absent can be. Python and
+/// TypeScript agree and write nothing for it. Rust does not: an `i64` is not an
+/// `Option<i64>` until it is put in `Some`. So writing a body takes knowing what
+/// each part of it produces and what the place it stands in wants, which the
+/// workspace can say. Wherever nothing needs saying, the body comes out as it
+/// would have without it.
+struct Body<'a> {
+    ws: &'a CheckedWorkspace,
+    profile: &'a LanguageProfile,
+}
+
+impl Body<'_> {
+    /// Writes `expr`, where `env` says what each name holds and `wanted` is
+    /// what the place it stands in expects, when that place says.
+    fn expression(&self, expr: &Expr, env: &Env, wanted: Option<&Type>) -> String {
+        let profile = self.profile;
+        match expr {
+            // A binding, a conditional, and taking a value apart each hand on
+            // what is wanted to whatever produces their result, so `Some` goes
+            // on the one arm that needs it rather than round all of them.
+            Expr::Let { name, value, body } => {
+                let mut inner = env.clone();
+                if let Some(bound) = self.ws.type_of_expr(value, env) {
+                    inner.insert(name.clone(), bound);
                 }
-                // Absent stays absent, which Rust already has a word for.
-                Functor::Optional => format!("{subject}.map(|{bound}| {inner})"),
-                Functor::Future => format!("{{ let {bound} = {subject}.await; {inner} }}"),
+                format!(
+                    "{{ let {} = {}; {} }}",
+                    profile.name(name),
+                    self.expression(value, env, None),
+                    self.expression(body, &inner, wanted)
+                )
             }
-        }
-        Expr::Prim { op, args } => {
-            let operands: Vec<String> = args.iter().map(|a| expression(a, profile)).collect();
-            match (op, operands.as_slice()) {
-                (PrimOp::Neg, [x]) => format!("(-{x})"),
-                (PrimOp::Not, [x]) => format!("(!{x})"),
-                // A length is a `usize` in Rust and an `i64` everywhere else
-                // here.
-                (PrimOp::Len, [x]) => format!("({x}.len() as i64)"),
-                (op, [x, y]) => format!("({x} {} {y})", infix(*op)),
-                _ => unreachable!("the checker holds every operation to its arity"),
+            Expr::If {
+                cond,
+                then,
+                otherwise,
+            } => {
+                let arms = self.shared(wanted, expr, env);
+                format!(
+                    "if {} {{ {} }} else {{ {} }}",
+                    self.expression(cond, env, None),
+                    self.expression(then, env, arms.as_ref()),
+                    self.expression(otherwise, env, arms.as_ref())
+                )
             }
-        }
-        // Borrowed and cloned element by element, so the list is still there
-        // for anything else in the body that mentions it.
-        Expr::Fold {
-            list,
-            init,
-            acc,
-            item,
-            body,
-            ..
-        } => format!(
-            "{}.iter().cloned().fold({}, |{}, {}| {})",
-            expression(list, profile),
-            expression(init, profile),
-            profile.name(acc),
-            profile.name(item),
-            expression(body, profile)
-        ),
-        Expr::Case {
-            value,
-            var,
-            some,
-            none,
-        } => format!(
-            "match {} {{ Some({}) => {}, None => {} }}",
-            expression(value, profile),
-            profile.name(var),
-            expression(some, profile),
-            expression(none, profile)
-        ),
-        Expr::Match { ty, value, arms } => {
-            let name = profile.name(&ty.name);
-            let arms: Vec<String> = arms
-                .iter()
-                .map(|arm| {
-                    let body = expression(&arm.body, profile);
-                    match &arm.var {
-                        Some(var) => {
-                            format!("{name}::{}({}) => {body}", arm.tag, profile.name(var))
+            Expr::Case {
+                value,
+                var,
+                some,
+                none,
+            } => {
+                let arms = self.shared(wanted, expr, env);
+                let mut present = env.clone();
+                let inside =
+                    self.ws
+                        .type_of_expr(value, env)
+                        .map(|t| match self.ws.expand_alias(&t) {
+                            Type::Optional { of } => *of,
+                            // Only `null` gets here, so the present arm binds
+                            // something that is never there.
+                            _ => Type::Never,
+                        });
+                if let Some(inside) = inside {
+                    present.insert(var.clone(), inside);
+                }
+                format!(
+                    "match {} {{ Some({}) => {}, None => {} }}",
+                    self.expression(value, env, None),
+                    profile.name(var),
+                    self.expression(some, &present, arms.as_ref()),
+                    self.expression(none, env, arms.as_ref())
+                )
+            }
+            Expr::Match { ty, value, arms } => {
+                let wanted = self.shared(wanted, expr, env);
+                let variants = self.ws.variants_of(ty).unwrap_or_default();
+                let name = profile.name(&ty.name);
+                let arms: Vec<String> = arms
+                    .iter()
+                    .map(|arm| {
+                        let mut inner = env.clone();
+                        let payload = variants.iter().find(|v| v.name == arm.tag);
+                        if let (Some(var), Some(variant)) = (&arm.var, payload) {
+                            inner.insert(var.clone(), variant.payload.clone());
                         }
-                        // Braces and `..` match a variant whatever it carries,
-                        // so an arm that ignores the payload need not know
-                        // whether there is one.
-                        None => format!("{name}::{} {{ .. }} => {body}", arm.tag),
-                    }
-                })
-                .collect();
-            format!(
-                "match {} {{ {} }}",
-                expression(value, profile),
-                arms.join(", ")
-            )
+                        let body = self.expression(&arm.body, &inner, wanted.as_ref());
+                        match &arm.var {
+                            Some(var) => {
+                                format!("{name}::{}({}) => {body}", arm.tag, profile.name(var))
+                            }
+                            // Braces and `..` match a variant whatever it
+                            // carries, so an arm that ignores the payload need
+                            // not know whether there is one.
+                            None => format!("{name}::{} {{ .. }} => {body}", arm.tag),
+                        }
+                    })
+                    .collect();
+                format!(
+                    "match {} {{ {} }}",
+                    self.expression(value, env, None),
+                    arms.join(", ")
+                )
+            }
+            _ => {
+                // What is wanted of the value itself, once it is in `Some`.
+                let within = wanted.map(|w| match self.ws.expand_alias(w) {
+                    Type::Optional { of } => self.ws.expand_alias(&of),
+                    other => other,
+                });
+                let text = self.value(expr, env, within.as_ref());
+                if self.needs_some(expr, env, wanted) {
+                    format!("Some({text})")
+                } else {
+                    text
+                }
+            }
         }
+    }
+
+    /// Writes an expression that is not a branch, where `wanted` is what is
+    /// expected of it with any `Option` round it already accounted for.
+    fn value(&self, expr: &Expr, env: &Env, wanted: Option<&Type>) -> String {
+        let profile = self.profile;
+        match expr {
+            Expr::Lit { value } => {
+                let target = wanted.cloned().or_else(|| self.ws.type_of_expr(expr, env));
+                self.constant(value, target.as_ref())
+            }
+            Expr::Var { name } => profile.name(name),
+            Expr::Field { of, name } => {
+                // Cloned because a body produces a value rather than borrowing
+                // one, and the alternative is deciding lifetimes for generated
+                // code.
+                format!(
+                    "{}.{}.clone()",
+                    self.expression(of, env, None),
+                    profile.name(name)
+                )
+            }
+            Expr::MakeRecord { ty, fields } => {
+                let declared = self.ws.fields_of(ty).unwrap_or_default();
+                let mut parts: Vec<String> = fields
+                    .iter()
+                    .map(|f| {
+                        let field = declared.iter().find(|d| d.name == f.name);
+                        format!(
+                            "{}: {}",
+                            profile.name(&f.name),
+                            self.expression(&f.value, env, field.map(|d| &d.ty))
+                        )
+                    })
+                    .collect();
+                // The checker lets a body leave out a field that may be
+                // absent, but a Rust struct literal names every field it has.
+                // A field left out is one that is not there, which is `null`
+                // written as that field wants it.
+                parts.extend(
+                    declared
+                        .iter()
+                        .filter(|d| !fields.iter().any(|f| f.name == d.name))
+                        .filter(|d| {
+                            matches!(
+                                self.ws.expand_alias(&d.ty),
+                                Type::Optional { .. } | Type::Unit | Type::Any
+                            )
+                        })
+                        .map(|d| {
+                            format!(
+                                "{}: {}",
+                                profile.name(&d.name),
+                                self.constant(&Value::Null, Some(&d.ty))
+                            )
+                        }),
+                );
+                format!("{} {{ {} }}", profile.name(&ty.name), parts.join(", "))
+            }
+            Expr::MakeList { items } => {
+                // Every element of a `Vec` is one type, so if one of them may
+                // be absent they all have to be written as though they might.
+                let elements = match wanted {
+                    Some(Type::List { of }) if self.may_be_absent(of) => Some(of.as_ref().clone()),
+                    _ => self.ws.type_of_expr(expr, env).and_then(|t| {
+                        match self.ws.expand_alias(&t) {
+                            Type::List { of } => Some(*of),
+                            _ => None,
+                        }
+                    }),
+                };
+                let parts: Vec<String> = items
+                    .iter()
+                    .map(|i| self.expression(i, env, elements.as_ref()))
+                    .collect();
+                format!("vec![{}]", parts.join(", "))
+            }
+            Expr::MakeTuple { items } => {
+                let slots = match wanted {
+                    Some(Type::Tuple { items: slots }) if slots.len() == items.len() => {
+                        Some(slots.as_slice())
+                    }
+                    _ => None,
+                };
+                let parts: Vec<String> = items
+                    .iter()
+                    .enumerate()
+                    .map(|(n, i)| self.expression(i, env, slots.map(|s| &s[n])))
+                    .collect();
+                if parts.len() == 1 {
+                    format!("({},)", parts[0])
+                } else {
+                    format!("({})", parts.join(", "))
+                }
+            }
+            Expr::MakeVariant { ty, tag, value } => match value {
+                Some(v) => {
+                    let payload = self
+                        .ws
+                        .variants_of(ty)
+                        .and_then(|vs| vs.into_iter().find(|x| &x.name == tag))
+                        .map(|x| x.payload);
+                    format!(
+                        "{}::{tag}({})",
+                        profile.name(&ty.name),
+                        self.expression(v, env, payload.as_ref())
+                    )
+                }
+                None => format!("{}::{tag}", profile.name(&ty.name)),
+            },
+            Expr::Call { sig, args } => {
+                let params = self.ws.sig(sig).map(|s| s.params.as_slice());
+                let parts: Vec<String> = args
+                    .iter()
+                    .enumerate()
+                    .map(|(n, a)| {
+                        let param = params.and_then(|ps| ps.get(n)).map(|p| &p.ty);
+                        self.expression(a, env, param)
+                    })
+                    .collect();
+                format!("{}({})", profile.name(&sig.name), parts.join(", "))
+            }
+            Expr::MapThrough {
+                functor,
+                value,
+                var,
+                body,
+            } => {
+                use unitype_core::ir::Functor;
+                let mut inner = env.clone();
+                let subject_ty = self.ws.type_of_expr(value, env);
+                if let Some(subject_ty) = subject_ty {
+                    if let Some((_, inside)) = Functor::split(&self.ws.expand_alias(&subject_ty)) {
+                        inner.insert(var.clone(), inside.clone());
+                    }
+                }
+                // What is wanted of each thing inside is whatever is wanted
+                // inside the result. For an optional that is already what is
+                // wanted here, since the `Option` round it is the map's own.
+                let each = match functor {
+                    Functor::Optional => wanted.cloned(),
+                    _ => wanted.and_then(|w| match Functor::split(w) {
+                        Some((f, inside)) if f == *functor => Some(inside.clone()),
+                        _ => None,
+                    }),
+                };
+                let subject = self.expression(value, env, None);
+                let bound = profile.name(var);
+                let inner = self.expression(body, &inner, each.as_ref());
+                match functor {
+                    Functor::List => {
+                        format!("{subject}.into_iter().map(|{bound}| {inner}).collect()")
+                    }
+                    // Absent stays absent, which Rust already has a word for.
+                    Functor::Optional => format!("{subject}.map(|{bound}| {inner})"),
+                    Functor::Future => format!("{{ let {bound} = {subject}.await; {inner} }}"),
+                }
+            }
+            Expr::Prim { op, args } => {
+                // Rust compares an `Option` only with another, so a value
+                // compared with something that may be absent is put in `Some`
+                // to be compared at all.
+                let others: Vec<Option<Type>> = match (op, args.as_slice()) {
+                    (PrimOp::Eq | PrimOp::Ne, [x, y]) => {
+                        vec![self.ws.type_of_expr(y, env), self.ws.type_of_expr(x, env)]
+                    }
+                    _ => vec![None; args.len()],
+                };
+                let operands: Vec<String> = args
+                    .iter()
+                    .zip(&others)
+                    .map(|(a, other)| self.expression(a, env, other.as_ref()))
+                    .collect();
+                match (op, operands.as_slice()) {
+                    (PrimOp::Neg, [x]) => format!("(-{x})"),
+                    (PrimOp::Not, [x]) => format!("(!{x})"),
+                    // A length is a `usize` in Rust and an `i64` everywhere
+                    // else here.
+                    (PrimOp::Len, [x]) => format!("({x}.len() as i64)"),
+                    (op, [x, y]) => format!("({x} {} {y})", infix(*op)),
+                    _ => unreachable!("the checker holds every operation to its arity"),
+                }
+            }
+            // Borrowed and cloned element by element, so the list is still
+            // there for anything else in the body that mentions it.
+            Expr::Fold {
+                list,
+                init,
+                acc,
+                item,
+                body,
+                ..
+            } => {
+                // The starting value and every step are one type, the one
+                // carried, which is also what the fold as a whole produces.
+                let carried = self.ws.type_of_expr(expr, env);
+                let mut inner = env.clone();
+                if let Some(carried) = &carried {
+                    inner.insert(acc.clone(), carried.clone());
+                }
+                let element =
+                    self.ws
+                        .type_of_expr(list, env)
+                        .and_then(|t| match self.ws.expand_alias(&t) {
+                            Type::List { of } => Some(*of),
+                            _ => None,
+                        });
+                if let Some(element) = element {
+                    inner.insert(item.clone(), element);
+                }
+                format!(
+                    "{}.iter().cloned().fold({}, |{}, {}| {})",
+                    self.expression(list, env, None),
+                    self.expression(init, env, carried.as_ref()),
+                    profile.name(acc),
+                    profile.name(item),
+                    self.expression(body, &inner, carried.as_ref())
+                )
+            }
+            Expr::Let { .. } | Expr::If { .. } | Expr::Case { .. } | Expr::Match { .. } => {
+                unreachable!("a branch is written by `expression`, which hands on what is wanted")
+            }
+        }
+    }
+
+    /// Writes a constant as `wanted` has it.
+    ///
+    /// [`literal`] has only the value to go on, so `[1, null]` comes out as
+    /// `vec![1, None]`, which is two types to Rust. Where a `[i64?]` is
+    /// wanted, the `1` is one that is there: `vec![Some(1), None]`. Whatever
+    /// this has nothing to add to is written as [`literal`] writes it.
+    fn constant(&self, value: &Value, wanted: Option<&Type>) -> String {
+        let Some(wanted) = wanted else {
+            return literal(value);
+        };
+        match (self.ws.expand_alias(wanted), value) {
+            // `null` is the one value its type holds, and Rust spells both `()`.
+            (Type::Unit, Value::Null) => "()".into(),
+            // unitype takes an `any` that is absent and one that is null to
+            // be the same state, and `serde_json::Value` has no way to be
+            // absent but its `Null`.
+            (Type::Any, Value::Null) => "serde_json::Value::Null".into(),
+            (Type::Optional { .. }, Value::Null) => literal(value),
+            (Type::Optional { of }, present) => {
+                format!("Some({})", self.constant(present, Some(&of)))
+            }
+            (Type::List { of }, Value::List(items)) => {
+                let parts: Vec<String> =
+                    items.iter().map(|i| self.constant(i, Some(&of))).collect();
+                format!("vec![{}]", parts.join(", "))
+            }
+            (Type::Tuple { items: slots }, Value::Tuple(items)) if slots.len() == items.len() => {
+                let parts: Vec<String> = items
+                    .iter()
+                    .zip(&slots)
+                    .map(|(i, slot)| self.constant(i, Some(slot)))
+                    .collect();
+                if parts.len() == 1 {
+                    format!("({},)", parts[0])
+                } else {
+                    format!("({})", parts.join(", "))
+                }
+            }
+            (Type::Map { key, value: of }, Value::Map(entries)) => {
+                let parts: Vec<String> = entries
+                    .iter()
+                    .map(|(k, v)| {
+                        format!(
+                            "({}, {})",
+                            self.constant(k, Some(&key)),
+                            self.constant(v, Some(&of))
+                        )
+                    })
+                    .collect();
+                format!("BTreeMap::from([{}])", parts.join(", "))
+            }
+            _ => literal(value),
+        }
+    }
+
+    /// What several alternatives are each written as, so that they come out as
+    /// one Rust type: what the place wants, if that may be absent, and
+    /// otherwise what they come to together.
+    fn shared(&self, wanted: Option<&Type>, expr: &Expr, env: &Env) -> Option<Type> {
+        match wanted {
+            Some(w) if self.may_be_absent(w) => Some(w.clone()),
+            _ => self.ws.type_of_expr(expr, env),
+        }
+    }
+
+    /// Whether a type is one Rust writes as an `Option`.
+    fn may_be_absent(&self, ty: &Type) -> bool {
+        matches!(self.ws.expand_alias(ty), Type::Optional { .. })
+    }
+
+    /// Whether what `expr` produces has to be put in `Some` to be what is
+    /// wanted.
+    ///
+    /// Something that may itself be absent is already an `Option`, and `null`
+    /// is written `None`; anything else, where something that may be absent is
+    /// wanted, has to be said to be there.
+    fn needs_some(&self, expr: &Expr, env: &Env, wanted: Option<&Type>) -> bool {
+        if !wanted.is_some_and(|w| self.may_be_absent(w)) {
+            return false;
+        }
+        self.ws.type_of_expr(expr, env).is_some_and(|produced| {
+            !matches!(
+                self.ws.expand_alias(&produced),
+                Type::Optional { .. } | Type::Unit
+            )
+        })
     }
 }
 
@@ -888,6 +1202,173 @@ mod tests {
                          "var":"x","body":{"k":"var","name":"x"}}}]}]}"#,
         );
         assert!(out.contains("s.map(|x| x)"), "{out}");
+    }
+
+    /// Bodies that each put a value where one that may be absent is wanted, or
+    /// leave one out.
+    const ABSENT: &str = r#"{"universes":[{"name":"demo","types":[
+        {"k":"struct","name":"Mark","fields":[
+            {"name":"at","ty":"i64"},{"name":"before","ty":"i64?"}]},
+        {"k":"enum","name":"Size","variants":[{"name":"small"},{"name":"large","payload":"i64"}]},
+        {"k":"alias","name":"Later","target":"i64?"},
+        {"k":"struct","name":"Entry","extends":"Mark","fields":[
+            {"name":"why","ty":"str?"},{"name":"when","ty":"Later"},
+            {"name":"extra","ty":"any"},{"name":"nothing","ty":"null"}]}],
+      "functions":[
+        {"name":"entry","params":[{"name":"x","ty":"i64"}],"ret":"Entry",
+         "body":{"k":"make_record","ty":"Entry","fields":[
+            {"name":"why","value":{"k":"lit","value":"w"}},
+            {"name":"at","value":{"k":"var","name":"x"}}]}},
+        {"name":"gaps","params":[],"ret":"[i64?]","body":{"k":"lit","value":[1,null]}},
+        {"name":"nested","params":[],"ret":"[[i64?]]","body":{"k":"lit","value":[[1,null],[2]]}},
+        {"name":"pair","params":[],"ret":{"k":"tuple","items":["i64?","i64?","str"]},
+         "body":{"k":"lit","value":{"$tuple":[3,null,"x"]}}},
+        {"name":"counts","params":[],"ret":{"k":"map","key":"str","value":"i64?"},
+         "body":{"k":"lit","value":{"$map":[["a",1],["b",null]]}}},
+        {"name":"gap_count","params":[],"ret":"i64",
+         "body":{"k":"let","name":"g","value":{"k":"lit","value":[1,null]},
+                 "body":{"k":"prim","op":"len","args":[{"k":"var","name":"g"}]}}},
+        {"name":"mark","params":[{"name":"x","ty":"i64"}],"ret":"Mark",
+         "body":{"k":"make_record","ty":"Mark","fields":[
+            {"name":"at","value":{"k":"var","name":"x"}},
+            {"name":"before","value":{"k":"var","name":"x"}}]}},
+        {"name":"last_of","params":[{"name":"xs","ty":"[i64]"}],"ret":"i64?",
+         "body":{"k":"fold","list":{"k":"var","name":"xs"},"init":{"k":"lit","value":null},
+                 "ty":"int?","acc":"p","item":"x","body":{"k":"var","name":"x"}}},
+        {"name":"some_of","params":[{"name":"x","ty":"i64"}],"ret":"i64?",
+         "body":{"k":"var","name":"x"}},
+        {"name":"positive","params":[{"name":"x","ty":"i64"}],"ret":"i64?",
+         "body":{"k":"if","cond":{"k":"prim","op":"gt","args":[
+                     {"k":"var","name":"x"},{"k":"lit","value":0}]},
+                 "then":{"k":"var","name":"x"},"else":{"k":"lit","value":null}}},
+        {"name":"or_else","params":[{"name":"x","ty":"i64?"},{"name":"y","ty":"i64?"}],
+         "ret":"i64?",
+         "body":{"k":"case","value":{"k":"var","name":"x"},"var":"n",
+                 "some":{"k":"var","name":"n"},"none":{"k":"var","name":"y"}}},
+        {"name":"hint","params":[{"name":"s","ty":"Size"}],"ret":"i64?",
+         "body":{"k":"match","ty":"Size","value":{"k":"var","name":"s"},"arms":[
+            {"tag":"small","body":{"k":"lit","value":null}},
+            {"tag":"large","var":"n","body":{"k":"var","name":"n"}}]}},
+        {"name":"chosen","params":[{"name":"c","ty":"bool"},{"name":"x","ty":"i64"}],"ret":"i64",
+         "body":{"k":"let","name":"y",
+                 "value":{"k":"if","cond":{"k":"var","name":"c"},
+                          "then":{"k":"var","name":"x"},"else":{"k":"lit","value":null}},
+                 "body":{"k":"case","value":{"k":"var","name":"y"},"var":"n",
+                         "some":{"k":"var","name":"n"},"none":{"k":"lit","value":0}}}},
+        {"name":"is","params":[{"name":"x","ty":"i64?"},{"name":"y","ty":"i64"}],"ret":"bool",
+         "body":{"k":"prim","op":"eq","args":[{"k":"var","name":"x"},{"k":"var","name":"y"}]}}]}]}"#;
+
+    #[test]
+    fn a_value_where_one_that_may_be_absent_is_wanted_is_put_in_some() {
+        let out = generate(ABSENT);
+        assert!(out.contains("Mark { at: x, before: Some(x) }"), "{out}");
+        assert!(
+            out.contains("xs.iter().cloned().fold(None, |p, x| Some(x))"),
+            "the starting value and each step are both what is carried: {out}"
+        );
+        assert!(
+            out.contains("pub fn some_of(x: i64) -> Option<i64> {\n    Some(x)\n}"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn only_the_arm_that_needs_it_is_put_in_some() {
+        let out = generate(ABSENT);
+        assert!(
+            out.contains("if (x > 0) { Some(x) } else { None }"),
+            "{out}"
+        );
+        assert!(
+            out.contains("match x { Some(n) => Some(n), None => y }"),
+            "an arm that may already be absent is an `Option` already: {out}"
+        );
+        assert!(
+            out.contains("match s { Size::small { .. } => None, Size::large(n) => Some(n) }"),
+            "{out}"
+        );
+        assert!(!out.contains("Some(None)"), "{out}");
+    }
+
+    #[test]
+    fn arms_nothing_outside_asks_about_are_written_to_what_they_come_to_together() {
+        let out = generate(ABSENT);
+        assert!(
+            out.contains("let y = if c { Some(x) } else { None };"),
+            "one arm may be absent, so both are `Option`s: {out}"
+        );
+        assert!(out.contains("match y { Some(n) => n, None => 0 }"), "{out}");
+    }
+
+    #[test]
+    fn a_value_compared_with_one_that_may_be_absent_is_compared_as_an_option() {
+        let out = generate(ABSENT);
+        assert!(out.contains("(x == Some(y))"), "{out}");
+    }
+
+    #[test]
+    fn a_field_left_out_is_written_as_the_nothing_it_stands_for() {
+        let out = generate(ABSENT);
+        assert!(
+            out.contains(
+                "Entry { why: Some(\"w\".to_string()), at: x, before: None, when: None, \
+                 extra: serde_json::Value::Null, nothing: () }"
+            ),
+            "what was given first, as given, then the rest as declared, \
+             inherited ones included: {out}"
+        );
+    }
+
+    #[test]
+    fn an_alias_an_any_and_a_null_need_not_be_sent_or_arrive_either() {
+        let out = generate(ABSENT);
+        assert!(
+            out.contains(
+                "#[serde(default, skip_serializing_if = \"Option::is_none\")]\n    pub when: Later,"
+            ),
+            "an alias of an optional is still one: {out}"
+        );
+        assert!(
+            out.contains(
+                "#[serde(default, skip_serializing_if = \"serde_json::Value::is_null\")]\n    \
+                 pub extra: serde_json::Value,"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains("#[serde(default, skip_serializing)]\n    pub nothing: (),"),
+            "a `()` holds nothing else, so it is never sent: {out}"
+        );
+        assert!(
+            out.contains("pub struct Entry {\n    pub at: i64,"),
+            "a field that has to be there is still sent and still has to arrive: {out}"
+        );
+    }
+
+    #[test]
+    fn a_constant_is_written_as_what_is_wanted_of_it() {
+        let out = generate(ABSENT);
+        assert!(out.contains("vec![Some(1), None]\n}"), "{out}");
+        assert!(
+            out.contains("vec![vec![Some(1), None], vec![Some(2)]]"),
+            "a list with nothing absent in it is still a list of what may be: {out}"
+        );
+        assert!(out.contains("(Some(3), None, \"x\".to_string())"), "{out}");
+        assert!(
+            out.contains(
+                "BTreeMap::from([(\"a\".to_string(), Some(1)), (\"b\".to_string(), None)])"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains("{ let g = vec![Some(1), None]; (g.len() as i64) }"),
+            "with nothing asked of it, a constant is what it comes to: {out}"
+        );
+        assert_eq!(
+            literal(&Value::List(vec![Value::Int(1), Value::Null])),
+            "vec![1, None]",
+            "untyped, there is nothing to say a `1` might not have been there"
+        );
     }
 
     #[test]
