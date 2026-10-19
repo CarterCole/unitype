@@ -84,9 +84,9 @@ today.
 - **Reflection.** A built-in universe describes the representation, and is
   checked against it, so it cannot drift.
 
-569 tests, including the subtyping laws and the inference laws as property
+580 tests, including the subtyping, inference and shape laws as property
 tests, and pinned golden vectors that make canonical drift impossible to do by
-accident. 580 with the sandbox turned on.
+accident. 591 with the sandbox turned on.
 
 ```bash
 cargo test

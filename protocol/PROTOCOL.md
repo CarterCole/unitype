@@ -1,6 +1,7 @@
 # The unitype protocol
 
-**Version 1.0 (schema), hash domains `v1`, wordlist `bip39-english-v1`.**
+**Version 1.0 (schema), hash domains `v1` (structural `v2`), wordlist
+`bip39-english-v1`.**
 
 This is the normative specification. An implementation in any language that
 follows it will compute the same canonical forms, the same content addresses,
@@ -256,8 +257,7 @@ two different things can never collide even if their encodings coincide:
 | alias | `unitype alias v1` | an address, to derive words (§5.3) |
 
 A **structural** hash, which erases names by resolving references across a whole
-workspace, is built on these primitives once resolution exists; it is specified
-in §5.4 and not yet frozen.
+workspace, has its own domain, `unitype shape v2`, and is specified in §5.4.
 
 ### 5.2 Text form **(frozen)**
 
@@ -290,20 +290,90 @@ Shortening is relative to a set. A persistent, federatable alias registry — wi
 change as a corpus grows — is a later addition and is not required for
 interoperability.
 
-### 5.4 Structural hashing *(specified, not yet frozen)*
+### 5.4 Structural hashing **(frozen)**
 
+A structural address covers what data a declaration describes and nothing about
+how it was written: not its name, not the names of what it refers to, not its
+supertypes, not its parameter names, and not the order anything was declared
+in. Field and variant names are kept, because they are part of the data.
 Erasing names requires resolving references, so this is defined over a checked
-workspace. Aliases are expanded first, making an alias exactly a name: its
-structural hash equals its target's. The declaration graph is decomposed into
-strongly connected components; each component is encoded with its declaration
-names erased, generic parameters renamed positionally, anonymous record fields
-sorted, references to other components replaced by their already-computed
-hashes, and references within the component replaced by a positional back
-reference. Self-recursive declarations — the common case — are therefore fully
-name-independent. For components with several members, member order is fixed by
-sorting on qualified name, and those names enter the encoding; two isomorphic
-mutually recursive groups with different names will not share an address. This
-is a known, documented limitation rather than an oversight.
+workspace. The domain is `unitype shape v2`, and every digest below is
+`blake3_derive_key("unitype shape v2", bytes)` over canonical bytes (§2).
+
+**Shape form.** A type in shape form is the type with every alias in it
+expanded and the result normalized again (§3), since an expansion can leave
+what normalization would have rewritten. Then:
+
+- a generic parameter is `{"k":"param","i":n}`, `n` its position among the
+  enclosing declaration's parameters;
+- a reference to a declaration outside the group being addressed is
+  `{"k":"id","h":"ut1:…","args":[…]}`, `h` being that declaration's structural
+  address;
+- a reference to a member of the group is `{"k":"rec","i":n,"args":[…]}`, `n`
+  as described below;
+- a record field is `{"name":…,"ty":…}`, with no documentation;
+- union members are ordered as described below;
+- everything else keeps its kind token and members as in §2, and `args` is
+  omitted when empty.
+
+A declaration's **content** is `{"k":"fields","fields":[…]}` for a struct,
+`{"k":"contract","fields":[…]}` for an interface, and
+`{"k":"variants","variants":[…]}` for an enum. Fields are the flattened ones,
+inherited fields included and overrides applied; variants are
+`{"name":…,"ty":…}` with `{"k":"unit"}` for a bare tag. Both sort by name.
+
+**Groups.** Declarations other than aliases form a graph, with an edge from
+each to every declaration its content mentions. Each strongly connected
+component is a **group**, and groups are addressed in dependency order, so
+every reference out of a group already has an address.
+
+Within a group, number the members arbitrarily and write each member's content
+with its in-group references as `rec` holding the referenced member's number.
+The result does not depend on that numbering. Given a digest `s(m)` for each
+member, a content's **stand-in form** replaces each `rec` naming `m` with an
+`id` whose `h` is `s(m)`, keeping its `args`; and its unions are **ordered by
+`s`**: innermost first, members are sorted ascending by the canonical bytes of
+their stand-in forms, members whose stand-in forms are identical are kept once,
+and a union left with one member is that member.
+
+**Refinement.** Round 0 gives each member the digest of its content's stand-in
+form with every `s(m)` the zero address (`ut1:` and 64 zeros), unions ordered
+by the same `s`. Round `k+1` does the same with `s` the digests of round `k`.
+Rounds continue until one has no more distinct digests than the round before
+it; members with equal digests in that round are one **block**. This is
+partition refinement: two members share a block exactly when they unfold to
+the same tree, which is equality of recursive types in the sense of Amadio and
+Cardelli.
+
+**Addressing a member.** Let `R` be the member and every member it reaches by
+mentions, and let `r` be the first round such that the members of `R` have no
+more distinct digests in round `r+1` than in round `r`. Using `s` the digests
+of round `r`:
+
+1. Walk depth first from the member. On reaching a member, give its block the
+   next number, from 0, and take its content with unions ordered by `s`. Then,
+   in the order its mentions appear in that content's encoding, visit each
+   mentioned member whose block has no number by the time it comes up.
+2. The address is the digest of the JSON array of those contents in the order
+   they were numbered, each `rec`'s `i` being the number of its target's block.
+
+Round `r` is used rather than the group's last round because it depends on
+nothing but what the member unfolds to, while the last round depends on what
+else the group holds. Both tell apart every block the walk can reach.
+
+**Aliases.** An alias is only a name. When its target in shape form is an `id`
+whose `args` are `param 0`, `param 1`, … in that order, or none, the alias
+passes its parameters straight through and its address is that `h`. Otherwise
+it is the digest of its target in shape form, unions ordered with no group
+involved.
+
+So: two groups that differ only in naming or declaration order get the same
+addresses member for member; members of one group, or of two, that unfold
+alike share an address; and a member's address changes only when what it
+unfolds to does. Unfolding stops at its group's edge, where a declaration
+outside the group is taken as its address. A non-recursive declaration wrapping
+a recursive one is therefore not identified with the recursive type it would
+unfold to, even where the two infinite trees agree.
 
 ---
 
@@ -606,3 +676,10 @@ what it describes. Adding a variant without adding it here has to fail.
 
 - **1.0** — initial. Schema `1.0`; hash domains `unitype {local,decl,sig,alias}
   v1`; wordlist `bip39-english-v1`.
+- **`unitype shape v2`** — §5.4 frozen. A mutually recursive group is minimized
+  and each member addressed by a walk from itself, so member names no longer
+  enter through member order; union members are ordered by structure rather
+  than by the names they mention; alias parameters are positional; and an
+  alias that fixes a generic's arguments no longer shares the generic's
+  address. Schema and the other domains are unchanged. Every `v1` structural
+  address changes.

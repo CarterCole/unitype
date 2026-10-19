@@ -182,7 +182,9 @@ fn vectors() -> BTreeMap<String, String> {
     out
 }
 
-/// A workspace exercising the cases structural addressing has to get right.
+/// A workspace exercising the cases structural addressing has to get right:
+/// inheritance, recursion of one member and of several, members of a group
+/// that unfold alike, and a union whose members only their mentions tell apart.
 const SHAPES: &str = r#"{"universes":[
     {"name":"demo","types":[
         {"k":"interface","name":"Identified","fields":[{"name":"id","ty":"str"}]},
@@ -199,7 +201,26 @@ const SHAPES: &str = r#"{"universes":[
         {"k":"alias","name":"Coord","target":"Shape"}]},
     {"name":"geo","types":[
         {"k":"struct","name":"Point",
-         "fields":[{"name":"x","ty":"float"},{"name":"y","ty":"float"}]}]}]}"#;
+         "fields":[{"name":"x","ty":"float"},{"name":"y","ty":"float"}]}]},
+    {"name":"rec","types":[
+        {"k":"struct","name":"Ping","fields":[
+            {"name":"n","ty":"i64"},{"name":"pong","ty":"Pong?"}]},
+        {"k":"struct","name":"Pong","fields":[
+            {"name":"s","ty":"str"},{"name":"ping","ty":"Ping?"}]},
+        {"k":"struct","name":"Rock","fields":[
+            {"name":"r","ty":"i64"},{"name":"beats","ty":"Scissors?"}]},
+        {"k":"struct","name":"Scissors","fields":[
+            {"name":"s","ty":"str"},{"name":"beats","ty":"Paper?"}]},
+        {"k":"struct","name":"Paper","fields":[
+            {"name":"p","ty":"bool"},{"name":"beats","ty":"Rock?"}]},
+        {"k":"struct","name":"Even","fields":[{"name":"next","ty":"Odd?"}]},
+        {"k":"struct","name":"Odd","fields":[{"name":"next","ty":"Even?"}]},
+        {"k":"struct","name":"Expr","fields":[
+            {"name":"args","ty":{"k":"list","of":{"k":"union","members":["Num","Name"]}}}]},
+        {"k":"struct","name":"Num","fields":[
+            {"name":"value","ty":"i64"},{"name":"scope","ty":"Expr"}]},
+        {"k":"struct","name":"Name","fields":[
+            {"name":"value","ty":"str"},{"name":"scope","ty":"Expr"}]}]}]}"#;
 
 fn shape_vectors() -> Vec<(String, unitype_core::TypeId)> {
     let ws = unitype_core::check::check_workspace(
