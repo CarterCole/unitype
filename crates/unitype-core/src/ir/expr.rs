@@ -12,13 +12,106 @@
 //! Computations that need real recursion — sorting, for instance — stay
 //! propositions with external implementations, which is exactly the division of
 //! labor this system is built around.
+//!
+//! Two forms visit a list: [`Expr::MapThrough`] transforms each element, and
+//! [`Expr::Fold`] carries a value along from one element to the next. Both
+//! visit what is already there, once, so neither can run forever. Two forms
+//! take a value apart: [`Expr::Case`] says what to do whether or not something
+//! is present, and [`Expr::Match`] says what to do with each variant of an
+//! enum. Each runs exactly one arm.
 
 use serde::{Deserialize, Serialize};
 
 use crate::ident::{Ident, QualifiedName};
 use crate::ir::functor::Functor;
-use crate::ir::ty::TypeRef;
+use crate::ir::ty::{Type, TypeRef};
 use crate::value::Value;
+
+/// An operation every target language already has a word for.
+///
+/// A closed set rather than a universe of signatures, because these are not
+/// propositions anyone proves in different ways. `<` means one thing, it is
+/// spelled in place in every backend, and a body checking that a list is in
+/// order should not have to ask the dispatcher what `<` is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrimOp {
+    /// Whether two values say the same thing.
+    Eq,
+    /// Whether two values say different things.
+    Ne,
+    /// Strictly less: two numbers of the same kind, or two strings.
+    Lt,
+    /// Less or equal.
+    Le,
+    /// Strictly greater.
+    Gt,
+    /// Greater or equal.
+    Ge,
+    /// The sum of two integers or two floats.
+    Add,
+    /// The difference of two integers or two floats.
+    Sub,
+    /// The product of two integers or two floats.
+    Mul,
+    /// A number with its sign turned round.
+    Neg,
+    /// Both. The second is only evaluated if the first holds.
+    And,
+    /// Either. The second is only evaluated if the first does not hold.
+    Or,
+    /// Not.
+    Not,
+    /// How many elements a list has.
+    Len,
+}
+
+impl PrimOp {
+    /// The token this operation is written as.
+    pub fn token(self) -> &'static str {
+        match self {
+            PrimOp::Eq => "eq",
+            PrimOp::Ne => "ne",
+            PrimOp::Lt => "lt",
+            PrimOp::Le => "le",
+            PrimOp::Gt => "gt",
+            PrimOp::Ge => "ge",
+            PrimOp::Add => "add",
+            PrimOp::Sub => "sub",
+            PrimOp::Mul => "mul",
+            PrimOp::Neg => "neg",
+            PrimOp::And => "and",
+            PrimOp::Or => "or",
+            PrimOp::Not => "not",
+            PrimOp::Len => "len",
+        }
+    }
+
+    /// How many operands it takes.
+    pub fn arity(self) -> usize {
+        match self {
+            PrimOp::Neg | PrimOp::Not | PrimOp::Len => 1,
+            _ => 2,
+        }
+    }
+
+    /// Whether this compares two things and says which way round they are.
+    pub fn is_ordering(self) -> bool {
+        matches!(self, PrimOp::Lt | PrimOp::Le | PrimOp::Gt | PrimOp::Ge)
+    }
+}
+
+/// What to do with one variant of an enum.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MatchArm {
+    /// The variant this arm is for.
+    pub tag: Ident,
+    /// The name its payload is bound to, if the arm wants it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub var: Option<Ident>,
+    /// What the arm produces.
+    pub body: Expr,
+}
 
 /// One field of a record being constructed.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -120,12 +213,9 @@ pub enum Expr {
     /// arrives later is transformed when it does. Which of those happens is the
     /// functor's business, not this expression's.
     ///
-    /// This is the only iteration the language has, and it is bounded by
-    /// construction: it visits what is already there and cannot produce more.
-    /// Notice also what it does *not* offer — there is no way to ask whether an
-    /// optional value is present, so a body cannot branch on absence and do
-    /// something else entirely. It can only say what to do with a value if
-    /// there is one.
+    /// It is bounded by construction: it visits what is already there and
+    /// cannot produce more. It says what to do with a value if there is one;
+    /// saying what to do when there is not is [`Expr::Case`].
     MapThrough {
         /// The constructor being mapped through.
         functor: Functor,
@@ -135,6 +225,61 @@ pub enum Expr {
         var: Ident,
         /// The transformation applied to it.
         body: Box<Expr>,
+    },
+    /// An operation from the closed set every backend spells in place.
+    Prim {
+        /// Which one.
+        op: PrimOp,
+        /// Its operands, in order.
+        args: Vec<Expr>,
+    },
+    /// A value carried through a list, one element at a time, from the left.
+    ///
+    /// This is primitive recursion over something finite: the body sees the
+    /// value carried so far and the next element, and cannot name the fold, the
+    /// rest of the list, or anything that would let it go round again. So it
+    /// terminates, which is what lets it be a proof.
+    ///
+    /// The carried value keeps one type throughout. Without `ty` it is the type
+    /// of `init` with its literals widened — `0` carries an `i64`, not a `0` —
+    /// and every step must produce something of that type.
+    Fold {
+        /// The list being folded.
+        list: Box<Expr>,
+        /// What is carried in before the first element.
+        init: Box<Expr>,
+        /// The type carried, when the starting value does not say it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ty: Option<Type>,
+        /// The name bound to what has been carried so far.
+        acc: Ident,
+        /// The name bound to the element being visited.
+        item: Ident,
+        /// What is carried on to the next element.
+        body: Box<Expr>,
+    },
+    /// What to do whether or not a value is there.
+    Case {
+        /// The value that may be absent.
+        value: Box<Expr>,
+        /// The name bound to it when it is present.
+        var: Ident,
+        /// What to produce when it is present.
+        some: Box<Expr>,
+        /// What to produce when it is not.
+        none: Box<Expr>,
+    },
+    /// What to do with each variant of an enum, one arm per variant.
+    ///
+    /// Every variant needs an arm, so there is no value the match does not
+    /// cover.
+    Match {
+        /// The enum being taken apart.
+        ty: TypeRef,
+        /// The value being taken apart.
+        value: Box<Expr>,
+        /// One arm per variant.
+        arms: Vec<MatchArm>,
     },
 }
 
@@ -197,6 +342,16 @@ impl Expr {
                 otherwise,
             } => vec![cond.as_ref(), then.as_ref(), otherwise.as_ref()],
             Expr::MapThrough { value, body, .. } => vec![value.as_ref(), body.as_ref()],
+            Expr::Prim { args, .. } => args.iter().collect(),
+            Expr::Fold {
+                list, init, body, ..
+            } => vec![list.as_ref(), init.as_ref(), body.as_ref()],
+            Expr::Case {
+                value, some, none, ..
+            } => vec![value.as_ref(), some.as_ref(), none.as_ref()],
+            Expr::Match { value, arms, .. } => std::iter::once(value.as_ref())
+                .chain(arms.iter().map(|a| &a.body))
+                .collect(),
         }
     }
 }
@@ -232,6 +387,50 @@ mod tests {
         let j = serde_json::to_string(&e).unwrap();
         assert!(j.contains(r#""then""#) && j.contains(r#""else""#), "{j}");
         assert_eq!(serde_json::from_str::<Expr>(&j).unwrap(), e);
+    }
+
+    #[test]
+    fn the_new_forms_read_the_way_they_are_written() {
+        let fold: Expr = serde_json::from_str(
+            r#"{"k":"fold","list":{"k":"var","name":"xs"},"init":{"k":"lit","value":0},
+                "acc":"total","item":"x",
+                "body":{"k":"prim","op":"add","args":[{"k":"var","name":"total"},{"k":"var","name":"x"}]}}"#,
+        )
+        .expect("a fold reads");
+        assert!(matches!(&fold, Expr::Fold { ty: None, .. }));
+
+        let matched: Expr = serde_json::from_str(
+            r#"{"k":"match","ty":{"name":"Size"},"value":{"k":"var","name":"s"},
+                "arms":[{"tag":"small","body":{"k":"lit","value":0}},
+                        {"tag":"large","var":"n","body":{"k":"var","name":"n"}}]}"#,
+        )
+        .expect("a match reads");
+        let Expr::Match { arms, .. } = &matched else {
+            panic!("{matched:?}");
+        };
+        assert_eq!(arms[0].var, None, "an arm need not bind anything");
+
+        for e in [fold, matched] {
+            let j = serde_json::to_string(&e).unwrap();
+            assert_eq!(serde_json::from_str::<Expr>(&j).unwrap(), e);
+        }
+    }
+
+    #[test]
+    fn calls_inside_the_arms_of_a_match_are_collected_too() {
+        let e = Expr::Match {
+            ty: TypeRef::local(id("Size")),
+            value: Expr::var("s").into(),
+            arms: vec![MatchArm {
+                tag: id("small"),
+                var: None,
+                body: Expr::Call {
+                    sig: "demo::zero".parse().unwrap(),
+                    args: vec![],
+                },
+            }],
+        };
+        assert_eq!(e.called_signatures().len(), 1);
     }
 
     #[test]

@@ -10,12 +10,15 @@
 use unitype_core::QualifiedName;
 use unitype_core::check::CheckedWorkspace;
 use unitype_core::ir::{
-    AliasDef, EnumDef, Expr, Field, FunctionSig, InterfaceDef, StructDef, Type, TypeDef, Universe,
+    AliasDef, EnumDef, Expr, Field, FunctionSig, InterfaceDef, PrimOp, StructDef, Type, TypeDef,
+    Universe,
 };
 use unitype_core::lang::{LanguageProfile, profile};
 
 use crate::writer::CodeWriter;
-use crate::{Backend, GenError, GenOptions, GeneratedFile, header, ordered_defs, selected};
+use crate::{
+    Backend, GenError, GenOptions, GeneratedFile, bodies_use, header, ordered_defs, selected,
+};
 
 /// The TypeScript backend.
 pub struct TypeScript;
@@ -82,6 +85,10 @@ fn universe_file(
     }
     if !imports(universe).is_empty() {
         w.blank();
+    }
+
+    if options.stubs {
+        emit_helpers(&mut w, universe);
     }
 
     for def in ordered_defs(universe) {
@@ -333,6 +340,64 @@ fn emit_signature(
     let _ = ws;
 }
 
+/// Comparison as every other backend does it, written out once per module that
+/// needs it.
+///
+/// `===` asks whether two arrays are the same array, and `<` orders strings by
+/// UTF-16 unit; a body means the same values, and code point order. Neither
+/// helper is exported, and both names are reserved, so a body cannot shadow
+/// them.
+const EQUAL: &str = r#"function unitypeEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  // Absent and null are one state on the wire, and so here.
+  if (a === null || a === undefined || b === null || b === undefined) {
+    return (a ?? null) === (b ?? null);
+  }
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) && a.length === b.length &&
+      a.every((x, i) => unitypeEqual(x, b[i]));
+  }
+  if (typeof a === "object" && typeof b === "object") {
+    const x = a as Record<string, unknown>;
+    const y = b as Record<string, unknown>;
+    return [...new Set([...Object.keys(x), ...Object.keys(y)])].every((k) => unitypeEqual(x[k], y[k]));
+  }
+  return false;
+}"#;
+
+const COMPARE: &str = r#"function unitypeCompare(a: number | string, b: number | string): number {
+  if (typeof a === "string" && typeof b === "string") {
+    const x = Array.from(a, (c) => c.codePointAt(0) as number);
+    const y = Array.from(b, (c) => c.codePointAt(0) as number);
+    for (let i = 0; i < Math.min(x.length, y.length); i++) {
+      if (x[i] !== y[i]) return x[i] - y[i];
+    }
+    return x.length - y.length;
+  }
+  return a < b ? -1 : a > b ? 1 : 0;
+}"#;
+
+fn emit_helpers(w: &mut CodeWriter, universe: &Universe) {
+    let compares = |wanted: fn(PrimOp) -> bool| {
+        bodies_use(
+            universe,
+            |e| matches!(e, Expr::Prim { op, .. } if wanted(*op)),
+        )
+    };
+    if compares(|op| matches!(op, PrimOp::Eq | PrimOp::Ne)) {
+        for line in EQUAL.lines() {
+            w.line(line);
+        }
+        w.blank();
+    }
+    if compares(PrimOp::is_ordering) {
+        for line in COMPARE.lines() {
+            w.line(line);
+        }
+        w.blank();
+    }
+}
+
 /// Writes an expression body as TypeScript.
 ///
 /// The same body becomes Python and Rust elsewhere. A mapping written once in
@@ -378,7 +443,7 @@ pub(crate) fn expression(expr: &Expr, profile: &LanguageProfile) -> String {
         Expr::Let { name, value, body } => format!(
             "(({} ) => {})({})",
             profile.name(name),
-            expression(body, profile),
+            arrow(expression(body, profile)),
             expression(value, profile)
         ),
         Expr::If {
@@ -400,7 +465,7 @@ pub(crate) fn expression(expr: &Expr, profile: &LanguageProfile) -> String {
             use unitype_core::ir::Functor;
             let subject = expression(value, profile);
             let bound = profile.name(var);
-            let inner = expression(body, profile);
+            let inner = arrow(expression(body, profile));
             match functor {
                 Functor::List => format!("{subject}.map(({bound}) => {inner})"),
                 // Absent stays absent, which in TypeScript means checking.
@@ -410,6 +475,97 @@ pub(crate) fn expression(expr: &Expr, profile: &LanguageProfile) -> String {
                 Functor::Future => format!("{subject}.then(({bound}) => {inner})"),
             }
         }
+        Expr::Prim { op, args } => {
+            let operands: Vec<String> = args.iter().map(|a| expression(a, profile)).collect();
+            match (op, operands.as_slice()) {
+                (PrimOp::Eq, [x, y]) => format!("unitypeEqual({x}, {y})"),
+                (PrimOp::Ne, [x, y]) => format!("!unitypeEqual({x}, {y})"),
+                (op, [x, y]) if op.is_ordering() => {
+                    let sign = match op {
+                        PrimOp::Lt => "<",
+                        PrimOp::Le => "<=",
+                        PrimOp::Gt => ">",
+                        _ => ">=",
+                    };
+                    format!("(unitypeCompare({x}, {y}) {sign} 0)")
+                }
+                (PrimOp::Neg, [x]) => format!("(-{x})"),
+                (PrimOp::Not, [x]) => format!("(!{x})"),
+                (PrimOp::Len, [x]) => format!("{x}.length"),
+                (op, [x, y]) => {
+                    let sign = match op {
+                        PrimOp::Add => "+",
+                        PrimOp::Sub => "-",
+                        PrimOp::Mul => "*",
+                        PrimOp::And => "&&",
+                        _ => "||",
+                    };
+                    format!("({x} {sign} {y})")
+                }
+                _ => unreachable!("the checker holds every operation to its arity"),
+            }
+        }
+        Expr::Fold {
+            list,
+            init,
+            acc,
+            item,
+            body,
+            ..
+        } => format!(
+            "{}.reduce(({}, {}) => {}, {})",
+            expression(list, profile),
+            profile.name(acc),
+            profile.name(item),
+            arrow(expression(body, profile)),
+            expression(init, profile)
+        ),
+        // `$c` and `$m` cannot be the name of anything a body binds, since no
+        // identifier may contain a `$`.
+        Expr::Case {
+            value,
+            var,
+            some,
+            none,
+        } => format!(
+            "(($c) => $c === null || $c === undefined ? {} : (({}) => {})($c))({})",
+            expression(none, profile),
+            profile.name(var),
+            arrow(expression(some, profile)),
+            expression(value, profile)
+        ),
+        Expr::Match { value, arms, .. } => {
+            let subject = expression(value, profile);
+            let Some((last, rest)) = arms.split_last() else {
+                return format!("(($m) => {{ throw new Error(\"no variant\"); }})({subject})");
+            };
+            let arm = |a: &unitype_core::ir::MatchArm| {
+                let body = expression(&a.body, profile);
+                match &a.var {
+                    Some(var) => format!("(({}) => {})($m.value)", profile.name(var), arrow(body)),
+                    None => body,
+                }
+            };
+            // Every variant has an arm, so the last needs no test.
+            let mut chain = arm(last);
+            for a in rest.iter().rev() {
+                chain = format!("$m.$tag === {:?} ? {} : {chain}", a.tag.as_str(), arm(a));
+            }
+            format!("(($m) => {chain})({subject})")
+        }
+    }
+}
+
+/// The body of an arrow function, bracketed if it would otherwise be read as a
+/// block.
+///
+/// `(x) => { a: 1 }` is a function whose body is a statement labelled `a`, not
+/// one returning a record, so a record has to be wrapped to be returned.
+fn arrow(body: String) -> String {
+    if body.starts_with('{') {
+        format!("({body})")
+    } else {
+        body
     }
 }
 
@@ -676,6 +832,31 @@ mod tests {
             "{out}"
         );
         assert!(out.contains("is not implemented"), "{out}");
+    }
+
+    const COMPARING: &str = r#"{"universes":[{"name":"demo","functions":[
+        {"name":"same","params":[{"name":"a","ty":"[i64]"},{"name":"b","ty":"[i64]"}],"ret":"bool",
+         "body":{"k":"prim","op":"eq","args":[{"k":"var","name":"a"},{"k":"var","name":"b"}]}},
+        {"name":"plain","params":[{"name":"a","ty":"i64"}],"ret":"i64","body":{"k":"var","name":"a"}}]}]}"#;
+
+    #[test]
+    fn equality_means_the_same_values_rather_than_the_same_array() {
+        let out = generate(COMPARING);
+        assert!(out.contains("unitypeEqual(a, b)"), "{out}");
+        assert!(
+            out.contains("function unitypeEqual("),
+            "the helper ships with the module that uses it: {out}"
+        );
+        assert!(
+            !out.contains("function unitypeCompare("),
+            "and nothing that module does not use: {out}"
+        );
+    }
+
+    #[test]
+    fn a_module_that_compares_nothing_carries_no_helpers() {
+        let out = generate(SHAPES);
+        assert!(!out.contains("function unitype"), "{out}");
     }
 
     #[test]

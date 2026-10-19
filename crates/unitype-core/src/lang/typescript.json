@@ -84,7 +84,9 @@
     "symbol",
     "type",
     "from",
-    "of"
+    "of",
+    "unitypeEqual",
+    "unitypeCompare"
   ],
   "escape": "{}_",
   "loose": [

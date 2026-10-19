@@ -119,7 +119,7 @@ Kind tokens for types: `never any unit bool i32 i64 f64 string bytes literal
 optional list map tuple record union function future ref param`.
 For declarations: `struct interface enum alias`.
 For expressions (§6): `lit var field make_record make_list make_tuple
-make_variant call let if map_through`.
+make_variant call let if map_through prim fold case match`.
 
 A workspace document:
 
@@ -313,22 +313,67 @@ A signature may carry a **body**: a constructive proof written in a small
 expression language, which both runs directly and transpiles into every target.
 
 The language is **total** by construction: no recursion, no lambdas, no
-unbounded loops. `map_through` is the only iteration form: it maps a
-transformation through a constructor — every element of a list, the value of an
-optional if it is there, the eventual result of a future — visiting what already
-exists and unable to produce more. One form covers every container, because
-`list`, `optional`, and `future` are the same idea applied three ways.
+unbounded loops. Every form either builds a value, names one, or visits what
+already exists a bounded number of times.
 
-Note what `map_through` does *not* offer: there is no way to ask whether an
-optional value is present. A body can say what to do with a value if there is
-one; it cannot branch on absence and do something else entirely.
+**Iteration.** Two forms visit a list, and neither can produce more to visit.
+
+- `map_through` maps a transformation through a constructor — every element of
+  a list, the value of an optional if it is there, the eventual result of a
+  future. One form covers every container, because `list`, `optional`, and
+  `future` are the same idea applied three ways.
+- `fold` carries a value through a list from the left:
+  `{"k":"fold","list":…,"init":…,"acc":"total","item":"x","body":…}`. The body
+  sees the value carried so far as `acc` and the next element as `item`, and
+  what it produces is carried on. It cannot name the fold, the rest of the list,
+  or anything that would let it go round again: this is primitive recursion over
+  a finite value. The carried value keeps one type throughout — the optional
+  `ty`, or else the type of `init` with literals widened to their base types —
+  and each step MUST produce something of that type.
+
+**Elimination.** Two forms take a value apart, and each runs exactly one arm.
+
+- `case` says what to do whether or not a value is there:
+  `{"k":"case","value":…,"var":"n","some":…,"none":…}`. `var` is bound to the
+  value in `some` only. The result is the join of the two arms.
+- `match` says what to do with each variant of an enum:
+  `{"k":"match","ty":"Size","value":…,"arms":[{"tag":"large","var":"n","body":…}]}`.
+  There MUST be exactly one arm per variant. An arm's `var`, when present, is
+  bound to the payload, and MUST be absent for a variant that carries nothing.
+  The result is the join of the arms.
+
+**Operations.** `{"k":"prim","op":…,"args":[…]}` applies one of a closed set of
+operations every target spells in place:
+
+| `op` | operands | result |
+|---|---|---|
+| `eq` `ne` | two values, one a subtype of the other | `bool` |
+| `lt` `le` `gt` `ge` | two integers, two floats, or two strings | `bool` |
+| `add` `sub` `mul` | two integers, or two floats | `i64`, or `f64` |
+| `neg` | one integer, or one float | `i64`, or `f64` |
+| `and` `or` | two booleans; the second is evaluated only if it decides | `bool` |
+| `not` | one boolean | `bool` |
+| `len` | one list | `i64` |
+
+Equality is between values, not their text, in the sense of §7.4. Strings are
+ordered by code point. Integers and floats are not mixed: `x + 1` on a float is
+an error in the body, not a widening, because each target would widen
+differently. An integer result outside `i64`, or a float result that is not
+finite, is a failure of the body rather than a wrapped or infinite value. There
+is no division, because a body that divides by zero would not answer.
+
+**Constants.** A `lit` of a boolean, integer, or string is typed as the literal
+type of that value, so a body can compare a discriminator with the one value it
+may hold. Other constants are typed as §4 infers them.
 
 The call graph among bodies must be acyclic, checked by topological sort.
 Totality is what lets a body be trusted as a proof and lets a transpiled body be
 trusted in a language with no such guarantee.
 
 Computations needing real recursion — sorting, for instance — remain
-propositions with external implementations. That division is intended.
+propositions with external implementations. That division is intended. What a
+fold *can* do is check that one happened: whether a list is in order is a walk
+along it remembering the last element.
 
 ---
 

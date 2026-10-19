@@ -83,6 +83,15 @@ pub enum ExecError {
     /// Following calls between bodies went too deep.
     #[error("evaluation did not terminate")]
     TooDeep,
+    /// Arithmetic produced a number the wire cannot carry.
+    ///
+    /// A failure of the body, not of anywhere it ran: every proof given the
+    /// same numbers would overflow the same way.
+    #[error("`{op}` overflowed: the result is not a number this system can carry")]
+    Overflow {
+        /// The operation.
+        op: String,
+    },
 }
 
 impl ExecError {

@@ -61,7 +61,10 @@
     "yield",
     "match",
     "case",
-    "type"
+    "type",
+    "_case",
+    "_match",
+    "functools"
   ],
   "escape": "{}_",
   "loose": [

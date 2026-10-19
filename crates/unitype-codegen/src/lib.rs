@@ -32,7 +32,7 @@ pub mod writer;
 use std::path::PathBuf;
 
 use unitype_core::check::CheckedWorkspace;
-use unitype_core::ir::{Type, TypeDef, TypeRef, Universe};
+use unitype_core::ir::{Expr, Type, TypeDef, TypeRef, Universe};
 use unitype_core::lang::ProfileError;
 use unitype_core::{Ident, QualifiedName};
 
@@ -194,6 +194,20 @@ pub(crate) fn selected<'a>(ws: &'a CheckedWorkspace, options: &GenOptions) -> Ve
         .collect();
     chosen.sort_by(|a, b| a.name.cmp(&b.name));
     chosen
+}
+
+/// Whether any body in a universe contains an expression `wanted` picks out.
+///
+/// A backend that needs a helper or an import for some form asks this, so a
+/// module that never uses the form does not carry what it would have needed.
+pub(crate) fn bodies_use(universe: &Universe, wanted: impl Fn(&Expr) -> bool) -> bool {
+    universe.functions.iter().any(|sig| {
+        let mut found = false;
+        if let Some(body) = &sig.body {
+            body.walk(&mut |e| found |= wanted(e));
+        }
+        found
+    })
 }
 
 /// Declarations ordered so that nothing is mentioned before it exists.

@@ -179,8 +179,11 @@ fn desugar_expr(json: &mut Json) -> Result<(), SugarError> {
                 .and_then(Json::as_str)
                 .unwrap_or("")
                 .to_string();
-            if matches!(kind.as_str(), "make_record" | "make_variant") {
-                type_ref_slot(obj, "ty")?;
+            match kind.as_str() {
+                "make_record" | "make_variant" | "match" => type_ref_slot(obj, "ty")?,
+                // The type a fold carries, when it is written out.
+                "fold" => type_slot(obj, "ty")?,
+                _ => {}
             }
             for (key, child) in obj.iter_mut() {
                 // A literal's payload is a value, not an expression.

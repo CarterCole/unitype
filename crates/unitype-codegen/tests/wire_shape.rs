@@ -29,7 +29,9 @@ use unitype_core::{Ident, Workspace};
 /// inherited field, a discriminating literal, a field that may be absent, and
 /// a list — and the cases most likely to stop a file loading at all: prose
 /// long enough to wrap, prose that tries to end its own comment, a union of
-/// strings, and a body.
+/// strings, and bodies: one that builds a record, and some that fold a list,
+/// compare and add, say what to do when something is absent, and take an enum
+/// apart.
 const UNIVERSE: &str = r#"{"universes":[{"name":"demo",
   "doc":"Shapes, and the things done to them.",
   "types":[
@@ -45,17 +47,62 @@ const UNIVERSE: &str = r#"{"universes":[{"name":"demo",
         {"k":"literal","value":{"str":"red"}},
         {"k":"literal","value":{"str":"blue"}}]}},
     {"k":"struct","name":"Label","fields":[
-        {"name":"text","ty":"str"},{"name":"sides","ty":"i64"}]}],
+        {"name":"text","ty":"str"},{"name":"sides","ty":"i64"}]},
+    {"k":"struct","name":"Step","fields":[
+        {"name":"ok","ty":"bool"},{"name":"prev","ty":"i64"},{"name":"started","ty":"bool"}]},
+    {"k":"enum","name":"Size","variants":[{"name":"small"},{"name":"large","payload":"i64"}]}],
   "functions":[
     {"name":"label_of","doc":"Describes a circle.",
      "params":[{"name":"c","ty":"Circle"}],"ret":"Label",
      "body":{"k":"make_record","ty":"Label","fields":[
         {"name":"text","value":{"k":"field","of":{"k":"var","name":"c"},"name":"id"}},
         {"name":"sides","value":{"k":"lit","value":0}}]}},
-    {"name":"area","params":[{"name":"c","ty":"Circle"}],"ret":"float"}]}]}"#;
+    {"name":"area","params":[{"name":"c","ty":"Circle"}],"ret":"float"},
+    {"name":"total","params":[{"name":"xs","ty":"[i64]"}],"ret":"i64",
+     "body":{"k":"fold","list":{"k":"var","name":"xs"},"init":{"k":"lit","value":0},
+             "acc":"t","item":"x",
+             "body":{"k":"prim","op":"add","args":[{"k":"var","name":"t"},{"k":"var","name":"x"}]}}},
+    {"name":"ordered","params":[{"name":"xs","ty":"[i64]"}],"ret":"bool",
+     "body":{"k":"field","name":"ok","of":
+       {"k":"fold","list":{"k":"var","name":"xs"},
+        "init":{"k":"make_record","ty":"Step","fields":[
+            {"name":"ok","value":{"k":"lit","value":true}},
+            {"name":"prev","value":{"k":"lit","value":0}},
+            {"name":"started","value":{"k":"lit","value":false}}]},
+        "acc":"s","item":"x",
+        "body":{"k":"make_record","ty":"Step","fields":[
+            {"name":"ok","value":{"k":"prim","op":"and","args":[
+                {"k":"field","of":{"k":"var","name":"s"},"name":"ok"},
+                {"k":"prim","op":"or","args":[
+                    {"k":"prim","op":"not","args":[{"k":"field","of":{"k":"var","name":"s"},"name":"started"}]},
+                    {"k":"prim","op":"le","args":[{"k":"field","of":{"k":"var","name":"s"},"name":"prev"},
+                                                  {"k":"var","name":"x"}]}]}]}},
+            {"name":"prev","value":{"k":"var","name":"x"}},
+            {"name":"started","value":{"k":"lit","value":true}}]}}}},
+    {"name":"note_or","params":[{"name":"c","ty":"Circle"}],"ret":"str",
+     "body":{"k":"case","value":{"k":"field","of":{"k":"var","name":"c"},"name":"note"},"var":"it",
+             "some":{"k":"var","name":"it"},"none":{"k":"lit","value":"none"}}},
+    {"name":"measure","params":[{"name":"s","ty":"Size"}],"ret":"i64",
+     "body":{"k":"match","ty":"Size","value":{"k":"var","name":"s"},"arms":[
+        {"tag":"small","body":{"k":"lit","value":0}},
+        {"tag":"large","var":"n","body":{"k":"prim","op":"mul","args":[
+            {"k":"var","name":"n"},{"k":"lit","value":2}]}}]}},
+    {"name":"two_tags","params":[{"name":"c","ty":"Circle"}],"ret":"bool",
+     "body":{"k":"prim","op":"and","args":[
+        {"k":"prim","op":"eq","args":[
+            {"k":"prim","op":"len","args":[{"k":"field","of":{"k":"var","name":"c"},"name":"tags"}]},
+            {"k":"lit","value":2}]},
+        {"k":"prim","op":"ne","args":[
+            {"k":"field","of":{"k":"var","name":"c"},"name":"id"},{"k":"lit","value":"x"}]}]}}]}]}"#;
 
 /// What the body above produces for the circle every test builds.
 const LABEL: &str = r#"{"text":"c-1","sides":0}"#;
+
+/// What the other bodies produce, asked the same questions in every language:
+/// `total([1,2,3,4])`, `ordered([1,2,2,5])`, `ordered([3,1])`, `note_or` and
+/// `two_tags` of the circle, and `measure` of each size.
+const FORMS: &str = r#"{"total":10,"ordered":true,"unordered":false,"note":"none",
+    "small":0,"large":42,"two_tags":true}"#;
 
 fn workspace() -> CheckedWorkspace {
     check_workspace(Workspace::from_json(UNIVERSE).expect("reads")).expect("checks")
@@ -216,7 +263,7 @@ fn the_generated_typescript_loads_and_produces_the_shape_it_promised() {
     // not have parsed.
     std::fs::write(
         root.join("check.mjs"),
-        r#"import { label_of } from "./demo.ts";
+        r#"import { label_of, measure, note_or, ordered, total, two_tags } from "./demo.ts";
 
 // Written against the generated `Circle` interface: every field it requires,
 // and nothing for the one that may be absent.
@@ -226,7 +273,16 @@ const circle = {
   radius: 2.5,
   tags: ["round", "blue"],
 };
-process.stdout.write(JSON.stringify({ circle, label: label_of(circle) }));
+const forms = {
+  total: total([1, 2, 3, 4]),
+  ordered: ordered([1, 2, 2, 5]),
+  unordered: ordered([3, 1]),
+  note: note_or(circle),
+  small: measure({ $tag: "small" }),
+  large: measure({ $tag: "large", value: 21 }),
+  two_tags: two_tags(circle),
+};
+process.stdout.write(JSON.stringify({ circle, label: label_of(circle), forms }));
 "#,
     )
     .expect("writes the driver");
@@ -244,6 +300,11 @@ process.stdout.write(JSON.stringify({ circle, label: label_of(circle) }));
         normalize(LABEL),
         "the body, as TypeScript, answered differently"
     );
+    assert_eq!(
+        normalize(&produced["forms"].to_string()),
+        normalize(FORMS),
+        "the bodies, as TypeScript, answered differently"
+    );
 }
 
 #[test]
@@ -257,18 +318,34 @@ fn the_generated_python_runs_the_body_it_was_given() {
     std::fs::write(
         root.join("check.py"),
         r#"import dataclasses, json
-from demo import Circle, label_of
+from demo import Circle, label_of, measure, note_or, ordered, total, two_tags
 
 circle = Circle(id="c-1", kind="circle", radius=2.5, tags=["round", "blue"])
-print(json.dumps(dataclasses.asdict(label_of(circle))))
+forms = {
+    "total": total([1, 2, 3, 4]),
+    "ordered": ordered([1, 2, 2, 5]),
+    "unordered": ordered([3, 1]),
+    "note": note_or(circle),
+    "small": measure({"$tag": "small"}),
+    "large": measure({"$tag": "large", "value": 21}),
+    "two_tags": two_tags(circle),
+}
+print(json.dumps({"label": dataclasses.asdict(label_of(circle)), "forms": forms}))
 "#,
     )
     .expect("writes the driver");
 
+    let produced: serde_json::Value =
+        serde_json::from_str(&run("python3", &["check.py"], &root)).expect("valid JSON");
     assert_eq!(
-        normalize(&run("python3", &["check.py"], &root)),
+        normalize(&produced["label"].to_string()),
         normalize(LABEL),
         "the body, as Python, answered differently"
+    );
+    assert_eq!(
+        normalize(&produced["forms"].to_string()),
+        normalize(FORMS),
+        "the bodies, as Python, answered differently"
     );
 }
 
@@ -311,9 +388,19 @@ fn main() {
     let red: demo::Colour = serde_json::from_str("\"red\"").expect("red is one of them");
     let green = serde_json::from_str::<demo::Colour>("\"green\"").is_ok();
 
+    let forms = serde_json::json!({
+        "total": demo::total(vec![1, 2, 3, 4]),
+        "ordered": demo::ordered(vec![1, 2, 2, 5]),
+        "unordered": demo::ordered(vec![3, 1]),
+        "note": demo::note_or(circle.clone()),
+        "small": demo::measure(demo::Size::small),
+        "large": demo::measure(demo::Size::large(21)),
+        "two_tags": demo::two_tags(circle.clone()),
+    });
+
     println!(
         "{}",
-        serde_json::json!({ "circle": circle, "label": label, "red": red, "green": green })
+        serde_json::json!({ "circle": circle, "label": label, "red": red, "green": green, "forms": forms })
     );
 }
 "#,
@@ -354,6 +441,11 @@ fn main() {
         normalize(&produced["label"].to_string()),
         normalize(LABEL),
         "the body, as Rust, answered differently"
+    );
+    assert_eq!(
+        normalize(&produced["forms"].to_string()),
+        normalize(FORMS),
+        "the bodies, as Rust, answered differently"
     );
     assert_eq!(produced["red"], "red", "a name travels as the string it is");
     assert_eq!(

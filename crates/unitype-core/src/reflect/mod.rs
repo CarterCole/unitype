@@ -152,6 +152,91 @@ mod tests {
     }
 
     #[test]
+    fn every_kind_of_expression_is_described_by_the_description() {
+        use crate::ir::{Expr, FieldInit, Functor, MatchArm, PrimOp};
+
+        let ws = ws();
+        let expr = named("Expr");
+        let id = |s: &str| Ident::new(s).unwrap();
+        let x = || Box::new(Expr::var("x"));
+
+        // One of each form a body can take. A form added to the IR and not
+        // added to the description fails here, as a type does above.
+        let every_form = vec![
+            Expr::lit(Value::Int(1)),
+            Expr::var("x"),
+            Expr::var("x").field("y"),
+            Expr::MakeRecord {
+                ty: TypeRef::local(id("Label")),
+                fields: vec![FieldInit::new(id("text"), Expr::var("x"))],
+            },
+            Expr::MakeList {
+                items: vec![Expr::var("x")],
+            },
+            Expr::MakeTuple {
+                items: vec![Expr::var("x"), Expr::var("y")],
+            },
+            Expr::MakeVariant {
+                ty: TypeRef::local(id("Size")),
+                tag: id("small"),
+                value: None,
+            },
+            Expr::Call {
+                sig: "demo::f".parse().unwrap(),
+                args: vec![Expr::var("x")],
+            },
+            Expr::Let {
+                name: id("y"),
+                value: x(),
+                body: x(),
+            },
+            Expr::If {
+                cond: x(),
+                then: x(),
+                otherwise: x(),
+            },
+            Expr::MapThrough {
+                functor: Functor::Optional,
+                value: x(),
+                var: id("y"),
+                body: x(),
+            },
+            Expr::Prim {
+                op: PrimOp::Le,
+                args: vec![Expr::var("x"), Expr::var("y")],
+            },
+            Expr::Fold {
+                list: x(),
+                init: x(),
+                ty: Some(Type::I64.optional()),
+                acc: id("a"),
+                item: id("i"),
+                body: x(),
+            },
+            Expr::Case {
+                value: x(),
+                var: id("y"),
+                some: x(),
+                none: x(),
+            },
+            Expr::Match {
+                ty: TypeRef::local(id("Size")),
+                value: x(),
+                arms: vec![MatchArm {
+                    tag: id("large"),
+                    var: Some(id("n")),
+                    body: Expr::var("n"),
+                }],
+            },
+        ];
+
+        for form in &every_form {
+            check(&ws, &as_value(form), &expr);
+        }
+        assert_eq!(every_form.len(), 15, "one of every form");
+    }
+
+    #[test]
     fn a_nested_type_is_described_all_the_way_down() {
         let ws = ws();
         let deep = Type::Union {

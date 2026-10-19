@@ -18,8 +18,8 @@ use heck::ToUpperCamelCase;
 use unitype_core::QualifiedName;
 use unitype_core::check::CheckedWorkspace;
 use unitype_core::ir::{
-    AliasDef, EnumDef, Expr, Field, FunctionSig, InterfaceDef, LiteralValue, StructDef, Type,
-    TypeDef, Universe,
+    AliasDef, EnumDef, Expr, Field, FunctionSig, InterfaceDef, LiteralValue, PrimOp, StructDef,
+    Type, TypeDef, Universe,
 };
 use unitype_core::lang::{LanguageProfile, profile};
 use unitype_core::value::Value;
@@ -568,6 +568,88 @@ pub(crate) fn expression(expr: &Expr, profile: &LanguageProfile) -> String {
                 Functor::Future => format!("{{ let {bound} = {subject}.await; {inner} }}"),
             }
         }
+        Expr::Prim { op, args } => {
+            let operands: Vec<String> = args.iter().map(|a| expression(a, profile)).collect();
+            match (op, operands.as_slice()) {
+                (PrimOp::Neg, [x]) => format!("(-{x})"),
+                (PrimOp::Not, [x]) => format!("(!{x})"),
+                // A length is a `usize` in Rust and an `i64` everywhere else
+                // here.
+                (PrimOp::Len, [x]) => format!("({x}.len() as i64)"),
+                (op, [x, y]) => format!("({x} {} {y})", infix(*op)),
+                _ => unreachable!("the checker holds every operation to its arity"),
+            }
+        }
+        // Borrowed and cloned element by element, so the list is still there
+        // for anything else in the body that mentions it.
+        Expr::Fold {
+            list,
+            init,
+            acc,
+            item,
+            body,
+            ..
+        } => format!(
+            "{}.iter().cloned().fold({}, |{}, {}| {})",
+            expression(list, profile),
+            expression(init, profile),
+            profile.name(acc),
+            profile.name(item),
+            expression(body, profile)
+        ),
+        Expr::Case {
+            value,
+            var,
+            some,
+            none,
+        } => format!(
+            "match {} {{ Some({}) => {}, None => {} }}",
+            expression(value, profile),
+            profile.name(var),
+            expression(some, profile),
+            expression(none, profile)
+        ),
+        Expr::Match { ty, value, arms } => {
+            let name = profile.name(&ty.name);
+            let arms: Vec<String> = arms
+                .iter()
+                .map(|arm| {
+                    let body = expression(&arm.body, profile);
+                    match &arm.var {
+                        Some(var) => {
+                            format!("{name}::{}({}) => {body}", arm.tag, profile.name(var))
+                        }
+                        // Braces and `..` match a variant whatever it carries,
+                        // so an arm that ignores the payload need not know
+                        // whether there is one.
+                        None => format!("{name}::{} {{ .. }} => {body}", arm.tag),
+                    }
+                })
+                .collect();
+            format!(
+                "match {} {{ {} }}",
+                expression(value, profile),
+                arms.join(", ")
+            )
+        }
+    }
+}
+
+/// How Rust writes a two-operand operation.
+fn infix(op: PrimOp) -> &'static str {
+    match op {
+        PrimOp::Eq => "==",
+        PrimOp::Ne => "!=",
+        PrimOp::Lt => "<",
+        PrimOp::Le => "<=",
+        PrimOp::Gt => ">",
+        PrimOp::Ge => ">=",
+        PrimOp::Add => "+",
+        PrimOp::Sub => "-",
+        PrimOp::Mul => "*",
+        PrimOp::And => "&&",
+        PrimOp::Or => "||",
+        PrimOp::Neg | PrimOp::Not | PrimOp::Len => unreachable!("not a two-operand operation"),
     }
 }
 

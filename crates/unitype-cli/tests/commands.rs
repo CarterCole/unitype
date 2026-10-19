@@ -87,6 +87,27 @@ fn the_same_data_in_two_universes_gets_the_same_words() {
 }
 
 #[test]
+fn a_body_can_say_whether_a_list_is_in_order_without_sorting_it() {
+    // A fold walks the list once, remembering the last element. Nothing has
+    // to be implemented anywhere: the body is the proof.
+    let sorted = json(&["run", "demo::sorted", "--args", "[[1,2,2,5]]"]);
+    assert_eq!(sorted["value"], true, "{sorted}");
+    assert_eq!(sorted["implementation"], "demo::sorted#body");
+
+    let unsorted = json(&["run", "demo::sorted", "--args", "[[3,1,2]]"]);
+    assert_eq!(unsorted["value"], false, "{unsorted}");
+
+    assert_eq!(
+        json(&["run", "demo::sum", "--args", "[[1,2,3]]"])["value"],
+        6
+    );
+    assert_eq!(
+        json(&["run", "demo::count", "--args", "[[1,2,1,1], 1]"])["value"],
+        3
+    );
+}
+
+#[test]
 fn asking_for_speed_and_asking_for_memory_choose_differently() {
     if !have_python() {
         eprintln!("no python3 on this machine; skipping");

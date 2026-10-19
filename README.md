@@ -59,6 +59,11 @@ today.
   structural addressing that erases names across a whole workspace.
 - **Bridges.** Derived from two declarations, composed along a path, and run
   through the same expression language a person writes a proof in.
+- **The expression language.** Total by construction, and now able to say
+  something: a `fold` carries a value through a list, `case` and `match` take
+  an optional and an enum apart, and a closed set of operations compares,
+  adds, and counts. `demo::sorted` checks that a list is in order in all three
+  target languages without anyone implementing it.
 - **Reading.** Text becomes a value *against* a type, which is what lets an
   object become a map and `"Red"` become a variant.
 - **The runtime.** Environments register what they can prove; a policy decides
@@ -84,9 +89,9 @@ today.
 - **Reflection.** A built-in universe describes the representation, and is
   checked against it, so it cannot drift.
 
-569 tests, including the subtyping laws and the inference laws as property
+600 tests, including the subtyping laws and the inference laws as property
 tests, and pinned golden vectors that make canonical drift impossible to do by
-accident. 580 with the sandbox turned on.
+accident. 611 with the sandbox turned on.
 
 ```bash
 cargo test

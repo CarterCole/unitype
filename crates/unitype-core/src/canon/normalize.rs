@@ -332,6 +332,37 @@ fn qualify_expr_in_place(e: &mut Expr, home: &Ident) {
             qualify_expr_in_place(value, home);
             qualify_expr_in_place(body, home);
         }
+        Expr::Prim { args, .. } => {
+            args.iter_mut().for_each(|a| qualify_expr_in_place(a, home));
+        }
+        Expr::Fold {
+            list,
+            init,
+            ty,
+            body,
+            ..
+        } => {
+            qualify_expr_in_place(list, home);
+            qualify_expr_in_place(init, home);
+            if let Some(t) = ty {
+                *t = normalize_type(&qualify_type(t, home));
+            }
+            qualify_expr_in_place(body, home);
+        }
+        Expr::Case {
+            value, some, none, ..
+        } => {
+            qualify_expr_in_place(value, home);
+            qualify_expr_in_place(some, home);
+            qualify_expr_in_place(none, home);
+        }
+        Expr::Match { ty, value, arms } => {
+            qualify_ref_in_place(ty, home);
+            qualify_expr_in_place(value, home);
+            for arm in arms {
+                qualify_expr_in_place(&mut arm.body, home);
+            }
+        }
     }
 }
 

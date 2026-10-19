@@ -11,14 +11,19 @@
 //! and no unbounded loops of its own, that makes every body total — which is
 //! what lets a body be trusted as a proof, and lets it be transpiled into a
 //! language that offers no such guarantee.
+//!
+//! A constant is typed as itself where it can be: `"circle"` is the literal
+//! type `"circle"`, which is a `str` wherever a `str` is wanted, and which is
+//! what lets a body compare a discriminator against the one value it may hold.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
+use crate::canon::normalize_type;
 use crate::check::error::{CheckErrorKind, Diagnostics, PathSeg, TypePath, describe};
 use crate::check::{CheckedWorkspace, SigIx};
 use crate::ident::{Ident, QualifiedName};
-use crate::ir::{Expr, Functor, Type, TypeDef};
-use crate::value::{infer, unify};
+use crate::ir::{Expr, Functor, LiteralValue, PrimOp, Type, TypeDef};
+use crate::value::{Value, infer, unify};
 
 /// Names bound where an expression appears.
 type Env = HashMap<Ident, Type>;
@@ -71,7 +76,18 @@ impl CheckedWorkspace {
         diags: &mut Diagnostics,
     ) -> Option<Type> {
         match expr {
-            Expr::Lit { value } => Some(infer(value)),
+            Expr::Lit { value } => Some(match value {
+                Value::Bool(b) => Type::Literal {
+                    value: LiteralValue::Bool(*b),
+                },
+                Value::Int(i) => Type::Literal {
+                    value: LiteralValue::Int(*i),
+                },
+                Value::Str(s) => Type::Literal {
+                    value: LiteralValue::Str(s.clone()),
+                },
+                other => infer(other),
+            }),
 
             Expr::Var { name } => match env.get(name) {
                 Some(ty) => Some(ty.clone()),
@@ -305,6 +321,292 @@ impl CheckedWorkspace {
                 // constructor it went in through.
                 Some(functor.apply(self.type_of(body, &inner, path, diags)?))
             }
+
+            Expr::Prim { op, args } => self.type_of_prim(*op, args, env, path, diags),
+
+            Expr::Fold {
+                list,
+                init,
+                ty,
+                acc,
+                item,
+                body,
+            } => {
+                let subject = self.type_of(list, env, path, diags)?;
+                let Type::List { of: element } = self.expand_alias(&subject) else {
+                    diags.error(
+                        CheckErrorKind::CannotEliminate {
+                            found: describe(&subject),
+                            wanted: "a list".into(),
+                        },
+                        path.clone(),
+                    );
+                    return None;
+                };
+                let start = self.type_of(init, env, path, diags)?;
+                let carried = match ty {
+                    Some(declared) => {
+                        if !self.is_subtype(&start, declared) {
+                            diags.error(
+                                CheckErrorKind::AccumulatorMismatch {
+                                    what: "the starting value",
+                                    found: describe(&start),
+                                    required: describe(declared),
+                                },
+                                path.clone(),
+                            );
+                        }
+                        declared.clone()
+                    }
+                    // A count that starts at `0` is counting integers, not
+                    // holding the one value `0`.
+                    None => widen(&start),
+                };
+
+                let mut inner = env.clone();
+                inner.insert(acc.clone(), carried.clone());
+                inner.insert(item.clone(), *element);
+                let step = self.type_of(body, &inner, path, diags)?;
+                if !self.is_subtype(&step, &carried) {
+                    diags.error(
+                        CheckErrorKind::AccumulatorMismatch {
+                            what: "each step",
+                            found: describe(&step),
+                            required: describe(&carried),
+                        },
+                        path.clone(),
+                    );
+                }
+                Some(carried)
+            }
+
+            Expr::Case {
+                value,
+                var,
+                some,
+                none,
+            } => {
+                let subject = self.type_of(value, env, path, diags)?;
+                let inside = match self.expand_alias(&subject) {
+                    Type::Optional { of } => *of,
+                    // Always absent, so the present arm binds something that
+                    // can never be there.
+                    Type::Unit => Type::Never,
+                    _ => {
+                        diags.error(
+                            CheckErrorKind::CannotEliminate {
+                                found: describe(&subject),
+                                wanted: "something that may be absent".into(),
+                            },
+                            path.clone(),
+                        );
+                        return None;
+                    }
+                };
+                let mut inner = env.clone();
+                inner.insert(var.clone(), inside);
+                // Both arms are checked before either result is used, so a
+                // mistake in the second is not hidden by one in the first.
+                let present = self.type_of(some, &inner, path, diags);
+                let absent = self.type_of(none, env, path, diags);
+                Some(unify(&present?, &absent?))
+            }
+
+            Expr::Match { ty, value, arms } => {
+                let target = self.ref_target(ty)?;
+                if self.def(&target).is_none() {
+                    diags.error(CheckErrorKind::UnknownType(target), path.clone());
+                    return None;
+                }
+                let Some(variants) = self.variants_of(ty) else {
+                    diags.error(
+                        CheckErrorKind::CannotEliminate {
+                            found: target.to_string(),
+                            wanted: "an enum".into(),
+                        },
+                        path.clone(),
+                    );
+                    return None;
+                };
+                let subject = self.type_of(value, env, path, diags)?;
+                if !self.is_subtype(&subject, &Type::Ref(ty.clone())) {
+                    diags.error(
+                        CheckErrorKind::CannotEliminate {
+                            found: describe(&subject),
+                            wanted: format!("a `{target}`"),
+                        },
+                        path.clone(),
+                    );
+                    return None;
+                }
+
+                let mut covered: HashSet<&Ident> = HashSet::new();
+                let mut result = Some(Type::Never);
+                for arm in arms {
+                    let Some(variant) = variants.iter().find(|v| v.name == arm.tag) else {
+                        diags.error(
+                            CheckErrorKind::NoSuchVariant {
+                                name: target.clone(),
+                                tag: arm.tag.clone(),
+                            },
+                            path.clone(),
+                        );
+                        result = None;
+                        continue;
+                    };
+                    if !covered.insert(&arm.tag) {
+                        diags.error(CheckErrorKind::DuplicateArm(arm.tag.clone()), path.clone());
+                        result = None;
+                        continue;
+                    }
+                    let mut inner = env.clone();
+                    if let Some(var) = &arm.var {
+                        if matches!(variant.payload, Type::Unit) {
+                            diags.error(
+                                CheckErrorKind::NothingToBind(arm.tag.clone()),
+                                path.clone(),
+                            );
+                            result = None;
+                            continue;
+                        }
+                        inner.insert(var.clone(), variant.payload.clone());
+                    }
+                    // Any arm may be the one that runs, so the result is
+                    // whatever admits them all.
+                    match self.type_of(&arm.body, &inner, path, diags) {
+                        Some(produced) => result = result.map(|r| unify(&r, &produced)),
+                        None => result = None,
+                    }
+                }
+
+                let missing: Vec<Ident> = variants
+                    .iter()
+                    .filter(|v| !covered.contains(&v.name))
+                    .map(|v| v.name.clone())
+                    .collect();
+                if !missing.is_empty() {
+                    diags.error(
+                        CheckErrorKind::NonExhaustiveMatch {
+                            name: target,
+                            missing,
+                        },
+                        path.clone(),
+                    );
+                    return None;
+                }
+                result
+            }
+        }
+    }
+
+    /// The type an operation produces, or `None` if its operands do not suit
+    /// it.
+    fn type_of_prim(
+        &self,
+        op: PrimOp,
+        args: &[Expr],
+        env: &Env,
+        path: &TypePath,
+        diags: &mut Diagnostics,
+    ) -> Option<Type> {
+        if args.len() != op.arity() {
+            diags.error(
+                CheckErrorKind::PrimArity {
+                    op: op.token(),
+                    expected: op.arity(),
+                    got: args.len(),
+                },
+                path.clone(),
+            );
+            return None;
+        }
+        let types: Vec<Type> = args
+            .iter()
+            .filter_map(|a| self.type_of(a, env, path, diags))
+            .collect();
+        if types.len() != args.len() {
+            return None;
+        }
+
+        let mut refuse = |wanted: &'static str| {
+            diags.error(
+                CheckErrorKind::BadOperands {
+                    op: op.token(),
+                    found: types
+                        .iter()
+                        .map(describe)
+                        .collect::<Vec<_>>()
+                        .join("` and `"),
+                    wanted,
+                },
+                path.clone(),
+            );
+            None
+        };
+        let kinds: Vec<Option<Operand>> = types.iter().map(|t| self.operand(t)).collect();
+
+        match op {
+            PrimOp::Eq | PrimOp::Ne => {
+                let (a, b) = (&types[0], &types[1]);
+                // Comparing two things that can never be equal is a mistake
+                // worth saying so about, not a question with the answer no.
+                if self.is_subtype(a, b) || self.is_subtype(b, a) {
+                    Some(Type::Bool)
+                } else {
+                    refuse("two things of the same type")
+                }
+            }
+            _ if op.is_ordering() => match (kinds[0], kinds[1]) {
+                (Some(x), Some(y)) if x == y => Some(Type::Bool),
+                _ => refuse("two numbers of the same kind, or two strings"),
+            },
+            PrimOp::Add | PrimOp::Sub | PrimOp::Mul => match (kinds[0], kinds[1]) {
+                (Some(Operand::Int), Some(Operand::Int)) => Some(Type::I64),
+                (Some(Operand::Float), Some(Operand::Float)) => Some(Type::F64),
+                _ => refuse("two integers or two floats"),
+            },
+            PrimOp::Neg => match kinds[0] {
+                Some(Operand::Int) => Some(Type::I64),
+                Some(Operand::Float) => Some(Type::F64),
+                _ => refuse("a number"),
+            },
+            PrimOp::And | PrimOp::Or => {
+                if types.iter().all(|t| self.is_subtype(t, &Type::Bool)) {
+                    Some(Type::Bool)
+                } else {
+                    refuse("two booleans")
+                }
+            }
+            PrimOp::Not => {
+                if self.is_subtype(&types[0], &Type::Bool) {
+                    Some(Type::Bool)
+                } else {
+                    refuse("a boolean")
+                }
+            }
+            PrimOp::Len => match self.expand_alias(&types[0]) {
+                Type::List { .. } => Some(Type::I64),
+                _ => refuse("a list"),
+            },
+            // Every ordering was handled above.
+            PrimOp::Lt | PrimOp::Le | PrimOp::Gt | PrimOp::Ge => unreachable!(),
+        }
+    }
+
+    /// What kind of thing an operand is, for the operations that care.
+    ///
+    /// Integers and floats are kept apart: `x + 1` on a float is a mistake in
+    /// the body, not something to widen silently, because the backends would
+    /// each widen it differently.
+    fn operand(&self, ty: &Type) -> Option<Operand> {
+        if self.is_subtype(ty, &Type::I64) {
+            Some(Operand::Int)
+        } else if self.is_subtype(ty, &Type::F64) {
+            Some(Operand::Float)
+        } else if self.is_subtype(ty, &Type::String) {
+            Some(Operand::Str)
+        } else {
+            None
         }
     }
 
@@ -314,11 +616,28 @@ impl CheckedWorkspace {
         match self.expand_alias(ty) {
             Type::Record { fields } => Some(fields),
             Type::Ref(r) => self.fields_of(&r),
-            // Reading a field off something that might be absent would need a
-            // check first, which this language has no way to express.
+            // Something that might be absent has to be taken apart with a
+            // `case` first, which says what to do when it is.
             _ => None,
         }
     }
+}
+
+/// The kinds of operand the operations distinguish.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Operand {
+    Int,
+    Float,
+    Str,
+}
+
+/// A type with every literal in it replaced by the type it is a value of.
+fn widen(ty: &Type) -> Type {
+    let kids: Vec<Type> = ty.children().into_iter().map(widen).collect();
+    normalize_type(&match ty.with_children(kids) {
+        Type::Literal { value } => value.base(),
+        other => other,
+    })
 }
 
 /// Bodies that call each other in a loop would never finish.
@@ -629,6 +948,256 @@ mod tests {
                     {"k":"call","sig":"demo::sort","args":[{"k":"var","name":"xs"}]}]}}"#,
         );
         assert!(errors(&json).is_empty(), "{:?}", errors(&json));
+    }
+
+    /// A body over one parameter of each kind the new forms take apart.
+    fn over(ret: &str, body: &str) -> String {
+        universe(&format!(
+            r#"{{"name":"f","params":[{{"name":"xs","ty":"[i64]"}},{{"name":"u","ty":"User"}},
+                                      {{"name":"b","ty":"Badge"}},{{"name":"c","ty":"Color"}}],
+                "ret":{ret},"body":{body}}}"#
+        ))
+    }
+
+    fn var(name: &str) -> String {
+        format!(r#"{{"k":"var","name":"{name}"}}"#)
+    }
+
+    fn prim(op: &str, args: &[&str]) -> String {
+        format!(r#"{{"k":"prim","op":"{op}","args":[{}]}}"#, args.join(","))
+    }
+
+    #[test]
+    fn a_fold_carries_a_value_from_one_element_to_the_next() {
+        let sum = over(
+            r#""i64""#,
+            &format!(
+                r#"{{"k":"fold","list":{},"init":{{"k":"lit","value":0}},"acc":"total","item":"x",
+                    "body":{}}}"#,
+                var("xs"),
+                prim("add", &[&var("total"), &var("x")])
+            ),
+        );
+        assert!(errors(&sum).is_empty(), "{:?}", errors(&sum));
+    }
+
+    #[test]
+    fn a_fold_that_changes_what_it_carries_is_reported() {
+        let json = over(
+            r#""i64""#,
+            &format!(
+                r#"{{"k":"fold","list":{},"init":{{"k":"lit","value":0}},"acc":"total","item":"x",
+                    "body":{{"k":"lit","value":"oops"}}}}"#,
+                var("xs")
+            ),
+        );
+        let msgs = errors(&json);
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("each step") && m.contains("i64")),
+            "{msgs:?}"
+        );
+    }
+
+    #[test]
+    fn a_fold_may_say_what_it_carries_when_its_start_does_not() {
+        // Starting from nothing, there is no type to read off the start.
+        let json = over(
+            r#""i64?""#,
+            &format!(
+                r#"{{"k":"fold","list":{},"init":{{"k":"lit","value":null}},"ty":"i64?",
+                    "acc":"last","item":"x","body":{}}}"#,
+                var("xs"),
+                var("x")
+            ),
+        );
+        assert!(errors(&json).is_empty(), "{:?}", errors(&json));
+    }
+
+    #[test]
+    fn folding_something_that_is_not_a_list_is_reported() {
+        let json = over(
+            r#""i64""#,
+            &format!(
+                r#"{{"k":"fold","list":{},"init":{{"k":"lit","value":0}},"acc":"a","item":"x",
+                    "body":{}}}"#,
+                var("u"),
+                var("a")
+            ),
+        );
+        assert!(
+            errors(&json)[0].contains("is not a list"),
+            "{:?}",
+            errors(&json)
+        );
+    }
+
+    #[test]
+    fn a_constant_is_its_own_type_so_it_can_be_compared_with_what_it_belongs_to() {
+        let good = over(
+            r#""bool""#,
+            &prim(
+                "eq",
+                &[
+                    r#"{"k":"field","of":{"k":"var","name":"u"},"name":"first"}"#,
+                    r#"{"k":"lit","value":"Ada"}"#,
+                ],
+            ),
+        );
+        assert!(errors(&good).is_empty(), "{:?}", errors(&good));
+
+        let bad = over(
+            r#""bool""#,
+            &prim(
+                "eq",
+                &[
+                    r#"{"k":"field","of":{"k":"var","name":"u"},"name":"age"}"#,
+                    r#"{"k":"lit","value":"Ada"}"#,
+                ],
+            ),
+        );
+        assert!(
+            errors(&bad)[0].contains("two things of the same type"),
+            "an integer is never a string: {:?}",
+            errors(&bad)
+        );
+    }
+
+    #[test]
+    fn arithmetic_does_not_mix_integers_and_floats() {
+        let json = over(
+            r#""f64""#,
+            &prim(
+                "add",
+                &[
+                    r#"{"k":"field","of":{"k":"var","name":"u"},"name":"age"}"#,
+                    r#"{"k":"lit","value":1.5}"#,
+                ],
+            ),
+        );
+        assert!(
+            errors(&json)[0].contains("two integers or two floats"),
+            "{:?}",
+            errors(&json)
+        );
+    }
+
+    #[test]
+    fn an_operation_given_the_wrong_number_of_operands_is_reported() {
+        let json = over(r#""bool""#, &prim("not", &[&var("xs"), &var("xs")]));
+        assert!(
+            errors(&json)[0].contains("takes 1 operand"),
+            "{:?}",
+            errors(&json)
+        );
+    }
+
+    #[test]
+    fn the_length_of_a_list_is_an_integer() {
+        let json = over(
+            r#""bool""#,
+            &prim(
+                "lt",
+                &[&prim("len", &[&var("xs")]), r#"{"k":"lit","value":3}"#],
+            ),
+        );
+        assert!(errors(&json).is_empty(), "{:?}", errors(&json));
+    }
+
+    #[test]
+    fn a_case_says_what_to_do_whether_or_not_something_is_there() {
+        let json = over(
+            r#""str""#,
+            r#"{"k":"case","value":{"k":"field","of":{"k":"var","name":"b"},"name":"note"},
+                "var":"n","some":{"k":"var","name":"n"},"none":{"k":"lit","value":"no note"}}"#,
+        );
+        assert!(errors(&json).is_empty(), "{:?}", errors(&json));
+    }
+
+    #[test]
+    fn a_case_on_something_that_is_always_there_is_reported() {
+        let json = over(
+            r#""str""#,
+            r#"{"k":"case","value":{"k":"field","of":{"k":"var","name":"b"},"name":"label"},
+                "var":"n","some":{"k":"var","name":"n"},"none":{"k":"lit","value":"-"}}"#,
+        );
+        assert!(
+            errors(&json)[0].contains("may be absent"),
+            "{:?}",
+            errors(&json)
+        );
+    }
+
+    fn matching(arms: &str) -> String {
+        over(
+            r#""str""#,
+            &format!(
+                r#"{{"k":"match","ty":"Color","value":{},"arms":[{arms}]}}"#,
+                var("c")
+            ),
+        )
+    }
+
+    #[test]
+    fn a_match_binds_the_payload_of_the_variant_it_found() {
+        let json = matching(
+            r#"{"tag":"Red","body":{"k":"lit","value":"red"}},
+               {"tag":"Custom","var":"name","body":{"k":"var","name":"name"}}"#,
+        );
+        assert!(errors(&json).is_empty(), "{:?}", errors(&json));
+    }
+
+    #[test]
+    fn a_match_that_leaves_a_variant_out_is_reported() {
+        let json = matching(r#"{"tag":"Red","body":{"k":"lit","value":"red"}}"#);
+        let msgs = errors(&json);
+        assert!(
+            msgs.iter().any(|m| m.contains("no arm for `Custom`")),
+            "{msgs:?}"
+        );
+    }
+
+    #[test]
+    fn a_match_arm_for_something_the_enum_does_not_have_is_reported() {
+        let json = matching(
+            r#"{"tag":"Red","body":{"k":"lit","value":"red"}},
+               {"tag":"Custom","var":"n","body":{"k":"var","name":"n"}},
+               {"tag":"Mauve","body":{"k":"lit","value":"?"}}"#,
+        );
+        assert!(
+            errors(&json).iter().any(|m| m.contains("Mauve")),
+            "{:?}",
+            errors(&json)
+        );
+    }
+
+    #[test]
+    fn a_match_arm_given_twice_is_reported() {
+        let json = matching(
+            r#"{"tag":"Red","body":{"k":"lit","value":"red"}},
+               {"tag":"Red","body":{"k":"lit","value":"again"}},
+               {"tag":"Custom","var":"n","body":{"k":"var","name":"n"}}"#,
+        );
+        assert!(
+            errors(&json)
+                .iter()
+                .any(|m| m.contains("more than one arm")),
+            "{:?}",
+            errors(&json)
+        );
+    }
+
+    #[test]
+    fn binding_the_payload_of_a_variant_that_carries_nothing_is_reported() {
+        let json = matching(
+            r#"{"tag":"Red","var":"r","body":{"k":"lit","value":"red"}},
+               {"tag":"Custom","var":"n","body":{"k":"var","name":"n"}}"#,
+        );
+        assert!(
+            errors(&json).iter().any(|m| m.contains("carries nothing")),
+            "{:?}",
+            errors(&json)
+        );
     }
 
     #[test]

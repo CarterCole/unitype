@@ -13,7 +13,7 @@ pub use defs::{
     AliasDef, EnumDef, FunctionSig, InterfaceDef, NamedParam, StructDef, TypeDef, TypeParamDecl,
     Variant,
 };
-pub use expr::{Expr, FieldInit};
+pub use expr::{Expr, FieldInit, MatchArm, PrimOp};
 pub use functor::Functor;
 pub use sugar::SugarError;
 pub use ty::{Field, LiteralValue, Type, TypeRef, fits_f64_exactly};

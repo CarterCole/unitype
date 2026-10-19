@@ -727,6 +727,584 @@
     },
     {
       "k": "struct",
+      "name": "ExprLit",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "lit"
+            }
+          }
+        },
+        {
+          "name": "value",
+          "ty": "any",
+          "doc": "A value, in the form values travel in."
+        }
+      ],
+      "doc": "A constant."
+    },
+    {
+      "k": "struct",
+      "name": "ExprVar",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "var"
+            }
+          }
+        },
+        {
+          "name": "name",
+          "ty": "str"
+        }
+      ],
+      "doc": "A parameter, or a name a form inside the body bound."
+    },
+    {
+      "k": "struct",
+      "name": "ExprField",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "field"
+            }
+          }
+        },
+        {
+          "name": "of",
+          "ty": "Expr"
+        },
+        {
+          "name": "name",
+          "ty": "str"
+        }
+      ],
+      "doc": "One field read off a record."
+    },
+    {
+      "k": "struct",
+      "name": "ExprMakeRecord",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "make_record"
+            }
+          }
+        },
+        {
+          "name": "ty",
+          "ty": "TypeRef"
+        },
+        {
+          "name": "fields",
+          "ty": "[FieldInit]"
+        }
+      ],
+      "doc": "A named struct, built."
+    },
+    {
+      "k": "struct",
+      "name": "ExprMakeList",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "make_list"
+            }
+          }
+        },
+        {
+          "name": "items",
+          "ty": "[Expr]"
+        }
+      ],
+      "doc": "A list, built."
+    },
+    {
+      "k": "struct",
+      "name": "ExprMakeTuple",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "make_tuple"
+            }
+          }
+        },
+        {
+          "name": "items",
+          "ty": "[Expr]"
+        }
+      ],
+      "doc": "A tuple, built."
+    },
+    {
+      "k": "struct",
+      "name": "ExprMakeVariant",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "make_variant"
+            }
+          }
+        },
+        {
+          "name": "ty",
+          "ty": "TypeRef"
+        },
+        {
+          "name": "tag",
+          "ty": "str"
+        },
+        {
+          "name": "value",
+          "ty": "Expr?",
+          "doc": "Absent for a variant that carries nothing."
+        }
+      ],
+      "doc": "One variant of an enum, built."
+    },
+    {
+      "k": "struct",
+      "name": "ExprCall",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "call"
+            }
+          }
+        },
+        {
+          "name": "sig",
+          "ty": "str",
+          "doc": "The proposition, as `universe::name`."
+        },
+        {
+          "name": "args",
+          "ty": "[Expr]"
+        }
+      ],
+      "doc": "Another proposition, asked. Whichever proof the dispatcher chooses answers."
+    },
+    {
+      "k": "struct",
+      "name": "ExprLet",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "let"
+            }
+          }
+        },
+        {
+          "name": "name",
+          "ty": "str"
+        },
+        {
+          "name": "value",
+          "ty": "Expr"
+        },
+        {
+          "name": "body",
+          "ty": "Expr"
+        }
+      ],
+      "doc": "A name bound for the expression that follows."
+    },
+    {
+      "k": "struct",
+      "name": "ExprIf",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "if"
+            }
+          }
+        },
+        {
+          "name": "cond",
+          "ty": "Expr"
+        },
+        {
+          "name": "then",
+          "ty": "Expr"
+        },
+        {
+          "name": "else",
+          "ty": "Expr"
+        }
+      ],
+      "doc": "One of two expressions, chosen by a boolean."
+    },
+    {
+      "k": "struct",
+      "name": "ExprMapThrough",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "map_through"
+            }
+          }
+        },
+        {
+          "name": "functor",
+          "ty": "Functor"
+        },
+        {
+          "name": "value",
+          "ty": "Expr"
+        },
+        {
+          "name": "var",
+          "ty": "str"
+        },
+        {
+          "name": "body",
+          "ty": "Expr"
+        }
+      ],
+      "doc": "Whatever is inside a constructor, transformed."
+    },
+    {
+      "k": "struct",
+      "name": "ExprPrim",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "prim"
+            }
+          }
+        },
+        {
+          "name": "op",
+          "ty": "PrimOp"
+        },
+        {
+          "name": "args",
+          "ty": "[Expr]"
+        }
+      ],
+      "doc": "An operation every target spells in place."
+    },
+    {
+      "k": "struct",
+      "name": "ExprFold",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "fold"
+            }
+          }
+        },
+        {
+          "name": "list",
+          "ty": "Expr"
+        },
+        {
+          "name": "init",
+          "ty": "Expr"
+        },
+        {
+          "name": "ty",
+          "ty": "Type?",
+          "doc": "The type carried, when the starting value does not say it."
+        },
+        {
+          "name": "acc",
+          "ty": "str"
+        },
+        {
+          "name": "item",
+          "ty": "str"
+        },
+        {
+          "name": "body",
+          "ty": "Expr"
+        }
+      ],
+      "doc": "A value carried through a list from the left, one element at a time."
+    },
+    {
+      "k": "struct",
+      "name": "ExprCase",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "case"
+            }
+          }
+        },
+        {
+          "name": "value",
+          "ty": "Expr"
+        },
+        {
+          "name": "var",
+          "ty": "str"
+        },
+        {
+          "name": "some",
+          "ty": "Expr"
+        },
+        {
+          "name": "none",
+          "ty": "Expr"
+        }
+      ],
+      "doc": "What to do whether or not a value is there."
+    },
+    {
+      "k": "struct",
+      "name": "ExprMatch",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "match"
+            }
+          }
+        },
+        {
+          "name": "ty",
+          "ty": "TypeRef"
+        },
+        {
+          "name": "value",
+          "ty": "Expr"
+        },
+        {
+          "name": "arms",
+          "ty": "[MatchArm]"
+        }
+      ],
+      "doc": "What to do with each variant of an enum."
+    },
+    {
+      "k": "alias",
+      "name": "Expr",
+      "target": {
+        "k": "union",
+        "members": [
+          "ExprLit",
+          "ExprVar",
+          "ExprField",
+          "ExprMakeRecord",
+          "ExprMakeList",
+          "ExprMakeTuple",
+          "ExprMakeVariant",
+          "ExprCall",
+          "ExprLet",
+          "ExprIf",
+          "ExprMapThrough",
+          "ExprPrim",
+          "ExprFold",
+          "ExprCase",
+          "ExprMatch"
+        ]
+      },
+      "doc": "An expression: a constructive proof, written once, run directly, and spelled in every target language. Total by construction, so every body terminates."
+    },
+    {
+      "k": "struct",
+      "name": "FieldInit",
+      "fields": [
+        {
+          "name": "name",
+          "ty": "str"
+        },
+        {
+          "name": "value",
+          "ty": "Expr"
+        }
+      ],
+      "doc": "One field of a struct being built."
+    },
+    {
+      "k": "struct",
+      "name": "MatchArm",
+      "fields": [
+        {
+          "name": "tag",
+          "ty": "str"
+        },
+        {
+          "name": "var",
+          "ty": "str?",
+          "doc": "The name the payload is bound to, when the arm wants it."
+        },
+        {
+          "name": "body",
+          "ty": "Expr"
+        }
+      ],
+      "doc": "What to do with one variant."
+    },
+    {
+      "k": "alias",
+      "name": "Functor",
+      "target": {
+        "k": "union",
+        "members": [
+          {
+            "k": "literal",
+            "value": {
+              "str": "list"
+            }
+          },
+          {
+            "k": "literal",
+            "value": {
+              "str": "optional"
+            }
+          },
+          {
+            "k": "literal",
+            "value": {
+              "str": "future"
+            }
+          }
+        ]
+      },
+      "doc": "A constructor a transformation can be mapped through."
+    },
+    {
+      "k": "alias",
+      "name": "PrimOp",
+      "target": {
+        "k": "union",
+        "members": [
+          {
+            "k": "literal",
+            "value": {
+              "str": "eq"
+            }
+          },
+          {
+            "k": "literal",
+            "value": {
+              "str": "ne"
+            }
+          },
+          {
+            "k": "literal",
+            "value": {
+              "str": "lt"
+            }
+          },
+          {
+            "k": "literal",
+            "value": {
+              "str": "le"
+            }
+          },
+          {
+            "k": "literal",
+            "value": {
+              "str": "gt"
+            }
+          },
+          {
+            "k": "literal",
+            "value": {
+              "str": "ge"
+            }
+          },
+          {
+            "k": "literal",
+            "value": {
+              "str": "add"
+            }
+          },
+          {
+            "k": "literal",
+            "value": {
+              "str": "sub"
+            }
+          },
+          {
+            "k": "literal",
+            "value": {
+              "str": "mul"
+            }
+          },
+          {
+            "k": "literal",
+            "value": {
+              "str": "neg"
+            }
+          },
+          {
+            "k": "literal",
+            "value": {
+              "str": "and"
+            }
+          },
+          {
+            "k": "literal",
+            "value": {
+              "str": "or"
+            }
+          },
+          {
+            "k": "literal",
+            "value": {
+              "str": "not"
+            }
+          },
+          {
+            "k": "literal",
+            "value": {
+              "str": "len"
+            }
+          }
+        ]
+      },
+      "doc": "The operations every target already has a word for."
+    },
+    {
+      "k": "struct",
       "name": "FunctionSig",
       "fields": [
         {
@@ -756,7 +1334,7 @@
         },
         {
           "name": "body",
-          "ty": "any?",
+          "ty": "Expr?",
           "doc": "A constructive proof, when there is one."
         },
         {
@@ -860,7 +1438,7 @@
         },
         {
           "name": "functor",
-          "ty": "str",
+          "ty": "Functor",
           "doc": "The constructor being mapped through."
         },
         {

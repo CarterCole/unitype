@@ -48,6 +48,16 @@
     },
     {
       "k": "struct",
+      "name": "Run",
+      "doc": "How far through a list a check has got: whether everything so far was in order, and the last element seen.",
+      "fields": [
+        { "name": "ok", "ty": "bool" },
+        { "name": "prev", "ty": "int" },
+        { "name": "started", "ty": "bool" }
+      ]
+    },
+    {
+      "k": "struct",
       "name": "Label",
       "fields": [
         { "name": "text", "ty": "str" },
@@ -75,6 +85,77 @@
       "params_decl": [{ "name": "T" }],
       "params": [{ "name": "xs", "ty": { "k": "list", "of": { "k": "param", "name": "T" } } }],
       "ret": { "k": "list", "of": { "k": "param", "name": "T" } }
+    },
+    {
+      "name": "sum",
+      "doc": "Adds a list up. A fold carries the total from one element to the next, which is all the recursion a sum needs and all this language allows.",
+      "params": [{ "name": "xs", "ty": "[int]" }],
+      "ret": "int",
+      "body": {
+        "k": "fold", "list": { "k": "var", "name": "xs" }, "init": { "k": "lit", "value": 0 },
+        "acc": "total", "item": "x",
+        "body": { "k": "prim", "op": "add", "args": [{ "k": "var", "name": "total" }, { "k": "var", "name": "x" }] }
+      }
+    },
+    {
+      "name": "count",
+      "doc": "How many times a value appears in a list.",
+      "params": [{ "name": "xs", "ty": "[int]" }, { "name": "x", "ty": "int" }],
+      "ret": "int",
+      "body": {
+        "k": "fold", "list": { "k": "var", "name": "xs" }, "init": { "k": "lit", "value": 0 },
+        "acc": "n", "item": "y",
+        "body": {
+          "k": "if",
+          "cond": { "k": "prim", "op": "eq", "args": [{ "k": "var", "name": "y" }, { "k": "var", "name": "x" }] },
+          "then": { "k": "prim", "op": "add", "args": [{ "k": "var", "name": "n" }, { "k": "lit", "value": 1 }] },
+          "else": { "k": "var", "name": "n" }
+        }
+      }
+    },
+    {
+      "name": "sorted",
+      "doc": "Whether a list is in order. Not a sort: a check that one happened, which needs no recursion, only a walk along the list remembering the last element.",
+      "params": [{ "name": "xs", "ty": "[int]" }],
+      "ret": "bool",
+      "body": {
+        "k": "field", "name": "ok",
+        "of": {
+          "k": "fold", "list": { "k": "var", "name": "xs" },
+          "init": {
+            "k": "make_record", "ty": "Run",
+            "fields": [
+              { "name": "ok", "value": { "k": "lit", "value": true } },
+              { "name": "prev", "value": { "k": "lit", "value": 0 } },
+              { "name": "started", "value": { "k": "lit", "value": false } }
+            ]
+          },
+          "acc": "run", "item": "x",
+          "body": {
+            "k": "make_record", "ty": "Run",
+            "fields": [
+              {
+                "name": "ok",
+                "value": {
+                  "k": "prim", "op": "and",
+                  "args": [
+                    { "k": "field", "of": { "k": "var", "name": "run" }, "name": "ok" },
+                    {
+                      "k": "prim", "op": "or",
+                      "args": [
+                        { "k": "prim", "op": "not", "args": [{ "k": "field", "of": { "k": "var", "name": "run" }, "name": "started" }] },
+                        { "k": "prim", "op": "le", "args": [{ "k": "field", "of": { "k": "var", "name": "run" }, "name": "prev" }, { "k": "var", "name": "x" }] }
+                      ]
+                    }
+                  ]
+                }
+              },
+              { "name": "prev", "value": { "k": "var", "name": "x" } },
+              { "name": "started", "value": { "k": "lit", "value": true } }
+            ]
+          }
+        }
+      }
     },
     {
       "name": "label_of",

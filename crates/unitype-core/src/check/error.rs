@@ -324,6 +324,59 @@ pub enum CheckErrorKind {
     /// Bodies called each other in a loop.
     #[error("these bodies call each other and so would never finish: {}", .0.join(" -> "))]
     BodyCycle(Vec<String>),
+    /// An operation was given the wrong number of operands.
+    #[error("`{op}` takes {expected} operand(s), but is given {got}")]
+    PrimArity {
+        /// The operation.
+        op: &'static str,
+        /// How many it takes.
+        expected: usize,
+        /// How many it was given.
+        got: usize,
+    },
+    /// An operation was given operands it cannot work on.
+    #[error("`{op}` takes {wanted}, but is given `{found}`")]
+    BadOperands {
+        /// The operation.
+        op: &'static str,
+        /// The operand types, as written.
+        found: String,
+        /// What it takes.
+        wanted: &'static str,
+    },
+    /// A form that takes a value apart was given something it cannot take
+    /// apart.
+    #[error("`{found}` is not {wanted}, so there is nothing here to take apart")]
+    CannotEliminate {
+        /// What was found.
+        found: String,
+        /// What the form takes apart.
+        wanted: String,
+    },
+    /// A fold's carried value changed type.
+    #[error("{what} of this fold is `{found}`, which cannot be carried where `{required}` is")]
+    AccumulatorMismatch {
+        /// Which part: the starting value or a step.
+        what: &'static str,
+        /// What it produced.
+        found: String,
+        /// The type being carried.
+        required: String,
+    },
+    /// A match said what to do with one variant twice.
+    #[error("`{0}` has more than one arm")]
+    DuplicateArm(Ident),
+    /// A match arm bound the payload of a variant that carries nothing.
+    #[error("`{0}` carries nothing, so its arm has nothing to bind")]
+    NothingToBind(Ident),
+    /// A match left some variant without an arm.
+    #[error("this match on `{name}` has no arm for {}", .missing.iter().map(|m| format!("`{m}`")).collect::<Vec<_>>().join(", "))]
+    NonExhaustiveMatch {
+        /// The enum.
+        name: QualifiedName,
+        /// The variants with no arm.
+        missing: Vec<Ident>,
+    },
     /// Two links share a name.
     #[error("link `{0}` is declared more than once")]
     DuplicateLink(Ident),

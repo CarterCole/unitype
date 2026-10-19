@@ -17,14 +17,17 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use unitype_core::check::CheckedWorkspace;
 use unitype_core::ir::{
-    AliasDef, EnumDef, Expr, Field, FunctionSig, InterfaceDef, StructDef, Type, TypeDef, Universe,
+    AliasDef, EnumDef, Expr, Field, FunctionSig, Functor, InterfaceDef, PrimOp, StructDef, Type,
+    TypeDef, Universe,
 };
 use unitype_core::lang::{LanguageProfile, profile};
 use unitype_core::value::Value;
 use unitype_core::{Ident, QualifiedName};
 
 use crate::writer::CodeWriter;
-use crate::{Backend, GenError, GenOptions, GeneratedFile, header, ordered_defs, selected};
+use crate::{
+    Backend, GenError, GenOptions, GeneratedFile, bodies_use, header, ordered_defs, selected,
+};
 
 /// The Python backend.
 pub struct Python;
@@ -87,6 +90,9 @@ fn universe_file(
     // Postponed annotations, so a class may name one declared further down.
     w.line("from __future__ import annotations");
     w.blank();
+    if options.stubs && bodies_use(universe, |e| matches!(e, Expr::Fold { .. })) {
+        w.line("import functools");
+    }
     w.line("import typing");
     w.line("from dataclasses import dataclass, field");
     for (from, names) in imports(universe) {
@@ -292,11 +298,29 @@ fn emit_signature(
         .iter()
         .map(|p| format!("{}: {}", profile.name(&p.name), profile.spell(&p.ty)))
         .collect();
+    // A body that waits for something has to be a coroutine to be allowed to,
+    // and what it returns is then what the future held.
+    let awaits = sig.body.as_ref().is_some_and(|body| {
+        let mut found = false;
+        body.walk(&mut |e| {
+            found |= matches!(
+                e,
+                Expr::MapThrough {
+                    functor: Functor::Future,
+                    ..
+                }
+            )
+        });
+        found
+    });
+    let (keyword, ret) = match &sig.ret {
+        Type::Future { of } if awaits => ("async def", profile.spell(of)),
+        other => ("def", profile.spell(other)),
+    };
     let head = format!(
-        "def {}({}) -> {}:",
+        "{keyword} {}({}) -> {ret}:",
         profile.name(&sig.name),
         params.join(", "),
-        profile.spell(&sig.ret)
     );
     let qualified = QualifiedName::new(universe.name.clone(), sig.name.clone());
 
@@ -403,7 +427,6 @@ pub(crate) fn expression(expr: &Expr, profile: &LanguageProfile) -> String {
             var,
             body,
         } => {
-            use unitype_core::ir::Functor;
             let subject = expression(value, profile);
             let bound = profile.name(var);
             let inner = expression(body, profile);
@@ -416,6 +439,86 @@ pub(crate) fn expression(expr: &Expr, profile: &LanguageProfile) -> String {
                     format!("(lambda {bound}: {inner})(await {subject})")
                 }
             }
+        }
+        Expr::Prim { op, args } => {
+            let operands: Vec<String> = args.iter().map(|a| expression(a, profile)).collect();
+            match (op, operands.as_slice()) {
+                (PrimOp::Neg, [x]) => format!("(-{x})"),
+                (PrimOp::Not, [x]) => format!("(not {x})"),
+                (PrimOp::Len, [x]) => format!("len({x})"),
+                (op, [x, y]) => {
+                    let sign = match op {
+                        PrimOp::Eq => "==",
+                        PrimOp::Ne => "!=",
+                        PrimOp::Lt => "<",
+                        PrimOp::Le => "<=",
+                        PrimOp::Gt => ">",
+                        PrimOp::Ge => ">=",
+                        PrimOp::Add => "+",
+                        PrimOp::Sub => "-",
+                        PrimOp::Mul => "*",
+                        PrimOp::And => "and",
+                        _ => "or",
+                    };
+                    format!("({x} {sign} {y})")
+                }
+                _ => unreachable!("the checker holds every operation to its arity"),
+            }
+        }
+        Expr::Fold {
+            list,
+            init,
+            acc,
+            item,
+            body,
+            ..
+        } => format!(
+            "functools.reduce(lambda {}, {}: {}, {}, {})",
+            profile.name(acc),
+            profile.name(item),
+            expression(body, profile),
+            expression(list, profile),
+            expression(init, profile)
+        ),
+        // `_case` and `_match` are reserved in this profile, so a body that
+        // binds either name has it escaped rather than captured.
+        Expr::Case {
+            value,
+            var,
+            some,
+            none,
+        } => format!(
+            "(lambda _case: {} if _case is None else (lambda {}: {})(_case))({})",
+            expression(none, profile),
+            profile.name(var),
+            expression(some, profile),
+            expression(value, profile)
+        ),
+        Expr::Match { value, arms, .. } => {
+            let subject = expression(value, profile);
+            let Some((last, rest)) = arms.split_last() else {
+                return format!("(lambda _match: None)({subject})");
+            };
+            let arm = |a: &unitype_core::ir::MatchArm| {
+                let body = expression(&a.body, profile);
+                match &a.var {
+                    Some(var) => format!(
+                        "(lambda {}: {body})(_match.get(\"value\"))",
+                        profile.name(var)
+                    ),
+                    None => body,
+                }
+            };
+            // Every variant has an arm, so the last needs no test.
+            let mut chain = arm(last);
+            for a in rest.iter().rev() {
+                chain = format!(
+                    "({} if _match[\"$tag\"] == {:?} else {chain})",
+                    arm(a),
+                    a.tag.as_str()
+                );
+            }
+            format!("(lambda _match: {chain})({subject})")
         }
     }
 }
@@ -661,6 +764,52 @@ mod tests {
         let out = generate(SHAPES);
         assert!(out.contains("def area(s: Circle) -> float:"), "{out}");
         assert!(out.contains("raise NotImplementedError"), "{out}");
+    }
+
+    #[test]
+    fn a_fold_brings_its_import_and_nothing_else_does() {
+        let folding = generate(
+            r#"{"universes":[{"name":"demo","functions":[
+                {"name":"total","params":[{"name":"xs","ty":"[i64]"}],"ret":"i64",
+                 "body":{"k":"fold","list":{"k":"var","name":"xs"},"init":{"k":"lit","value":0},
+                         "acc":"t","item":"x",
+                         "body":{"k":"prim","op":"add","args":[{"k":"var","name":"t"},{"k":"var","name":"x"}]}}}]}]}"#,
+        );
+        assert!(folding.contains("import functools"), "{folding}");
+        assert!(
+            folding.contains("functools.reduce(lambda t, x: (t + x), xs, 0)"),
+            "{folding}"
+        );
+        assert!(!generate(SHAPES).contains("functools"));
+    }
+
+    #[test]
+    fn a_body_that_waits_is_a_coroutine() {
+        let out = generate(
+            r#"{"universes":[{"name":"demo","functions":[
+                {"name":"later","params":[{"name":"n","ty":{"k":"future","of":"i64"}}],
+                 "ret":{"k":"future","of":"i64"},
+                 "body":{"k":"map_through","functor":"future","value":{"k":"var","name":"n"},
+                         "var":"x","body":{"k":"var","name":"x"}}}]}]}"#,
+        );
+        assert!(
+            out.contains("async def later(n: typing.Awaitable[int]) -> int:"),
+            "an `await` is only allowed inside `async def`: {out}"
+        );
+    }
+
+    #[test]
+    fn a_name_the_generated_code_uses_for_itself_is_escaped_in_a_body() {
+        let out = generate(
+            r#"{"universes":[{"name":"demo","functions":[
+                {"name":"f","params":[{"name":"_case","ty":"i64?"}],"ret":"i64",
+                 "body":{"k":"case","value":{"k":"var","name":"_case"},"var":"it",
+                         "some":{"k":"var","name":"it"},"none":{"k":"lit","value":0}}}]}]}"#,
+        );
+        assert!(
+            out.contains("(lambda _case: 0 if _case is None else (lambda it: it)(_case))(_case_)"),
+            "{out}"
+        );
     }
 
     #[test]
