@@ -31,8 +31,10 @@ use unitype_core::{Ident, Workspace};
 /// long enough to wrap, prose that tries to end its own comment, a union of
 /// strings, and bodies: one that builds a record, some that fold a list,
 /// compare and add, say what to do when something is absent, and take an enum
-/// apart, and some that put a value where one that may be absent is wanted —
-/// which Python and TypeScript take as it is and Rust has to be told is there.
+/// apart, and some that put a value where one that may be absent is wanted,
+/// leave out a field that may be absent, or are a constant with something
+/// absent beside things that are there — which Python and TypeScript take as
+/// they are and Rust has to be told about.
 const UNIVERSE: &str = r#"{"universes":[{"name":"demo",
   "doc":"Shapes, and the things done to them.",
   "types":[
@@ -53,6 +55,7 @@ const UNIVERSE: &str = r#"{"universes":[{"name":"demo",
         {"name":"ok","ty":"bool"},{"name":"prev","ty":"i64"},{"name":"started","ty":"bool"}]},
     {"k":"struct","name":"Mark","fields":[
         {"name":"at","ty":"i64"},{"name":"before","ty":"i64?"}]},
+    {"k":"struct","name":"Pin","extends":"Mark","fields":[{"name":"label","ty":"str?"}]},
     {"k":"enum","name":"Size","variants":[{"name":"small"},{"name":"large","payload":"i64"}]}],
   "functions":[
     {"name":"label_of","doc":"Describes a circle.",
@@ -121,7 +124,12 @@ const UNIVERSE: &str = r#"{"universes":[{"name":"demo",
      "body":{"k":"prim","op":"eq","args":[
         {"k":"field","of":{"k":"var","name":"c"},"name":"note"},{"k":"var","name":"s"}]}},
     {"name":"with_gap","params":[{"name":"x","ty":"i64"}],"ret":"[i64?]",
-     "body":{"k":"make_list","items":[{"k":"var","name":"x"},{"k":"lit","value":null}]}}]}]}"#;
+     "body":{"k":"make_list","items":[{"k":"var","name":"x"},{"k":"lit","value":null}]}},
+    {"name":"pin_at","params":[{"name":"x","ty":"i64"}],"ret":"Pin",
+     "body":{"k":"make_record","ty":"Pin","fields":[{"name":"at","value":{"k":"var","name":"x"}}]}},
+    {"name":"gaps","params":[],"ret":"[[i64?]]","body":{"k":"lit","value":[[1,null],[2]]}},
+    {"name":"pair","params":[],"ret":{"k":"tuple","items":["i64?","i64?","str"]},
+     "body":{"k":"lit","value":{"$tuple":[3,null,"x"]}}}]}]}"#;
 
 /// What the body above produces for the circle every test builds.
 const LABEL: &str = r#"{"text":"c-1","sides":0}"#;
@@ -132,13 +140,14 @@ const LABEL: &str = r#"{"text":"c-1","sides":0}"#;
 /// `last_of([1,2,3])` and `last_of([])`, `radius_of` the circle, `positive(3)`
 /// and `positive(-1)`, `note_or_else` of the circle with `"x"` and with nothing
 /// and of the circle noted `"hi"`, `hint` of each size, `noted_as` of the noted
-/// circle and the plain one with `"hi"`, and `with_gap(5)`.
+/// circle and the plain one with `"hi"`, `with_gap(5)`, `pin_at(5)`, `gaps()`
+/// and `pair()`.
 const FORMS: &str = r#"{"total":10,"ordered":true,"unordered":false,"note":"none",
     "small":0,"large":42,"two_tags":true,
     "mark":{"at":5,"before":5},"last":3,"last_empty":null,"radius":2.5,
     "positive":3,"not_positive":null,"fallback":"x","no_fallback":null,"noted":"hi",
     "small_hint":null,"large_hint":21,"noted_as":true,"not_noted_as":false,
-    "with_gap":[5,null]}"#;
+    "with_gap":[5,null],"pin":{"at":5},"gaps":[[1,null],[2]],"pair":[3,null,"x"]}"#;
 
 fn workspace() -> CheckedWorkspace {
     check_workspace(Workspace::from_json(UNIVERSE).expect("reads")).expect("checks")
@@ -300,8 +309,8 @@ fn the_generated_typescript_loads_and_produces_the_shape_it_promised() {
     std::fs::write(
         root.join("check.mjs"),
         r#"import {
-  hint, label_of, last_of, mark, measure, note_or, note_or_else, noted_as, ordered, positive,
-  radius_of, total, two_tags, with_gap,
+  gaps, hint, label_of, last_of, mark, measure, note_or, note_or_else, noted_as, ordered, pair,
+  pin_at, positive, radius_of, total, two_tags, with_gap,
 } from "./demo.ts";
 
 // Written against the generated `Circle` interface: every field it requires,
@@ -335,6 +344,9 @@ const forms = {
   noted_as: noted_as(noted, "hi"),
   not_noted_as: noted_as(circle, "hi"),
   with_gap: with_gap(5),
+  pin: pin_at(5),
+  gaps: gaps(),
+  pair: pair(),
 };
 process.stdout.write(JSON.stringify({ circle, label: label_of(circle), forms }));
 "#,
@@ -373,9 +385,15 @@ fn the_generated_python_runs_the_body_it_was_given() {
         root.join("check.py"),
         r#"import dataclasses, json
 from demo import (
-    Circle, hint, label_of, last_of, mark, measure, note_or, note_or_else, noted_as, ordered,
-    positive, radius_of, total, two_tags, with_gap,
+    Circle, gaps, hint, label_of, last_of, mark, measure, note_or, note_or_else, noted_as,
+    ordered, pair, pin_at, positive, radius_of, total, two_tags, with_gap,
 )
+
+
+def sent(record):
+    # Absent and null are one state, so a field with nothing in it is not sent.
+    return {k: v for k, v in dataclasses.asdict(record).items() if v is not None}
+
 
 circle = Circle(id="c-1", kind="circle", radius=2.5, tags=["round", "blue"])
 noted = dataclasses.replace(circle, note="hi")
@@ -401,6 +419,9 @@ forms = {
     "noted_as": noted_as(noted, "hi"),
     "not_noted_as": noted_as(circle, "hi"),
     "with_gap": with_gap(5),
+    "pin": sent(pin_at(5)),
+    "gaps": gaps(),
+    "pair": pair(),
 }
 print(json.dumps({"label": dataclasses.asdict(label_of(circle)), "forms": forms}))
 "#,
@@ -486,6 +507,9 @@ fn main() {
         "noted_as": demo::noted_as(noted.clone(), "hi".to_string()),
         "not_noted_as": demo::noted_as(circle.clone(), "hi".to_string()),
         "with_gap": demo::with_gap(5),
+        "pin": demo::pin_at(5),
+        "gaps": demo::gaps(),
+        "pair": demo::pair(),
     });
 
     println!(

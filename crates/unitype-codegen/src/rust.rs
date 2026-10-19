@@ -625,7 +625,10 @@ impl Body<'_> {
     fn value(&self, expr: &Expr, env: &Env, wanted: Option<&Type>) -> String {
         let profile = self.profile;
         match expr {
-            Expr::Lit { value } => literal(value),
+            Expr::Lit { value } => {
+                let target = wanted.cloned().or_else(|| self.ws.type_of_expr(expr, env));
+                self.constant(value, target.as_ref())
+            }
             Expr::Var { name } => profile.name(name),
             Expr::Field { of, name } => {
                 // Cloned because a body produces a value rather than borrowing
@@ -639,7 +642,7 @@ impl Body<'_> {
             }
             Expr::MakeRecord { ty, fields } => {
                 let declared = self.ws.fields_of(ty).unwrap_or_default();
-                let parts: Vec<String> = fields
+                let mut parts: Vec<String> = fields
                     .iter()
                     .map(|f| {
                         let field = declared.iter().find(|d| d.name == f.name);
@@ -650,6 +653,28 @@ impl Body<'_> {
                         )
                     })
                     .collect();
+                // The checker lets a body leave out a field that may be
+                // absent, but a Rust struct literal names every field it has.
+                // A field left out is one that is not there, which is `null`
+                // written as that field wants it.
+                parts.extend(
+                    declared
+                        .iter()
+                        .filter(|d| !fields.iter().any(|f| f.name == d.name))
+                        .filter(|d| {
+                            matches!(
+                                self.ws.expand_alias(&d.ty),
+                                Type::Optional { .. } | Type::Unit | Type::Any
+                            )
+                        })
+                        .map(|d| {
+                            format!(
+                                "{}: {}",
+                                profile.name(&d.name),
+                                self.constant(&Value::Null, Some(&d.ty))
+                            )
+                        }),
+                );
                 format!("{} {{ {} }}", profile.name(&ty.name), parts.join(", "))
             }
             Expr::MakeList { items } => {
@@ -815,6 +840,61 @@ impl Body<'_> {
             Expr::Let { .. } | Expr::If { .. } | Expr::Case { .. } | Expr::Match { .. } => {
                 unreachable!("a branch is written by `expression`, which hands on what is wanted")
             }
+        }
+    }
+
+    /// Writes a constant as `wanted` has it.
+    ///
+    /// [`literal`] has only the value to go on, so `[1, null]` comes out as
+    /// `vec![1, None]`, which is two types to Rust. Where a `[i64?]` is
+    /// wanted, the `1` is one that is there: `vec![Some(1), None]`. Whatever
+    /// this has nothing to add to is written as [`literal`] writes it.
+    fn constant(&self, value: &Value, wanted: Option<&Type>) -> String {
+        let Some(wanted) = wanted else {
+            return literal(value);
+        };
+        match (self.ws.expand_alias(wanted), value) {
+            // `null` is the one value its type holds, and Rust spells both `()`.
+            (Type::Unit, Value::Null) => "()".into(),
+            // unitype takes an `any` that is absent and one that is null to
+            // be the same state, and `serde_json::Value` has no way to be
+            // absent but its `Null`.
+            (Type::Any, Value::Null) => "serde_json::Value::Null".into(),
+            (Type::Optional { .. }, Value::Null) => literal(value),
+            (Type::Optional { of }, present) => {
+                format!("Some({})", self.constant(present, Some(&of)))
+            }
+            (Type::List { of }, Value::List(items)) => {
+                let parts: Vec<String> =
+                    items.iter().map(|i| self.constant(i, Some(&of))).collect();
+                format!("vec![{}]", parts.join(", "))
+            }
+            (Type::Tuple { items: slots }, Value::Tuple(items)) if slots.len() == items.len() => {
+                let parts: Vec<String> = items
+                    .iter()
+                    .zip(&slots)
+                    .map(|(i, slot)| self.constant(i, Some(slot)))
+                    .collect();
+                if parts.len() == 1 {
+                    format!("({},)", parts[0])
+                } else {
+                    format!("({})", parts.join(", "))
+                }
+            }
+            (Type::Map { key, value: of }, Value::Map(entries)) => {
+                let parts: Vec<String> = entries
+                    .iter()
+                    .map(|(k, v)| {
+                        format!(
+                            "({}, {})",
+                            self.constant(k, Some(&key)),
+                            self.constant(v, Some(&of))
+                        )
+                    })
+                    .collect();
+                format!("BTreeMap::from([{}])", parts.join(", "))
+            }
+            _ => literal(value),
         }
     }
 
@@ -1107,12 +1187,30 @@ mod tests {
         assert!(out.contains("s.map(|x| x)"), "{out}");
     }
 
-    /// Bodies that each put a value where one that may be absent is wanted.
+    /// Bodies that each put a value where one that may be absent is wanted, or
+    /// leave one out.
     const ABSENT: &str = r#"{"universes":[{"name":"demo","types":[
         {"k":"struct","name":"Mark","fields":[
             {"name":"at","ty":"i64"},{"name":"before","ty":"i64?"}]},
-        {"k":"enum","name":"Size","variants":[{"name":"small"},{"name":"large","payload":"i64"}]}],
+        {"k":"enum","name":"Size","variants":[{"name":"small"},{"name":"large","payload":"i64"}]},
+        {"k":"alias","name":"Later","target":"i64?"},
+        {"k":"struct","name":"Entry","extends":"Mark","fields":[
+            {"name":"why","ty":"str?"},{"name":"when","ty":"Later"},
+            {"name":"extra","ty":"any"},{"name":"nothing","ty":"null"}]}],
       "functions":[
+        {"name":"entry","params":[{"name":"x","ty":"i64"}],"ret":"Entry",
+         "body":{"k":"make_record","ty":"Entry","fields":[
+            {"name":"why","value":{"k":"lit","value":"w"}},
+            {"name":"at","value":{"k":"var","name":"x"}}]}},
+        {"name":"gaps","params":[],"ret":"[i64?]","body":{"k":"lit","value":[1,null]}},
+        {"name":"nested","params":[],"ret":"[[i64?]]","body":{"k":"lit","value":[[1,null],[2]]}},
+        {"name":"pair","params":[],"ret":{"k":"tuple","items":["i64?","i64?","str"]},
+         "body":{"k":"lit","value":{"$tuple":[3,null,"x"]}}},
+        {"name":"counts","params":[],"ret":{"k":"map","key":"str","value":"i64?"},
+         "body":{"k":"lit","value":{"$map":[["a",1],["b",null]]}}},
+        {"name":"gap_count","params":[],"ret":"i64",
+         "body":{"k":"let","name":"g","value":{"k":"lit","value":[1,null]},
+                 "body":{"k":"prim","op":"len","args":[{"k":"var","name":"g"}]}}},
         {"name":"mark","params":[{"name":"x","ty":"i64"}],"ret":"Mark",
          "body":{"k":"make_record","ty":"Mark","fields":[
             {"name":"at","value":{"k":"var","name":"x"}},
@@ -1189,6 +1287,45 @@ mod tests {
     fn a_value_compared_with_one_that_may_be_absent_is_compared_as_an_option() {
         let out = generate(ABSENT);
         assert!(out.contains("(x == Some(y))"), "{out}");
+    }
+
+    #[test]
+    fn a_field_left_out_is_written_as_the_nothing_it_stands_for() {
+        let out = generate(ABSENT);
+        assert!(
+            out.contains(
+                "Entry { why: Some(\"w\".to_string()), at: x, before: None, when: None, \
+                 extra: serde_json::Value::Null, nothing: () }"
+            ),
+            "what was given first, as given, then the rest as declared, \
+             inherited ones included: {out}"
+        );
+    }
+
+    #[test]
+    fn a_constant_is_written_as_what_is_wanted_of_it() {
+        let out = generate(ABSENT);
+        assert!(out.contains("vec![Some(1), None]\n}"), "{out}");
+        assert!(
+            out.contains("vec![vec![Some(1), None], vec![Some(2)]]"),
+            "a list with nothing absent in it is still a list of what may be: {out}"
+        );
+        assert!(out.contains("(Some(3), None, \"x\".to_string())"), "{out}");
+        assert!(
+            out.contains(
+                "BTreeMap::from([(\"a\".to_string(), Some(1)), (\"b\".to_string(), None)])"
+            ),
+            "{out}"
+        );
+        assert!(
+            out.contains("{ let g = vec![Some(1), None]; (g.len() as i64) }"),
+            "with nothing asked of it, a constant is what it comes to: {out}"
+        );
+        assert_eq!(
+            literal(&Value::List(vec![Value::Int(1), Value::Null])),
+            "vec![1, None]",
+            "untyped, there is nothing to say a `1` might not have been there"
+        );
     }
 
     #[test]
