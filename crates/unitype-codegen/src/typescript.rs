@@ -7,13 +7,16 @@
 //! proof of the same proposition agree without either being told about the
 //! other.
 
-use unitype_core::QualifiedName;
+use std::cell::RefCell;
+use std::collections::HashMap;
+
 use unitype_core::check::CheckedWorkspace;
 use unitype_core::ir::{
     AliasDef, EnumDef, Expr, Field, FunctionSig, InterfaceDef, PrimOp, StructDef, Type, TypeDef,
     Universe,
 };
 use unitype_core::lang::{LanguageProfile, profile};
+use unitype_core::{Ident, QualifiedName};
 
 use crate::writer::CodeWriter;
 use crate::{
@@ -76,14 +79,15 @@ fn universe_file(
         w.blank();
     }
 
-    for import in imports(universe) {
+    let imports = imports(ws, universe, profile);
+    for import in &imports {
         w.write(format_args!(
             "import type {{ {} }} from \"./{}\";",
             import.1.join(", "),
             import.0
         ));
     }
-    if !imports(universe).is_empty() {
+    if !imports.is_empty() {
         w.blank();
     }
 
@@ -112,7 +116,11 @@ fn universe_file(
 }
 
 /// What this universe needs from others, grouped by where it comes from.
-fn imports(universe: &Universe) -> Vec<(String, Vec<String>)> {
+fn imports(
+    ws: &CheckedWorkspace,
+    universe: &Universe,
+    profile: &LanguageProfile,
+) -> Vec<(String, Vec<String>)> {
     let mut found: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
         Default::default();
     let mut note = |ty: &Type| {
@@ -139,13 +147,12 @@ fn imports(universe: &Universe) -> Vec<(String, Vec<String>)> {
     for sig in &universe.functions {
         sig.params.iter().for_each(|p| note(&p.ty));
         note(&sig.ret);
-        // What a fold carries is the one type a body names.
+        // A body names types of its own, in what a fold carries and what a
+        // binding holds, so it is written out here to find out which.
         if let Some(body) = &sig.body {
-            body.walk(&mut |e| {
-                if let Some(ty) = carried(e) {
-                    note(&ty);
-                }
-            });
+            let writer = Body::new(ws, profile);
+            writer.expression(body, &scope(sig));
+            writer.named.take().iter().for_each(&mut note);
         }
     }
 
@@ -339,7 +346,7 @@ fn emit_signature(
                 |w| {
                     w.write(format_args!(
                         "return {};",
-                        crate::typescript::expression(body, profile)
+                        Body::new(ws, profile).expression(body, &scope(sig))
                     ));
                 },
             );
@@ -365,7 +372,6 @@ fn emit_signature(
             );
         }
     }
-    let _ = ws;
 }
 
 /// Comparison as every other backend does it, written out once per module that
@@ -426,164 +432,309 @@ fn emit_helpers(w: &mut CodeWriter, universe: &Universe) {
     }
 }
 
-/// Writes an expression body as TypeScript.
+/// What each name in scope holds, at some point in a body.
+type Env = HashMap<Ident, Type>;
+
+/// What a signature's parameters hold, which is where every body starts.
+fn scope(sig: &FunctionSig) -> Env {
+    sig.params
+        .iter()
+        .map(|p| (p.name.clone(), p.ty.clone()))
+        .collect()
+}
+
+/// Writing a body as TypeScript.
 ///
 /// The same body becomes Python and Rust elsewhere. A mapping written once in
 /// the symbolic language is three functions, none of which anyone wrote.
-pub(crate) fn expression(expr: &Expr, profile: &LanguageProfile) -> String {
-    match expr {
-        Expr::Lit { value } => crate::typescript::literal(value),
-        Expr::Var { name } => profile.name(name),
-        Expr::Field { of, name } => {
-            format!("{}.{}", expression(of, profile), profile.name(name))
+///
+/// TypeScript works out most of what a body holds by itself, but a binding it
+/// is not told about takes on whatever it is given, widened: a pair becomes an
+/// array of either, and a variant's tag any string at all. Saying what a
+/// binding holds takes knowing what each name in scope holds, which the
+/// workspace can say once it is told, as it is for Rust. Every type the text
+/// names is kept, so that the module can import the ones declared elsewhere.
+struct Body<'a> {
+    ws: &'a CheckedWorkspace,
+    profile: &'a LanguageProfile,
+    named: RefCell<Vec<Type>>,
+}
+
+impl<'a> Body<'a> {
+    fn new(ws: &'a CheckedWorkspace, profile: &'a LanguageProfile) -> Self {
+        Body {
+            ws,
+            profile,
+            named: RefCell::new(Vec::new()),
         }
-        Expr::MakeRecord { fields, .. } => {
-            let parts: Vec<String> = fields
-                .iter()
-                .map(|f| {
-                    format!(
-                        "{}: {}",
-                        profile.name(&f.name),
-                        expression(&f.value, profile)
-                    )
-                })
-                .collect();
-            format!("{{ {} }}", parts.join(", "))
-        }
-        Expr::MakeList { items } | Expr::MakeTuple { items } => {
-            let parts: Vec<String> = items.iter().map(|i| expression(i, profile)).collect();
-            format!("[{}]", parts.join(", "))
-        }
-        Expr::MakeVariant { tag, value, .. } => match value {
-            Some(v) => format!(
-                "{{ $tag: {:?}, value: {} }}",
-                tag.as_str(),
-                expression(v, profile)
-            ),
-            None => format!("{{ $tag: {:?} }}", tag.as_str()),
-        },
-        Expr::Call { sig, args } => {
-            let parts: Vec<String> = args.iter().map(|a| expression(a, profile)).collect();
-            format!("{}({})", profile.name(&sig.name), parts.join(", "))
-        }
-        // An immediately-applied function keeps this an expression, so a body
-        // nests wherever an expression can go.
-        Expr::Let { name, value, body } => format!(
-            "(({} ) => {})({})",
-            profile.name(name),
-            arrow(expression(body, profile)),
-            expression(value, profile)
-        ),
-        Expr::If {
-            cond,
-            then,
-            otherwise,
-        } => format!(
-            "({} ? {} : {})",
-            expression(cond, profile),
-            expression(then, profile),
-            expression(otherwise, profile)
-        ),
-        Expr::MapThrough {
-            functor,
-            value,
-            var,
-            body,
-        } => {
-            use unitype_core::ir::Functor;
-            let subject = expression(value, profile);
-            let bound = profile.name(var);
-            let inner = arrow(expression(body, profile));
-            match functor {
-                Functor::List => format!("{subject}.map(({bound}) => {inner})"),
-                // Absent stays absent, which in TypeScript means checking.
-                Functor::Optional => format!(
-                    "(({bound}) => {bound} === null || {bound} === undefined ? null : {inner})({subject})"
+    }
+
+    /// Writes `expr`, where `env` says what each name holds.
+    fn expression(&self, expr: &Expr, env: &Env) -> String {
+        let profile = self.profile;
+        match expr {
+            Expr::Lit { value } => crate::typescript::literal(value),
+            Expr::Var { name } => profile.name(name),
+            Expr::Field { of, name } => {
+                format!("{}.{}", self.expression(of, env), profile.name(name))
+            }
+            Expr::MakeRecord { fields, .. } => {
+                let parts: Vec<String> = fields
+                    .iter()
+                    .map(|f| {
+                        format!(
+                            "{}: {}",
+                            profile.name(&f.name),
+                            self.expression(&f.value, env)
+                        )
+                    })
+                    .collect();
+                format!("{{ {} }}", parts.join(", "))
+            }
+            Expr::MakeList { items } | Expr::MakeTuple { items } => {
+                let parts: Vec<String> = items.iter().map(|i| self.expression(i, env)).collect();
+                format!("[{}]", parts.join(", "))
+            }
+            Expr::MakeVariant { tag, value, .. } => match value {
+                Some(v) => format!(
+                    "{{ $tag: {:?}, value: {} }}",
+                    tag.as_str(),
+                    self.expression(v, env)
                 ),
-                Functor::Future => format!("{subject}.then(({bound}) => {inner})"),
+                None => format!("{{ $tag: {:?} }}", tag.as_str()),
+            },
+            Expr::Call { sig, args } => {
+                let parts: Vec<String> = args.iter().map(|a| self.expression(a, env)).collect();
+                format!("{}({})", profile.name(&sig.name), parts.join(", "))
+            }
+            // An immediately-applied function keeps this an expression, so a
+            // body nests wherever an expression can go. Its parameter says what
+            // it holds unless TypeScript already knows.
+            Expr::Let { name, value, body } => {
+                let bound = self.ws.type_of_expr(value, env);
+                let mut inner = env.clone();
+                if let Some(bound) = &bound {
+                    inner.insert(name.clone(), bound.clone());
+                }
+                let said = bound.filter(|_| !known(value)).and_then(|t| self.spell(&t));
+                format!(
+                    "(({}{}) => {})({})",
+                    profile.name(name),
+                    said.map(|t| format!(": {t}")).unwrap_or_else(|| " ".into()),
+                    arrow(self.expression(body, &inner)),
+                    self.expression(value, env)
+                )
+            }
+            Expr::If {
+                cond,
+                then,
+                otherwise,
+            } => format!(
+                "({} ? {} : {})",
+                self.expression(cond, env),
+                self.expression(then, env),
+                self.expression(otherwise, env)
+            ),
+            Expr::MapThrough {
+                functor,
+                value,
+                var,
+                body,
+            } => {
+                use unitype_core::ir::Functor;
+                let mut inner = env.clone();
+                if let Some(subject) = self.ws.type_of_expr(value, env) {
+                    if let Some((_, inside)) = Functor::split(&self.ws.expand_alias(&subject)) {
+                        inner.insert(var.clone(), inside.clone());
+                    }
+                }
+                let subject = self.expression(value, env);
+                let bound = profile.name(var);
+                let inner = arrow(self.expression(body, &inner));
+                match functor {
+                    Functor::List => format!("{subject}.map(({bound}) => {inner})"),
+                    // Absent stays absent, which in TypeScript means checking.
+                    Functor::Optional => format!(
+                        "(({bound}) => {bound} === null || {bound} === undefined ? null : {inner})({subject})"
+                    ),
+                    Functor::Future => format!("{subject}.then(({bound}) => {inner})"),
+                }
+            }
+            Expr::Prim { op, args } => {
+                let operands: Vec<String> = args.iter().map(|a| self.expression(a, env)).collect();
+                match (op, operands.as_slice()) {
+                    (PrimOp::Eq, [x, y]) => format!("unitypeEqual({x}, {y})"),
+                    (PrimOp::Ne, [x, y]) => format!("!unitypeEqual({x}, {y})"),
+                    (op, [x, y]) if op.is_ordering() => {
+                        let sign = match op {
+                            PrimOp::Lt => "<",
+                            PrimOp::Le => "<=",
+                            PrimOp::Gt => ">",
+                            _ => ">=",
+                        };
+                        format!("(unitypeCompare({x}, {y}) {sign} 0)")
+                    }
+                    (PrimOp::Neg, [x]) => format!("(-{x})"),
+                    (PrimOp::Not, [x]) => format!("(!{x})"),
+                    (PrimOp::Len, [x]) => format!("{x}.length"),
+                    (op, [x, y]) => {
+                        let sign = match op {
+                            PrimOp::Add => "+",
+                            PrimOp::Sub => "-",
+                            PrimOp::Mul => "*",
+                            PrimOp::And => "&&",
+                            _ => "||",
+                        };
+                        format!("({x} {sign} {y})")
+                    }
+                    _ => unreachable!("the checker holds every operation to its arity"),
+                }
+            }
+            Expr::Fold {
+                list,
+                init,
+                acc,
+                item,
+                body,
+                ..
+            } => {
+                let mut inner = env.clone();
+                if let Some(carried) = self.ws.type_of_expr(expr, env) {
+                    inner.insert(acc.clone(), carried);
+                }
+                let element =
+                    self.ws
+                        .type_of_expr(list, env)
+                        .and_then(|t| match self.ws.expand_alias(&t) {
+                            Type::List { of } => Some(*of),
+                            _ => None,
+                        });
+                if let Some(element) = element {
+                    inner.insert(item.clone(), element);
+                }
+                format!(
+                    "{}.reduce{}(({}, {}) => {}, {})",
+                    self.expression(list, env),
+                    carried(expr)
+                        .and_then(|t| self.spell(&t))
+                        .map(|t| format!("<{t}>"))
+                        .unwrap_or_default(),
+                    profile.name(acc),
+                    profile.name(item),
+                    arrow(self.expression(body, &inner)),
+                    self.expression(init, env)
+                )
+            }
+            // `$c` and `$m` cannot be the name of anything a body binds, since
+            // no identifier may contain a `$`.
+            Expr::Case {
+                value,
+                var,
+                some,
+                none,
+            } => {
+                let mut present = env.clone();
+                let inside =
+                    self.ws
+                        .type_of_expr(value, env)
+                        .map(|t| match self.ws.expand_alias(&t) {
+                            Type::Optional { of } => *of,
+                            // Only `null` gets here, so the present arm binds
+                            // something that is never there.
+                            _ => Type::Never,
+                        });
+                if let Some(inside) = inside {
+                    present.insert(var.clone(), inside);
+                }
+                format!(
+                    "(($c) => $c === null || $c === undefined ? {} : (({}) => {})($c))({})",
+                    self.expression(none, env),
+                    profile.name(var),
+                    arrow(self.expression(some, &present)),
+                    self.expression(value, env)
+                )
+            }
+            Expr::Match { ty, value, arms } => {
+                let subject = self.expression(value, env);
+                let Some((last, rest)) = arms.split_last() else {
+                    return format!("(($m) => {{ throw new Error(\"no variant\"); }})({subject})");
+                };
+                let variants = self.ws.variants_of(ty).unwrap_or_default();
+                let arm = |a: &unitype_core::ir::MatchArm| {
+                    let mut inner = env.clone();
+                    let payload = variants.iter().find(|v| v.name == a.tag);
+                    if let (Some(var), Some(variant)) = (&a.var, payload) {
+                        inner.insert(var.clone(), variant.payload.clone());
+                    }
+                    let body = self.expression(&a.body, &inner);
+                    match &a.var {
+                        Some(var) => {
+                            format!("(({}) => {})($m.value)", profile.name(var), arrow(body))
+                        }
+                        None => body,
+                    }
+                };
+                // Every variant has an arm, so the last needs no test.
+                let mut chain = arm(last);
+                for a in rest.iter().rev() {
+                    chain = format!("$m.$tag === {:?} ? {} : {chain}", a.tag.as_str(), arm(a));
+                }
+                format!("(($m) => {chain})({subject})")
             }
         }
-        Expr::Prim { op, args } => {
-            let operands: Vec<String> = args.iter().map(|a| expression(a, profile)).collect();
-            match (op, operands.as_slice()) {
-                (PrimOp::Eq, [x, y]) => format!("unitypeEqual({x}, {y})"),
-                (PrimOp::Ne, [x, y]) => format!("!unitypeEqual({x}, {y})"),
-                (op, [x, y]) if op.is_ordering() => {
-                    let sign = match op {
-                        PrimOp::Lt => "<",
-                        PrimOp::Le => "<=",
-                        PrimOp::Gt => ">",
-                        _ => ">=",
-                    };
-                    format!("(unitypeCompare({x}, {y}) {sign} 0)")
-                }
-                (PrimOp::Neg, [x]) => format!("(-{x})"),
-                (PrimOp::Not, [x]) => format!("(!{x})"),
-                (PrimOp::Len, [x]) => format!("{x}.length"),
-                (op, [x, y]) => {
-                    let sign = match op {
-                        PrimOp::Add => "+",
-                        PrimOp::Sub => "-",
-                        PrimOp::Mul => "*",
-                        PrimOp::And => "&&",
-                        _ => "||",
-                    };
-                    format!("({x} {sign} {y})")
-                }
-                _ => unreachable!("the checker holds every operation to its arity"),
-            }
+    }
+
+    /// How a binding or a fold says what it holds, or `None` where TypeScript
+    /// is better left to work it out.
+    ///
+    /// The profile has no one spelling for a union or an anonymous record, and
+    /// writes `unknown` for either, which would refuse every use a body makes
+    /// of the value. A union that is the whole type is written out as one, as
+    /// an alias's is; one inside anything else leaves the type unsaid, as
+    /// does a record or a function anywhere in it.
+    fn spell(&self, ty: &Type) -> Option<String> {
+        let members = match ty {
+            Type::Union { members } => members.as_slice(),
+            other => std::slice::from_ref(other),
+        };
+        if !members.iter().all(spelled_whole) {
+            return None;
         }
-        Expr::Fold {
-            list,
-            init,
-            acc,
-            item,
-            body,
-            ..
-        } => format!(
-            "{}.reduce{}(({}, {}) => {}, {})",
-            expression(list, profile),
-            carried(expr)
-                .map(|t| format!("<{}>", profile.spell(&t)))
-                .unwrap_or_default(),
-            profile.name(acc),
-            profile.name(item),
-            arrow(expression(body, profile)),
-            expression(init, profile)
-        ),
-        // `$c` and `$m` cannot be the name of anything a body binds, since no
-        // identifier may contain a `$`.
-        Expr::Case {
-            value,
-            var,
-            some,
-            none,
-        } => format!(
-            "(($c) => $c === null || $c === undefined ? {} : (({}) => {})($c))({})",
-            expression(none, profile),
-            profile.name(var),
-            arrow(expression(some, profile)),
-            expression(value, profile)
-        ),
-        Expr::Match { value, arms, .. } => {
-            let subject = expression(value, profile);
-            let Some((last, rest)) = arms.split_last() else {
-                return format!("(($m) => {{ throw new Error(\"no variant\"); }})({subject})");
-            };
-            let arm = |a: &unitype_core::ir::MatchArm| {
-                let body = expression(&a.body, profile);
-                match &a.var {
-                    Some(var) => format!("(({}) => {})($m.value)", profile.name(var), arrow(body)),
-                    None => body,
-                }
-            };
-            // Every variant has an arm, so the last needs no test.
-            let mut chain = arm(last);
-            for a in rest.iter().rev() {
-                chain = format!("$m.$tag === {:?} ? {} : {chain}", a.tag.as_str(), arm(a));
-            }
-            format!("(($m) => {chain})({subject})")
-        }
+        self.named.borrow_mut().push(ty.clone());
+        Some(
+            members
+                .iter()
+                .map(|m| self.profile.spell(m))
+                .collect::<Vec<_>>()
+                .join(" | "),
+        )
+    }
+}
+
+/// Whether TypeScript already holds what `expr` produces as the checker does,
+/// so that a binding of it need not say.
+///
+/// A name, a field and a call are read off what declared or bound them, and an
+/// operation always gives a number or a boolean. Anything else TypeScript
+/// works out from its shape, which can say less. A field read is also the one
+/// place TypeScript holds `undefined` beside `null` for something absent, which
+/// a written-out `T | null` would refuse.
+fn known(expr: &Expr) -> bool {
+    matches!(
+        expr,
+        Expr::Var { .. } | Expr::Field { .. } | Expr::Call { .. } | Expr::Prim { .. }
+    )
+}
+
+/// Whether the profile spells every part of a type as itself.
+///
+/// A reference is spelled by its name alone, so whatever it is applied to does
+/// not come into it.
+fn spelled_whole(ty: &Type) -> bool {
+    match ty {
+        Type::Union { .. } | Type::Record { .. } | Type::Function { .. } => false,
+        Type::Ref(_) => true,
+        other => other.children().into_iter().all(spelled_whole),
     }
 }
 
@@ -1052,6 +1203,167 @@ mod tests {
         assert!(
             out.contains(r#"import type { Point } from "./geo";"#),
             "no signature names it, but the fold does: {out}"
+        );
+    }
+
+    const BINDINGS: &str = r#"{"universes":[
+        {"name":"geo","types":[{"k":"struct","name":"Point","fields":[{"name":"x","ty":"i64"}]}]},
+        {"name":"demo","types":[
+            {"k":"struct","name":"Circle","fields":[
+                {"name":"kind","ty":{"k":"literal","value":{"str":"circle"}}},
+                {"name":"radius","ty":"float"},{"name":"note","ty":"str?"}]},
+            {"k":"alias","name":"Colour","target":{"k":"union","members":[
+                {"k":"literal","value":{"str":"red"}},{"k":"literal","value":{"str":"blue"}}]}},
+            {"k":"enum","name":"Size","variants":[{"name":"small"},{"name":"large","payload":"i64"}]}],
+          "functions":[
+            {"name":"measure","params":[{"name":"s","ty":"Size"}],"ret":"i64"},
+            {"name":"paint","params":[{"name":"c","ty":"Colour"}],"ret":"Colour"},
+            {"name":"pair","params":[],"ret":{"k":"tuple","items":["i64","str"]},
+             "body":{"k":"let","name":"p",
+                     "value":{"k":"make_tuple","items":[{"k":"lit","value":0},{"k":"lit","value":"a"}]},
+                     "body":{"k":"var","name":"p"}}},
+            {"name":"settled","params":[{"name":"b","ty":"bool"},{"name":"xs","ty":"[i64]"}],"ret":"i64",
+             "body":{"k":"let","name":"s",
+                     "value":{"k":"fold","list":{"k":"var","name":"xs"},
+                              "init":{"k":"if","cond":{"k":"var","name":"b"},
+                                      "then":{"k":"make_variant","ty":"Size","tag":"small"},
+                                      "else":{"k":"make_variant","ty":"Size","tag":"large",
+                                              "value":{"k":"lit","value":1}}},
+                              "acc":"a","item":"x","body":{"k":"var","name":"a"}},
+                     "body":{"k":"call","sig":"demo::measure","args":[{"k":"var","name":"s"}]}}},
+            {"name":"circle","params":[],"ret":"Circle",
+             "body":{"k":"let","name":"k","value":{"k":"lit","value":"circle"},
+                     "body":{"k":"make_record","ty":"Circle","fields":[
+                        {"name":"kind","value":{"k":"var","name":"k"}},
+                        {"name":"radius","value":{"k":"lit","value":1.5}}]}}},
+            {"name":"painted","params":[{"name":"b","ty":"bool"}],"ret":"Colour",
+             "body":{"k":"let","name":"k",
+                     "value":{"k":"if","cond":{"k":"var","name":"b"},
+                              "then":{"k":"lit","value":"red"},"else":{"k":"lit","value":"blue"}},
+                     "body":{"k":"call","sig":"demo::paint","args":[{"k":"var","name":"k"}]}}},
+            {"name":"noted","params":[{"name":"c","ty":"Circle"}],"ret":"str",
+             "body":{"k":"let","name":"n","value":{"k":"field","of":{"k":"var","name":"c"},"name":"note"},
+                     "body":{"k":"case","value":{"k":"var","name":"n"},"var":"it",
+                             "some":{"k":"var","name":"it"},"none":{"k":"lit","value":"none"}}}},
+            {"name":"doubled","params":[{"name":"s","ty":"Size"}],"ret":"i64",
+             "body":{"k":"let","name":"m","value":{"k":"call","sig":"demo::measure","args":[{"k":"var","name":"s"}]},
+                     "body":{"k":"let","name":"d",
+                             "value":{"k":"prim","op":"add","args":[{"k":"var","name":"m"},{"k":"var","name":"m"}]},
+                             "body":{"k":"let","name":"e","value":{"k":"var","name":"d"},
+                                     "body":{"k":"var","name":"e"}}}}},
+            {"name":"at","params":[{"name":"x","ty":"i64"}],"ret":"i64",
+             "body":{"k":"let","name":"p","value":{"k":"make_record","ty":"geo::Point","fields":[
+                        {"name":"x","value":{"k":"var","name":"x"}}]},
+                     "body":{"k":"field","of":{"k":"var","name":"p"},"name":"x"}}},
+            {"name":"folded","params":[{"name":"xs","ty":"[i64]"}],"ret":{"k":"tuple","items":["i64","str"]},
+             "body":{"k":"fold","list":{"k":"var","name":"xs"},
+                     "init":{"k":"make_tuple","items":[{"k":"lit","value":0},{"k":"lit","value":"a"}]},
+                     "ty":{"k":"tuple","items":["i64","str"]},"acc":"a","item":"x",
+                     "body":{"k":"let","name":"q",
+                             "value":{"k":"make_tuple","items":[{"k":"var","name":"x"},{"k":"lit","value":"b"}]},
+                             "body":{"k":"var","name":"q"}}}},
+            {"name":"mapped","params":[{"name":"xs","ty":"[i64]"}],
+             "ret":{"k":"list","of":{"k":"tuple","items":["i64","str"]}},
+             "body":{"k":"map_through","functor":"list","value":{"k":"var","name":"xs"},"var":"x",
+                     "body":{"k":"let","name":"p",
+                             "value":{"k":"make_tuple","items":[{"k":"var","name":"x"},{"k":"lit","value":"m"}]},
+                             "body":{"k":"var","name":"p"}}}},
+            {"name":"armed","params":[{"name":"s","ty":"Size"}],"ret":{"k":"tuple","items":["i64","str"]},
+             "body":{"k":"match","ty":"Size","value":{"k":"var","name":"s"},"arms":[
+                {"tag":"small","body":{"k":"make_tuple","items":[{"k":"lit","value":0},{"k":"lit","value":"y"}]}},
+                {"tag":"large","var":"n","body":{"k":"let","name":"p",
+                     "value":{"k":"make_tuple","items":[{"k":"var","name":"n"},{"k":"lit","value":"x"}]},
+                     "body":{"k":"var","name":"p"}}}]}},
+            {"name":"cased","params":[{"name":"c","ty":"Circle"}],"ret":{"k":"tuple","items":["str","i64"]},
+             "body":{"k":"case","value":{"k":"field","of":{"k":"var","name":"c"},"name":"note"},"var":"it",
+                     "some":{"k":"let","name":"p",
+                             "value":{"k":"make_tuple","items":[{"k":"var","name":"it"},{"k":"lit","value":1}]},
+                             "body":{"k":"var","name":"p"}},
+                     "none":{"k":"make_tuple","items":[{"k":"lit","value":"none"},{"k":"lit","value":0}]}}},
+            {"name":"either","params":[{"name":"b","ty":"bool"}],"ret":{"k":"tuple","items":["str","i64"]},
+             "body":{"k":"let","name":"p","value":{"k":"make_tuple","items":[{"k":"lit","value":"a"},
+                        {"k":"if","cond":{"k":"var","name":"b"},
+                         "then":{"k":"lit","value":1},"else":{"k":"lit","value":2}}]},
+                     "body":{"k":"var","name":"p"}}}]}]}"#;
+
+    #[test]
+    fn a_binding_says_what_it_holds_where_typescript_would_widen_it() {
+        let out = generate(BINDINGS);
+        assert!(
+            out.contains(r#"return ((p: [0, "a"]) => p)([0, "a"]);"#),
+            "told nothing, TypeScript takes a pair to be an array of either: {out}"
+        );
+        assert!(
+            out.contains("return ((s: Size) => measure(s))(xs.reduce((a, x) => a, (b ? "),
+            "told nothing, it takes a variant's tag to be any string: {out}"
+        );
+    }
+
+    #[test]
+    fn a_binding_keeps_the_values_a_discriminator_may_hold() {
+        let out = generate(BINDINGS);
+        assert!(
+            out.contains(r#"((k: "circle") => ({ kind: k, radius: 1.5 }))("circle")"#),
+            "{out}"
+        );
+        assert!(
+            out.contains(r#"((k: "blue" | "red") => paint(k))((b ? "red" : "blue"))"#),
+            "a union that is the whole type is written out as one: {out}"
+        );
+    }
+
+    #[test]
+    fn a_binding_typescript_already_reads_off_a_declaration_says_nothing() {
+        let out = generate(BINDINGS);
+        assert!(
+            out.contains("return ((n ) => "),
+            "a field that may be absent reads as `undefined` too, which `string | null` \
+             would refuse: {out}"
+        );
+        assert!(
+            out.contains("return ((m ) => ((d ) => ((e ) => e)(d))((m + m)))(measure(s));"),
+            "a call, an operation and a name are written as they were: {out}"
+        );
+    }
+
+    #[test]
+    fn a_binding_knows_what_the_names_round_it_hold() {
+        let out = generate(BINDINGS);
+        assert!(
+            out.contains(r#"((q: [number, "b"]) => q)([x, "b"])"#),
+            "inside a fold: {out}"
+        );
+        assert!(
+            out.contains(r#"((p: [number, "m"]) => p)([x, "m"])"#),
+            "inside a map: {out}"
+        );
+        assert!(
+            out.contains(r#"((p: [number, "x"]) => p)([n, "x"])"#),
+            "inside an arm: {out}"
+        );
+        assert!(
+            out.contains(r#"((p: [string, 1]) => p)([it, 1])"#),
+            "inside a case: {out}"
+        );
+    }
+
+    #[test]
+    fn a_binding_whose_type_has_no_spelling_says_nothing_rather_than_unknown() {
+        let out = generate(BINDINGS);
+        assert!(
+            out.contains(r#"return ((p ) => p)(["a", (b ? 1 : 2)]);"#),
+            "{out}"
+        );
+        assert!(!out.contains("unknown"), "{out}");
+    }
+
+    #[test]
+    fn a_type_only_a_binding_names_is_imported_too() {
+        let out = generate(BINDINGS);
+        assert!(out.contains("((p: Point) => p.x)({ x: x })"), "{out}");
+        assert!(
+            out.contains(r#"import type { Point } from "./geo";"#),
+            "no signature names it, but the binding does: {out}"
         );
     }
 

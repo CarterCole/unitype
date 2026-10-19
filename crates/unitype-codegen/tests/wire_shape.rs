@@ -35,7 +35,8 @@ use unitype_core::{Ident, Workspace};
 /// leave out fields that may be absent (an optional, an alias of one, an `any`
 /// and a `null`), or are a constant with something absent beside things that
 /// are there — which Python and TypeScript take as they are and Rust has to be
-/// told about.
+/// told about — and two that bind a value, a pair and a fold that starts from
+/// either of two variants, which TypeScript has to be told about.
 const UNIVERSE: &str = r#"{"universes":[{"name":"demo",
   "doc":"Shapes, and the things done to them.",
   "types":[
@@ -136,7 +137,20 @@ const UNIVERSE: &str = r#"{"universes":[{"name":"demo",
      "body":{"k":"make_record","ty":"Loose","fields":[{"name":"at","value":{"k":"var","name":"x"}}]}},
     {"name":"gaps","params":[],"ret":"[[i64?]]","body":{"k":"lit","value":[[1,null],[2]]}},
     {"name":"pair","params":[],"ret":{"k":"tuple","items":["i64?","i64?","str"]},
-     "body":{"k":"lit","value":{"$tuple":[3,null,"x"]}}}]}]}"#;
+     "body":{"k":"lit","value":{"$tuple":[3,null,"x"]}}},
+    {"name":"bound_pair","params":[{"name":"x","ty":"i64"}],"ret":{"k":"tuple","items":["i64","str"]},
+     "body":{"k":"let","name":"p",
+             "value":{"k":"make_tuple","items":[{"k":"var","name":"x"},{"k":"lit","value":"x"}]},
+             "body":{"k":"var","name":"p"}}},
+    {"name":"settled","params":[{"name":"xs","ty":"[i64]"}],"ret":"i64",
+     "body":{"k":"let","name":"s",
+             "value":{"k":"fold","list":{"k":"var","name":"xs"},
+                      "init":{"k":"if","cond":{"k":"prim","op":"gt","args":[
+                                 {"k":"prim","op":"len","args":[{"k":"var","name":"xs"}]},{"k":"lit","value":2}]},
+                              "then":{"k":"make_variant","ty":"Size","tag":"small"},
+                              "else":{"k":"make_variant","ty":"Size","tag":"large","value":{"k":"lit","value":1}}},
+                      "acc":"a","item":"x","body":{"k":"var","name":"a"}},
+             "body":{"k":"call","sig":"demo::measure","args":[{"k":"var","name":"s"}]}}}]}]}"#;
 
 /// What the body above produces for the circle every test builds.
 const LABEL: &str = r#"{"text":"c-1","sides":0}"#;
@@ -148,14 +162,15 @@ const LABEL: &str = r#"{"text":"c-1","sides":0}"#;
 /// and `positive(-1)`, `note_or_else` of the circle with `"x"` and with nothing
 /// and of the circle noted `"hi"`, `hint` of each size, `noted_as` of the noted
 /// circle and the plain one with `"hi"`, `with_gap(5)`, `pin_at(5)`,
-/// `loose_at(5)`, `gaps()` and `pair()`.
+/// `loose_at(5)`, `gaps()` and `pair()`; then `bound_pair(5)`, and `settled` of
+/// `[1,2,3]` and of `[4]`.
 const FORMS: &str = r#"{"total":10,"ordered":true,"unordered":false,"note":"none",
     "small":0,"large":42,"two_tags":true,
     "mark":{"at":5,"before":5},"last":3,"last_empty":null,"radius":2.5,
     "positive":3,"not_positive":null,"fallback":"x","no_fallback":null,"noted":"hi",
     "small_hint":null,"large_hint":21,"noted_as":true,"not_noted_as":false,
     "with_gap":[5,null],"pin":{"at":5},"loose":{"at":5},"gaps":[[1,null],[2]],
-    "pair":[3,null,"x"]}"#;
+    "pair":[3,null,"x"],"bound_pair":[5,"x"],"settled_small":0,"settled_large":2}"#;
 
 fn workspace() -> CheckedWorkspace {
     check_workspace(Workspace::from_json(UNIVERSE).expect("reads")).expect("checks")
@@ -335,8 +350,8 @@ fn the_generated_typescript_loads_and_produces_the_shape_it_promised() {
     std::fs::write(
         root.join("check.mjs"),
         r#"import {
-  gaps, hint, label_of, last_of, loose_at, mark, measure, note_or, note_or_else, noted_as, ordered,
-  pair, pin_at, positive, radius_of, total, two_tags, with_gap,
+  bound_pair, gaps, hint, label_of, last_of, loose_at, mark, measure, note_or, note_or_else,
+  noted_as, ordered, pair, pin_at, positive, radius_of, settled, total, two_tags, with_gap,
 } from "./demo.ts";
 
 // Written against the generated `Circle` interface: every field it requires,
@@ -374,6 +389,9 @@ const forms = {
   loose: loose_at(5),
   gaps: gaps(),
   pair: pair(),
+  bound_pair: bound_pair(5),
+  settled_small: settled([1, 2, 3]),
+  settled_large: settled([4]),
 };
 process.stdout.write(JSON.stringify({ circle, label: label_of(circle), forms }));
 "#,
@@ -412,8 +430,9 @@ fn the_generated_python_runs_the_body_it_was_given() {
         root.join("check.py"),
         r#"import dataclasses, json
 from demo import (
-    Circle, gaps, hint, label_of, last_of, loose_at, mark, measure, note_or, note_or_else,
-    noted_as, ordered, pair, pin_at, positive, radius_of, total, two_tags, with_gap,
+    Circle, bound_pair, gaps, hint, label_of, last_of, loose_at, mark, measure, note_or,
+    note_or_else, noted_as, ordered, pair, pin_at, positive, radius_of, settled, total, two_tags,
+    with_gap,
 )
 
 
@@ -450,6 +469,9 @@ forms = {
     "loose": sent(loose_at(5)),
     "gaps": gaps(),
     "pair": pair(),
+    "bound_pair": bound_pair(5),
+    "settled_small": settled([1, 2, 3]),
+    "settled_large": settled([4]),
 }
 print(json.dumps({"label": dataclasses.asdict(label_of(circle)), "forms": forms}))
 "#,
@@ -542,6 +564,9 @@ fn main() {
         "loose": demo::loose_at(5),
         "gaps": demo::gaps(),
         "pair": demo::pair(),
+        "bound_pair": demo::bound_pair(5),
+        "settled_small": demo::settled(vec![1, 2, 3]),
+        "settled_large": demo::settled(vec![4]),
     });
 
     println!(
