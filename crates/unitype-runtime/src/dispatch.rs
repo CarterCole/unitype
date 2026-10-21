@@ -23,6 +23,15 @@
 //! Asking for `sort` also considers proofs of anything that *refines* `sort`,
 //! since a proof of a stronger claim proves the weaker one too. A caller gets
 //! the benefit of a specialised implementation without having to know it exists.
+//!
+//! # Equivalence reorders the call
+//!
+//! An equivalence link says two signatures are one proposition with the
+//! parameters renamed and reordered — `request(url, cb)` and
+//! `request(callback, getUrl)`. Asking for either considers the proofs of both,
+//! and a proof of the other one is handed the arguments in the order it takes
+//! them. Nothing is converted: an equivalence only pairs parameters that hold
+//! the same data, so putting them in another order is the whole of it.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -182,25 +191,54 @@ impl Dispatcher {
     /// Useful on its own: it is what "why did it choose that one" looks like
     /// before anything has run.
     pub fn candidates(&self, sig: &QualifiedName, policy: &Policy) -> Vec<&Implementation> {
-        let mut found: Vec<&Implementation> = Vec::new();
-        let mut seen = HashSet::new();
+        self.routes(sig, policy)
+            .into_iter()
+            .map(|(implementation, _)| implementation)
+            .collect()
+    }
 
-        // A proof of anything that strengthens this proposition proves it too.
-        let mut frontier = vec![sig.clone()];
-        while let Some(name) = frontier.pop() {
+    /// Every proof that would answer this proposition, best first, each with
+    /// the order to hand it the caller's arguments in: `order[j]` is which of
+    /// them becomes its `j`th.
+    fn routes(&self, sig: &QualifiedName, policy: &Policy) -> Vec<(&Implementation, Vec<usize>)> {
+        let mut found: Vec<(&Implementation, Vec<usize>)> = Vec::new();
+        let mut seen = HashSet::new();
+        let arity = self.ws.sig(sig).map_or(0, |s| s.params.len());
+
+        // A proof of anything that strengthens this proposition proves it too,
+        // with the arguments where they were. A proof of anything equivalent to
+        // it proves it once they are put in that signature's order.
+        let mut frontier = vec![(sig.clone(), (0..arity).collect::<Vec<usize>>())];
+        while let Some((name, order)) = frontier.pop() {
             if !seen.insert(name.clone()) {
                 continue;
             }
-            found.extend(self.registry.proofs_of(&name));
-            frontier.extend(self.ws.refiners_of(&name).iter().cloned());
+            found.extend(
+                self.registry
+                    .proofs_of(&name)
+                    .into_iter()
+                    .map(|i| (i, order.clone())),
+            );
+            frontier.extend(
+                self.ws
+                    .refiners_of(&name)
+                    .iter()
+                    .map(|r| (r.clone(), order.clone())),
+            );
+            frontier.extend(
+                self.ws
+                    .equivalents_of(&name)
+                    .iter()
+                    .map(|e| (e.sig.clone(), e.apply(&order))),
+            );
         }
 
         if let Policy::Pinned(id) = policy {
-            found.retain(|i| &i.id == id);
+            found.retain(|(i, _)| &i.id == id);
             return found;
         }
 
-        found.sort_by_key(|i| self.rank(i, policy));
+        found.sort_by_key(|(i, _)| self.rank(i, policy));
         found
     }
 
@@ -284,6 +322,22 @@ impl Dispatcher {
                 got: type_args.len(),
             });
         }
+        // A bound may mention the other parameters, as in `<A, B: Holder<A>>`,
+        // so the arguments are put into it before it is asked.
+        let subst = unitype_core::check::bind(&declared.params_decl, type_args);
+        for (param, arg) in declared.params_decl.iter().zip(type_args) {
+            for bound in &param.bounds {
+                let required = Type::Ref(unitype_core::check::substitute_ref(bound, &subst));
+                if !self.ws.is_subtype(arg, &required) {
+                    return Err(DispatchError::BoundNotMet {
+                        sig: name.clone(),
+                        param: param.name.clone(),
+                        arg: arg.to_string(),
+                        bound: required.to_string(),
+                    });
+                }
+            }
+        }
         // Only a generic signature has anything to substitute, so only one
         // pays for the copy.
         let instantiated;
@@ -313,7 +367,7 @@ impl Dispatcher {
             }
         }
 
-        let candidates = self.candidates(name, policy);
+        let candidates = self.routes(name, policy);
         if candidates.is_empty() {
             return match policy {
                 Policy::Pinned(id) => Err(DispatchError::Unusable {
@@ -332,7 +386,7 @@ impl Dispatcher {
         };
 
         let mut considered = Vec::with_capacity(candidates.len());
-        for implementation in candidates {
+        for (implementation, order) in candidates {
             let cost = implementation.cost.to_string();
             let environment = implementation.environment.clone();
 
@@ -347,8 +401,14 @@ impl Dispatcher {
             }
 
             let started = Instant::now();
+            // In the order the proof's own signature takes them, which is the
+            // caller's order unless it proves an equivalent signature.
+            let handed: Vec<Value> = order.iter().map(|&i| args[i].clone()).collect();
+            // Each written against the type the call checked it at, which an
+            // equivalent signature's parameter holds the same data as.
+            let types: Vec<Type> = order.iter().map(|&i| sig.params[i].ty.clone()).collect();
             let outcome = self
-                .invoke(implementation, args.clone(), &expected, policy)
+                .invoke(implementation, handed, &types, &expected, policy)
                 .await;
             let elapsed = started.elapsed();
 
@@ -447,10 +507,15 @@ impl Dispatcher {
     }
 
     /// Runs one implementation.
+    ///
+    /// `params` is the type each argument was checked at, in the order the
+    /// proof takes them, which is what anything reached over a wire is sent
+    /// them written against.
     async fn invoke(
         &self,
         implementation: &Implementation,
         args: Vec<Value>,
+        params: &[Type],
         expected: &Type,
         policy: &Policy,
     ) -> Result<Value, ExecError> {
@@ -484,18 +549,39 @@ impl Dispatcher {
                 persistent: true, ..
             } => {
                 self.workers
-                    .invoke(&self.ws, environment, implementation, args, expected)
+                    .invoke(
+                        &self.ws,
+                        environment,
+                        implementation,
+                        args,
+                        params,
+                        expected,
+                    )
                     .await
             }
             Reach::Subprocess { .. } => {
-                crate::subprocess::invoke(&self.ws, environment, implementation, args, expected)
-                    .await
+                crate::subprocess::invoke(
+                    &self.ws,
+                    environment,
+                    implementation,
+                    args,
+                    params,
+                    expected,
+                )
+                .await
             }
             #[cfg(feature = "wasm")]
             Reach::Wasm { .. } => {
                 self.wasm
                     .get_or_init(crate::wasm::WasmHost::new)
-                    .invoke(&self.ws, environment, implementation, args, expected)
+                    .invoke(
+                        &self.ws,
+                        environment,
+                        implementation,
+                        args,
+                        params,
+                        expected,
+                    )
                     .await
             }
             other => Err(ExecError::Unreachable {
@@ -629,6 +715,139 @@ mod tests {
 
     fn list(items: &[i64]) -> Value {
         Value::List(items.iter().copied().map(Value::Int).collect())
+    }
+
+    /// One proposition stated twice, with the arguments the other way round,
+    /// and proved only once.
+    fn request_dispatcher() -> Dispatcher {
+        let ws = Arc::new(
+            check_workspace(
+                Workspace::from_json(
+                    r#"{"universes":[
+                        {"name":"node","functions":[{"name":"fetch","ret":"str","params":[
+                            {"name":"url","ty":"str"},{"name":"retries","ty":"i64"}]}]},
+                        {"name":"browser","functions":[{"name":"get","ret":"str","params":[
+                            {"name":"attempts","ty":"i64"},{"name":"getUrl","ty":"str"}]}]}],
+                      "links":[{"name":"fetch_is_get","from":"node::fetch","to":"browser::get",
+                                "kind":{"k":"equivalent"}}]}"#,
+                )
+                .expect("reads"),
+            )
+            .expect("checks"),
+        );
+        let mut registry = Registry::new();
+        // Written against `node::fetch`, so it reads the URL first.
+        registry.register_native_sync("node_fetch", |args| {
+            let url = args.first().and_then(Value::as_str).unwrap_or("?");
+            let retries = args.get(1).and_then(Value::as_int).unwrap_or(-1);
+            Ok(Value::Str(format!("{url} x{retries}")))
+        });
+        registry
+            .register(Implementation::new(
+                "fetch.node",
+                q("node::fetch"),
+                here(),
+                "node_fetch",
+                ImplProfile::new(BigO::O1, BigO::O1),
+            ))
+            .unwrap();
+        Dispatcher::new(ws, Arc::new(registry))
+    }
+
+    #[tokio::test]
+    async fn a_proof_of_an_equivalent_proposition_gets_the_arguments_its_own_way_round() {
+        let dispatcher = request_dispatcher();
+
+        let answered = dispatcher
+            .call(
+                &q("browser::get"),
+                vec![Value::Int(3), Value::Str("https://x".into())],
+                &Policy::Default,
+            )
+            .await
+            .expect("the node proof answers the browser's call");
+        assert_eq!(answered.implementation.as_str(), "fetch.node");
+        assert_eq!(
+            answered.value,
+            Value::Str("https://x x3".into()),
+            "the URL went where the proof reads it"
+        );
+
+        let direct = dispatcher
+            .call(
+                &q("node::fetch"),
+                vec![Value::Str("https://x".into()), Value::Int(3)],
+                &Policy::Default,
+            )
+            .await
+            .expect("answers its own proposition");
+        assert_eq!(direct.value, answered.value, "and the same call either way");
+    }
+
+    #[tokio::test]
+    async fn pinning_a_proof_of_an_equivalent_proposition_still_reorders() {
+        let answered = request_dispatcher()
+            .call(
+                &q("browser::get"),
+                vec![Value::Int(1), Value::Str("https://y".into())],
+                &Policy::Pinned(ImplId::new("fetch.node")),
+            )
+            .await
+            .expect("answers");
+        assert_eq!(answered.value, Value::Str("https://y x1".into()));
+    }
+
+    #[tokio::test]
+    async fn a_generic_proposition_is_answered_by_a_proof_of_its_equivalent() {
+        // The same claim declared with its generic parameters and its
+        // parameters the other way round, and proved only on one side.
+        let ws = Arc::new(
+            check_workspace(
+                Workspace::from_json(
+                    r#"{"universes":[
+                        {"name":"py","functions":[{"name":"konst",
+                            "params_decl":[{"name":"A"},{"name":"B"}],
+                            "params":[{"name":"x","ty":{"k":"param","name":"A"}},
+                                      {"name":"y","ty":{"k":"param","name":"B"}}],
+                            "ret":{"k":"param","name":"A"}}]},
+                        {"name":"js","functions":[{"name":"always",
+                            "params_decl":[{"name":"Y"},{"name":"X"}],
+                            "params":[{"name":"ignored","ty":{"k":"param","name":"Y"}},
+                                      {"name":"kept","ty":{"k":"param","name":"X"}}],
+                            "ret":{"k":"param","name":"X"}}]}],
+                      "links":[{"name":"konst_is_always","from":"py::konst","to":"js::always",
+                                "kind":{"k":"equivalent"}}]}"#,
+                )
+                .expect("reads"),
+            )
+            .expect("checks"),
+        );
+        let mut registry = Registry::new();
+        // Written against `py::konst`: keeps the first thing it is given.
+        registry.register_native_sync("py_konst", |args| Ok(args[0].clone()));
+        registry
+            .register(Implementation::new(
+                "konst.py",
+                q("py::konst"),
+                here(),
+                "py_konst",
+                ImplProfile::new(BigO::O1, BigO::O1),
+            ))
+            .unwrap();
+        let dispatcher = Dispatcher::new(ws, Arc::new(registry));
+
+        // `always<str, i64>("dropped", 7)` keeps the integer.
+        let answered = dispatcher
+            .call_at(
+                &q("js::always"),
+                &[Type::String, Type::I64],
+                vec![Value::Str("dropped".into()), Value::Int(7)],
+                &Policy::Default,
+            )
+            .await
+            .expect("the proof of konst answers, checked against always<str, i64>");
+        assert_eq!(answered.implementation.as_str(), "konst.py");
+        assert_eq!(answered.value, Value::Int(7));
     }
 
     #[tokio::test]
@@ -1038,6 +1257,58 @@ mod tests {
             ),
             "{err}"
         );
+    }
+
+    #[tokio::test]
+    async fn a_generic_proposition_is_not_asked_at_a_type_its_bound_rules_out() {
+        let ws = Arc::new(
+            check_workspace(
+                Workspace::from_json(
+                    r#"{"universes":[{"name":"demo",
+                        "types":[{"k":"interface","name":"Named","fields":[{"name":"name","ty":"str"}]},
+                                 {"k":"struct","name":"Person","implements":["Named"],
+                                  "fields":[{"name":"name","ty":"str"}]}],
+                        "functions":[{"name":"first_named",
+                            "params_decl":[{"name":"T","bounds":["Named"]}],
+                            "params":[{"name":"xs","ty":{"k":"list","of":{"k":"param","name":"T"}}}],
+                            "ret":{"k":"optional","of":{"k":"param","name":"T"}}}]}]}"#,
+                )
+                .expect("reads"),
+            )
+            .expect("checks"),
+        );
+        let dispatcher = Dispatcher::new(ws, Arc::new(Registry::new()));
+        let person = Type::Ref(unitype_core::ir::TypeRef::qualified(
+            Ident::new("demo").unwrap(),
+            Ident::new("Person").unwrap(),
+        ));
+
+        let err = dispatcher
+            .call_at(
+                &q("demo::first_named"),
+                &[Type::I64],
+                vec![list(&[1])],
+                &Policy::Default,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, DispatchError::BoundNotMet { param, .. } if param.as_str() == "T"),
+            "an integer has no name: {err}"
+        );
+
+        // At a type that meets the bound, the call gets as far as finding no
+        // proof, which is the next thing that can go wrong.
+        let err = dispatcher
+            .call_at(
+                &q("demo::first_named"),
+                &[person],
+                vec![Value::List(vec![])],
+                &Policy::Default,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, DispatchError::NoImplementation(_)), "{err}");
     }
 
     #[tokio::test]

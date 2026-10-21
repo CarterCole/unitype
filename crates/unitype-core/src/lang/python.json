@@ -10,9 +10,10 @@
     "i64": "int",
     "f64": "float",
     "string": "str",
-    "bytes": "bytes"
+    "bytes": "str"
   },
   "constructors": {
+    "apply": "{}[{}]",
     "list": "list[{}]",
     "optional": "{} | None",
     "map": "dict[{}, {}]",
@@ -21,7 +22,8 @@
   },
   "notes": {
     "i64": "Python integers have no width, so this spelling accepts values the wire will not carry. Anything beyond 64 bits is refused at the boundary rather than truncated.",
-    "bool": "A `bool` is an `int` in Python, so a value meant as a number can arrive as True. The boundary check catches it."
+    "bool": "A `bool` is an `int` in Python, so a value meant as a number can arrive as True. The boundary check catches it.",
+    "bytes": "Base64 text, since JSON has no byte string and a proof is handed what JSON gives it. Decode it with `base64.b64decode`."
   },
   "reserved": [
     "False",

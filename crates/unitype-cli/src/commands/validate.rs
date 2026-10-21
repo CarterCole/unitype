@@ -1,8 +1,16 @@
 //! `unitype validate` — is this data of that type?
+//!
+//! The data is read *against* the type, the same way `cast`, `run` and
+//! `conform` take data in. JSON has no tuples and no maps with keys that are
+//! not strings, so `[1, 2]` only becomes a pair, and `{"a": 1}` a map, once
+//! something says that is what they are. Checking the data without the type
+//! would answer a different question: whether JSON's own reading of it already
+//! fits, which for a tuple it never does.
 
 use std::path::PathBuf;
 
 use serde_json::json;
+use unitype_core::value::ReadError;
 
 use super::{Output, named_type, read_one};
 use crate::Failure;
@@ -17,16 +25,19 @@ pub fn run(
     out: &Output,
 ) -> Result<(), Failure> {
     let (name, ty) = named_type(project, type_name)?;
-    let value = read_one(data, file)?;
+    let raw = read_one(data, file)?;
+    let json = raw
+        .to_json()
+        .map_err(|e| Failure::check(format!("that data cannot be encoded: {e}")))?;
 
-    match project.workspace.validate(&value, &ty) {
-        Ok(()) => {
+    match project.workspace.read(&json, &ty) {
+        Ok(_) => {
             out.result(json!({ "ok": true, "type": name.to_string() }), || {
                 out.say(format!("This is a {name}."));
             });
             Ok(())
         }
-        Err(problems) => {
+        Err(ReadError::Invalid(problems)) => {
             let listed: Vec<serde_json::Value> = problems
                 .iter()
                 .map(|p| {
@@ -60,5 +71,6 @@ pub fn run(
                     .join("\n")
             )))
         }
+        Err(other) => Err(Failure::check(format!("This is not a {name}: {other}"))),
     }
 }

@@ -13,6 +13,32 @@
 //! flattened result matters, because that is what a value of the type looks
 //! like. Field *names* are kept — they are part of the data.
 //!
+//! # Views
+//!
+//! A struct's fields and a signature's parameters are both a list of names
+//! with a type each, and there is more than one honest answer to when two such
+//! lists are the same. Each [`View`] is one answer, and every declaration and
+//! every signature gets an address under each:
+//!
+//! - **keyed** — names count, order does not. A JSON object: `{x, y}` is
+//!   `{y, x}`. This is what the shape has always been.
+//! - **positional** — order counts, names do not. A tuple, or an argument
+//!   list: `{x: f64, y: f64}` lines up with `{lat: f64, long: f64}`.
+//! - **bag** — neither. The same types, under any names, in any order: two
+//!   lists share it exactly when some renaming and reordering makes them one.
+//!
+//! A view erases the names of a declaration's own fields and of whatever it
+//! refers to, which is addressed under the same view, so the claim holds all
+//! the way down. Two kinds of name survive every view: an enum's variant tags
+//! and an anonymous record's keys. Both are what is on the wire, and neither
+//! has a declared order to fall back on.
+//!
+//! The bag view needs an order that comes from nothing but structure, so its
+//! fields are sorted the way union members are — by what each is, with any
+//! mention inside a recursive group stood in for by its block. Unlike a
+//! union's members, two fields of the same type are both kept: `(f64, f64)` is
+//! not `(f64)`.
+//!
 //! # Recursion
 //!
 //! A type that mentions itself has no finite tree to hash. Declarations are
@@ -43,24 +69,146 @@
 //! That order comes from structure alone too.
 
 use std::collections::{HashMap, HashSet};
+use std::fmt;
+use std::str::FromStr;
 
 use serde::Serialize;
 
 use crate::canon::encode::canonical_bytes;
 use crate::canon::hash::TypeId;
 use crate::canon::normalize::normalize_type;
-use crate::check::{CheckedWorkspace, DefIx};
+use crate::check::{CheckedWorkspace, DefIx, SigIx};
 use crate::ident::{Ident, QualifiedName};
 use crate::ir::{LiteralValue, Type, TypeDef};
 
-/// Domain for structural addresses.
+/// Which of a list's names and order an address keeps.
 ///
-/// v1 ordered the members of a mutually recursive group by name, which put
-/// those names into every member's address.
-const DOMAIN_SHAPE: &str = "unitype shape v2";
+/// See the [module documentation](self) for what each one means.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum View {
+    /// Names count, order does not.
+    Keyed,
+    /// Order counts, names do not.
+    Positional,
+    /// Neither counts: the same types, in any order, under any names.
+    Bag,
+}
 
-/// Computes a structural address for every declaration, and indexes them.
+impl View {
+    /// Every view, in a fixed order.
+    pub const ALL: [View; 3] = [View::Keyed, View::Positional, View::Bag];
+
+    pub(crate) fn index(self) -> usize {
+        match self {
+            View::Keyed => 0,
+            View::Positional => 1,
+            View::Bag => 2,
+        }
+    }
+
+    /// The word for this view, as the command line spells it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            View::Keyed => "keyed",
+            View::Positional => "positional",
+            View::Bag => "bag",
+        }
+    }
+
+    /// Domain for a declaration's address under this view.
+    ///
+    /// The keyed domain is the one shapes have always been hashed in, so a
+    /// shape address is a keyed address and nothing that was pinned moves.
+    /// v1 ordered the members of a mutually recursive group by name, which put
+    /// those names into every member's address.
+    fn type_domain(self) -> &'static str {
+        match self {
+            View::Keyed => "unitype shape v2",
+            View::Positional => "unitype layout v1",
+            View::Bag => "unitype bag v1",
+        }
+    }
+
+    /// Domain for a signature's address under this view.
+    fn sig_domain(self) -> &'static str {
+        match self {
+            View::Keyed => "unitype sig keyed v1",
+            View::Positional => "unitype sig positional v1",
+            View::Bag => "unitype sig bag v1",
+        }
+    }
+
+    /// Whether a list keeps its names under this view.
+    fn keeps_names(self) -> bool {
+        self == View::Keyed
+    }
+}
+
+impl fmt::Display for View {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Why text did not name a view.
+#[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
+#[error("`{0}` is not a view; the views are keyed, positional, and bag")]
+pub struct ViewParseError(String);
+
+impl FromStr for View {
+    type Err = ViewParseError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        View::ALL
+            .into_iter()
+            .find(|v| v.as_str() == s)
+            .ok_or_else(|| ViewParseError(s.to_string()))
+    }
+}
+
+/// Every address under one view, and what shares each.
+#[derive(Default)]
+pub(crate) struct Addresses {
+    pub(crate) by_name: HashMap<QualifiedName, TypeId>,
+    pub(crate) index: HashMap<TypeId, Vec<QualifiedName>>,
+}
+
+impl Addresses {
+    fn new(by_name: HashMap<QualifiedName, TypeId>) -> Self {
+        let mut index: HashMap<TypeId, Vec<QualifiedName>> = HashMap::new();
+        for (name, address) in &by_name {
+            index.entry(*address).or_default().push(name.clone());
+        }
+        for names in index.values_mut() {
+            names.sort();
+        }
+        Self { by_name, index }
+    }
+}
+
+/// Computes every declaration's and every signature's address under every
+/// view, and indexes them.
 pub(crate) fn compute(ws: &mut CheckedWorkspace) {
+    for view in View::ALL {
+        let hashes = declarations(ws, view);
+        ws.addresses[view.index()] = Addresses::new(hashes);
+    }
+    for entry in &mut ws.defs {
+        entry.shape = ws.addresses[View::Keyed.index()]
+            .by_name
+            .get(&entry.name)
+            .copied();
+    }
+    for view in View::ALL {
+        let hashes = (0..ws.sigs.len())
+            .map(SigIx)
+            .map(|ix| (ws.sig_name(ix).clone(), signature(ws, ix, view)))
+            .collect();
+        ws.sig_addresses[view.index()] = Addresses::new(hashes);
+    }
+}
+
+/// Every declaration's address under one view.
+fn declarations(ws: &CheckedWorkspace, view: View) -> HashMap<QualifiedName, TypeId> {
     let mut hashes: HashMap<QualifiedName, TypeId> = HashMap::new();
 
     // Components come out with everything they depend on already addressed.
@@ -73,11 +221,15 @@ pub(crate) fn compute(ws: &mut CheckedWorkspace) {
         let group = Group::new(
             component
                 .iter()
-                .map(|ix| content(ws, *ix, &places, &hashes))
+                .map(|ix| content(ws, *ix, &places, &hashes, view))
                 .collect(),
+            view,
         );
         for (place, ix) in component.iter().enumerate() {
-            hashes.insert(ws.def_name(*ix).clone(), digest(&group.encode(place)));
+            hashes.insert(
+                ws.def_name(*ix).clone(),
+                digest(view.type_domain(), &group.encode(place)),
+            );
         }
     }
 
@@ -97,35 +249,216 @@ pub(crate) fn compute(ws: &mut CheckedWorkspace) {
                 params: &params,
                 places: &HashMap::new(),
                 hashes: &hashes,
+                view,
             };
-            let node = ordered(&lowering.lower(&alias.target), &|_| {
-                unreachable!("an alias is not part of any group")
-            });
+            let node = ordered(
+                &lowering.lower(&alias.target),
+                &|_| unreachable!("an alias is not part of any group"),
+                view,
+            );
             let address = match &node {
                 ShapeNode::Id { h, args } if passes_through(args) => *h,
-                other => digest(&canonical_bytes(other)),
+                other => digest(view.type_domain(), &canonical_bytes(other)),
             };
             Some((ws.def_name(ix).clone(), address))
         })
         .collect();
     hashes.extend(aliases);
-
-    let mut index: HashMap<TypeId, Vec<QualifiedName>> = HashMap::new();
-    for entry in &mut ws.defs {
-        entry.shape = hashes.get(&entry.name).copied();
-        if let Some(shape) = entry.shape {
-            index.entry(shape).or_default().push(entry.name.clone());
-        }
-    }
-    for names in index.values_mut() {
-        names.sort();
-    }
-    ws.shape_index = index;
+    hashes
 }
 
-fn digest(bytes: &[u8]) -> TypeId {
+/// A signature's address under one view.
+///
+/// The view decides how the parameter list is compared. What each parameter
+/// holds is compared by its keyed shape whatever the view, because a call hands
+/// its arguments over as they are: a dispatcher can put them in a different
+/// order, but it does not convert them.
+fn signature(ws: &CheckedWorkspace, ix: SigIx, view: View) -> TypeId {
+    let sig = ws.sig_at(ix);
+    let generics: Vec<Ident> = sig.params_decl.iter().map(|p| p.name.clone()).collect();
+    let lowering = Lowering {
+        ws,
+        params: &generics,
+        places: &HashMap::new(),
+        hashes: &ws.addresses[View::Keyed.index()].by_name,
+        view: View::Keyed,
+    };
+    let lower = |t: &Type| {
+        ordered(
+            &lowering.lower(t),
+            &|_| unreachable!("a signature is not part of any group"),
+            View::Keyed,
+        )
+    };
+
+    let params: Vec<Part> = sig
+        .params
+        .iter()
+        .map(|p| Part {
+            name: view.keeps_names().then(|| p.name.clone()),
+            ty: lower(&p.ty),
+        })
+        .collect();
+    let bounds: Vec<Vec<ShapeNode>> = sig
+        .params_decl
+        .iter()
+        .map(|d| {
+            d.bounds
+                .iter()
+                .map(|b| lower(&Type::Ref(b.clone())))
+                .collect()
+        })
+        .collect();
+    let ret = lower(&sig.ret);
+
+    let encoded = |numbering: &[usize]| {
+        canonical_bytes(&SigShape::new(&bounds, &params, &ret, numbering, view))
+    };
+    let bytes = match view {
+        // The generic parameters are a list too, and a bag keeps no order of
+        // anything, so they are numbered whichever way makes the encoding
+        // least: `<A, B>(x: A, y: B)` and `<B, A>(x: A, y: B)` are one bag.
+        // That is every numbering tried, which is cheap for the handful of
+        // generic parameters a signature has.
+        View::Bag => numberings(bounds.len())
+            .iter()
+            .map(|n| encoded(n))
+            .min()
+            .expect("there is always at least one numbering"),
+        View::Keyed | View::Positional => encoded(&(0..bounds.len()).collect::<Vec<_>>()),
+    };
+    digest(view.sig_domain(), &bytes)
+}
+
+/// A signature in shape form.
+#[derive(Serialize)]
+struct SigShape {
+    /// Each generic parameter, by number, with whatever bounds it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    generics: Vec<Vec<ShapeNode>>,
+    /// The parameters, arranged as the view says.
+    params: Vec<Part>,
+    ret: ShapeNode,
+}
+
+impl SigShape {
+    /// A signature with its generic parameters numbered and its parameters
+    /// arranged as the view says.
+    ///
+    /// The generic parameter declared `i`th becomes number `numbering[i]`.
+    /// `bounds`, `params` and `ret` are in shape form with each generic
+    /// parameter numbered by where it was declared.
+    fn new(
+        bounds: &[Vec<ShapeNode>],
+        params: &[Part],
+        ret: &ShapeNode,
+        numbering: &[usize],
+        view: View,
+    ) -> SigShape {
+        let mut generics = vec![Vec::new(); bounds.len()];
+        for (i, bounds) in bounds.iter().enumerate() {
+            let mut bounds: Vec<ShapeNode> =
+                bounds.iter().map(|b| renumbered(b, numbering)).collect();
+            // A parameter has to satisfy every one of its bounds, so in a bag
+            // they are a set like everything else.
+            if view == View::Bag {
+                bounds.sort_by_cached_key(canonical_bytes);
+                bounds.dedup();
+            }
+            generics[numbering[i]] = bounds;
+        }
+        let mut params: Vec<Part> = params
+            .iter()
+            .map(|p| Part {
+                name: p.name.clone(),
+                ty: renumbered(&p.ty, numbering),
+            })
+            .collect();
+        match view {
+            View::Keyed => params.sort_by(|a, b| a.name.cmp(&b.name)),
+            View::Positional => {}
+            View::Bag => params.sort_by_cached_key(|p| canonical_bytes(&p.ty)),
+        }
+        SigShape {
+            generics,
+            params,
+            ret: renumbered(ret, numbering),
+        }
+    }
+}
+
+/// A type in shape form with generic parameter `i` renumbered `to[i]`.
+///
+/// A union's members are ordered by what each one is, and a parameter's
+/// number is part of that, so every union in it is put back in order.
+fn renumbered(node: &ShapeNode, to: &[usize]) -> ShapeNode {
+    fn walk(node: &mut ShapeNode, to: &[usize]) {
+        if let ShapeNode::Param { i } = node {
+            *i = to[*i];
+        }
+        for child in node.children_mut() {
+            walk(child, to);
+        }
+    }
+    if to.iter().enumerate().all(|(i, &j)| i == j) {
+        return node.clone();
+    }
+    let mut node = node.clone();
+    walk(&mut node, to);
+    ordered(
+        &node,
+        &|_| unreachable!("a signature is not part of any group"),
+        View::Keyed,
+    )
+}
+
+/// Every way of numbering `n` things, as `numbering[i]` for the `i`th: in
+/// lexicographic order, so the first is each where it already was.
+pub(crate) fn numberings(n: usize) -> Vec<Vec<usize>> {
+    fn extend(prefix: &mut Vec<usize>, used: &mut [bool], out: &mut Vec<Vec<usize>>) {
+        if prefix.len() == used.len() {
+            out.push(prefix.clone());
+            return;
+        }
+        for j in 0..used.len() {
+            if !used[j] {
+                used[j] = true;
+                prefix.push(j);
+                extend(prefix, used, out);
+                prefix.pop();
+                used[j] = false;
+            }
+        }
+    }
+    let mut out = Vec::new();
+    extend(&mut Vec::with_capacity(n), &mut vec![false; n], &mut out);
+    out
+}
+
+/// What a type holds, as an address: two types share one exactly when they
+/// accept the same values.
+///
+/// `generics` are the generic parameters in scope, which are numbered rather
+/// than named.
+pub(crate) fn data_address(ws: &CheckedWorkspace, t: &Type, generics: &[Ident]) -> TypeId {
+    let lowering = Lowering {
+        ws,
+        params: generics,
+        places: &HashMap::new(),
+        hashes: &ws.addresses[View::Keyed.index()].by_name,
+        view: View::Keyed,
+    };
+    let node = ordered(
+        &lowering.lower(t),
+        &|_| unreachable!("a lone type is not part of any group"),
+        View::Keyed,
+    );
+    digest(View::Keyed.type_domain(), &canonical_bytes(&node))
+}
+
+fn digest(domain: &str, bytes: &[u8]) -> TypeId {
     TypeId::from_bytes(
-        *blake3::Hasher::new_derive_key(DOMAIN_SHAPE)
+        *blake3::Hasher::new_derive_key(domain)
             .update(bytes)
             .finalize()
             .as_bytes(),
@@ -223,10 +556,15 @@ enum ShapeNode {
     },
 }
 
-/// A field or a variant: a name, and what it holds.
+/// A field, a parameter, or a variant: a name, and what it holds.
+///
+/// Nameless under a view that erases names. A keyed part encodes exactly as
+/// it did before views existed, which is what keeps shape addresses where they
+/// were.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct Part {
-    name: Ident,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<Ident>,
     ty: ShapeNode,
 }
 
@@ -331,6 +669,7 @@ fn content(
     ix: DefIx,
     places: &HashMap<QualifiedName, usize>,
     hashes: &HashMap<QualifiedName, TypeId>,
+    view: View,
 ) -> ShapeNode {
     let def = ws.def_at(ix);
     let params: Vec<Ident> = def.params().iter().map(|p| p.name.clone()).collect();
@@ -339,13 +678,14 @@ fn content(
         params: &params,
         places,
         hashes,
+        view,
     };
-    let fields = || lowering.parts(ws.defs[ix.0].flat_fields.iter().map(|f| (&f.name, &f.ty)));
+    let fields = || lowering.fields(ws.defs[ix.0].flat_fields.iter().map(|f| (&f.name, &f.ty)));
     match def {
         TypeDef::Struct(_) => ShapeNode::Fields { fields: fields() },
         TypeDef::Interface(_) => ShapeNode::Contract { fields: fields() },
         TypeDef::Enum(d) => ShapeNode::Variants {
-            variants: lowering.parts(d.variants.iter().map(|v| (&v.name, &v.payload))),
+            variants: lowering.variants(d.variants.iter().map(|v| (&v.name, &v.payload))),
         },
         TypeDef::Alias(_) => unreachable!("an alias is a name, not a node in the graph"),
     }
@@ -361,6 +701,8 @@ struct Lowering<'a> {
     places: &'a HashMap<QualifiedName, usize>,
     /// Every declaration addressed so far.
     hashes: &'a HashMap<QualifiedName, TypeId>,
+    /// Which names and which order a struct's fields keep.
+    view: View,
 }
 
 impl Lowering<'_> {
@@ -372,12 +714,32 @@ impl Lowering<'_> {
         self.node(&normalize_type(&expand_deep(self.ws, t)))
     }
 
-    /// Named parts, in name order. A struct's fields are ordered for the code
-    /// generated from it, which says nothing about the data.
-    fn parts<'t>(&self, parts: impl Iterator<Item = (&'t Ident, &'t Type)>) -> Vec<Part> {
-        let mut parts: Vec<Part> = parts
+    /// A struct's or an interface's fields, as the view arranges them.
+    ///
+    /// Keyed, they are in name order: the declared order is for the code
+    /// generated from them, which says nothing about the data. Positional, they
+    /// keep the declared order and lose their names. In a bag they lose both,
+    /// and are put in order by [`ordered`] once mentions inside the group can be
+    /// stood in for.
+    fn fields<'t>(&self, fields: impl Iterator<Item = (&'t Ident, &'t Type)>) -> Vec<Part> {
+        let mut parts: Vec<Part> = fields
             .map(|(name, ty)| Part {
-                name: name.clone(),
+                name: self.view.keeps_names().then(|| name.clone()),
+                ty: self.lower(ty),
+            })
+            .collect();
+        if self.view.keeps_names() {
+            parts.sort_by(|a, b| a.name.cmp(&b.name));
+        }
+        parts
+    }
+
+    /// An enum's variants, in name order under every view: a tag is what is on
+    /// the wire, and there is no declared order to fall back on.
+    fn variants<'t>(&self, variants: impl Iterator<Item = (&'t Ident, &'t Type)>) -> Vec<Part> {
+        let mut parts: Vec<Part> = variants
+            .map(|(name, ty)| Part {
+                name: Some(name.clone()),
                 ty: self.lower(ty),
             })
             .collect();
@@ -421,7 +783,7 @@ impl Lowering<'_> {
                 fields: fields
                     .iter()
                     .map(|f| Part {
-                        name: f.name.clone(),
+                        name: Some(f.name.clone()),
                         ty: self.node(&f.ty),
                     })
                     .collect(),
@@ -457,26 +819,33 @@ struct Group {
     /// `rounds[k][m]` is a digest of member `m` as far as `k` mentions deep.
     /// Members with equal digests in the last round are in one block.
     rounds: Vec<Vec<TypeId>>,
+    /// The view the members were lowered under, which decides what else has
+    /// to be put in order from structure.
+    view: View,
 }
 
 impl Group {
     /// Refines the members into blocks until no block splits.
-    fn new(contents: Vec<ShapeNode>) -> Self {
+    fn new(contents: Vec<ShapeNode>, view: View) -> Self {
         let everyone = 0..contents.len();
         // Before anything is known about where a mention leads, every member
         // looks the same from outside.
         let unknown = TypeId::from_bytes([0; 32]);
-        let mut rounds = vec![refine(&contents, &|_| unknown)];
+        let mut rounds = vec![refine(&contents, &|_| unknown, view)];
         loop {
             let last = rounds.last().expect("there is a first round");
-            let next = refine(&contents, &|m| last[m]);
+            let next = refine(&contents, &|m| last[m], view);
             let split = distinct(&next, everyone.clone()) > distinct(last, everyone.clone());
             rounds.push(next);
             if !split {
                 break;
             }
         }
-        Self { contents, rounds }
+        Self {
+            contents,
+            rounds,
+            view,
+        }
     }
 
     /// The bytes that address one member: each block its walk reaches, in the
@@ -509,7 +878,7 @@ impl Group {
         reached: &mut Vec<ShapeNode>,
     ) {
         numbers.insert(blocks[member], reached.len());
-        let content = ordered(&self.contents[member], &|m| key[m]);
+        let content = ordered(&self.contents[member], &|m| key[m], self.view);
         let next = content.mentions();
         reached.push(content);
         for m in next {
@@ -553,14 +922,14 @@ impl Group {
 
 /// Each member's digest, when every member it mentions is stood in for by the
 /// digest `stand_in` gives it.
-fn refine(contents: &[ShapeNode], stand_in: &impl Fn(usize) -> TypeId) -> Vec<TypeId> {
+fn refine(contents: &[ShapeNode], stand_in: &impl Fn(usize) -> TypeId, view: View) -> Vec<TypeId> {
     contents
         .iter()
         .map(|content| {
-            digest(&canonical_bytes(&standing_in(
-                &ordered(content, stand_in),
-                stand_in,
-            )))
+            digest(
+                view.type_domain(),
+                &canonical_bytes(&standing_in(&ordered(content, stand_in, view), stand_in)),
+            )
         })
         .collect()
 }
@@ -580,37 +949,47 @@ fn standing_in(node: &ShapeNode, stand_in: &impl Fn(usize) -> TypeId) -> ShapeNo
     node
 }
 
-/// `node` with every union's members in an order that comes from structure
-/// alone, and any that turn out to be the same type merged.
+/// `node` with everything that has no order of its own put in an order that
+/// comes from structure alone.
 ///
-/// Normalization ordered them by their encoding as written, names and all.
-/// Here each is ordered by its encoding with every mention of a member of the
-/// group stood in for by `stand_in`, and those that encode alike are one
-/// member. A union left with one member is that member.
-fn ordered(node: &ShapeNode, stand_in: &impl Fn(usize) -> TypeId) -> ShapeNode {
+/// A union's members, always: normalization ordered them by their encoding as
+/// written, names and all. Here each is ordered by its encoding with every
+/// mention of a member of the group stood in for by `stand_in`, and those that
+/// encode alike are one member. A union left with one member is that member.
+///
+/// A struct's or an interface's fields too, in the bag view, by the same key.
+/// Those that encode alike are all kept, since a bag of two numbers is not a
+/// bag of one.
+fn ordered(node: &ShapeNode, stand_in: &impl Fn(usize) -> TypeId, view: View) -> ShapeNode {
     let mut node = node.clone();
-    order_unions(&mut node, stand_in);
+    order_structure(&mut node, stand_in, view);
     node
 }
 
-fn order_unions(node: &mut ShapeNode, stand_in: &impl Fn(usize) -> TypeId) {
+fn order_structure(node: &mut ShapeNode, stand_in: &impl Fn(usize) -> TypeId, view: View) {
     for child in node.children_mut() {
-        order_unions(child, stand_in);
+        order_structure(child, stand_in, view);
     }
-    let ShapeNode::Union { members } = node else {
-        return;
-    };
-    let mut keyed: Vec<(Vec<u8>, ShapeNode)> = std::mem::take(members)
-        .into_iter()
-        .map(|m| (canonical_bytes(&standing_in(&m, stand_in)), m))
-        .collect();
-    keyed.sort_by(|a, b| a.0.cmp(&b.0));
-    keyed.dedup_by(|a, b| a.0 == b.0);
-    let mut members: Vec<ShapeNode> = keyed.into_iter().map(|(_, m)| m).collect();
-    *node = match members.len() {
-        1 => members.pop().expect("length checked"),
-        _ => ShapeNode::Union { members },
-    };
+    let key = |n: &ShapeNode| canonical_bytes(&standing_in(n, stand_in));
+    match node {
+        ShapeNode::Union { members } => {
+            let mut keyed: Vec<(Vec<u8>, ShapeNode)> = std::mem::take(members)
+                .into_iter()
+                .map(|m| (key(&m), m))
+                .collect();
+            keyed.sort_by(|a, b| a.0.cmp(&b.0));
+            keyed.dedup_by(|a, b| a.0 == b.0);
+            let mut members: Vec<ShapeNode> = keyed.into_iter().map(|(_, m)| m).collect();
+            *node = match members.len() {
+                1 => members.pop().expect("length checked"),
+                _ => ShapeNode::Union { members },
+            };
+        }
+        ShapeNode::Fields { fields } | ShapeNode::Contract { fields } if view == View::Bag => {
+            fields.sort_by_cached_key(|part| key(&part.ty));
+        }
+        _ => {}
+    }
 }
 
 /// Expands every alias anywhere in a type.
@@ -1150,5 +1529,297 @@ mod tests {
             ws.shape_hash(&"a::Req".parse().unwrap()),
             ws.shape_hash(&"b::Req".parse().unwrap()),
         );
+    }
+
+    fn under(ws: &CheckedWorkspace, name: &str, view: super::View) -> TypeId {
+        ws.address(&name.parse().unwrap(), view).expect("addressed")
+    }
+
+    /// The same numbers four ways: as written, swapped, renamed, and both.
+    const FOUR_POINTS: &str = r#"{"universes":[
+        {"name":"a","types":[{"k":"struct","name":"P","fields":[
+            {"name":"x","ty":"float"},{"name":"n","ty":"i64"}]}]},
+        {"name":"b","types":[{"k":"struct","name":"Swapped","fields":[
+            {"name":"n","ty":"i64"},{"name":"x","ty":"float"}]}]},
+        {"name":"c","types":[{"k":"struct","name":"Renamed","fields":[
+            {"name":"lat","ty":"float"},{"name":"count","ty":"i64"}]}]},
+        {"name":"d","types":[{"k":"struct","name":"Both","fields":[
+            {"name":"count","ty":"i64"},{"name":"lat","ty":"float"}]}]}]}"#;
+
+    #[test]
+    fn each_view_counts_what_it_says_it_counts() {
+        use super::View::{Bag, Keyed, Positional};
+        let ws = check(FOUR_POINTS);
+        let same = |a: &str, b: &str, view| under(&ws, a, view) == under(&ws, b, view);
+
+        assert!(
+            same("a::P", "b::Swapped", Keyed),
+            "a key's place is not part of it"
+        );
+        assert!(!same("a::P", "c::Renamed", Keyed), "but its name is");
+
+        assert!(
+            same("a::P", "c::Renamed", Positional),
+            "a place's name is not part of it"
+        );
+        assert!(
+            !same("a::P", "b::Swapped", Positional),
+            "but where it is, is"
+        );
+
+        for other in ["b::Swapped", "c::Renamed", "d::Both"] {
+            assert!(same("a::P", other, Bag), "a bag is neither: {other}");
+        }
+        assert_eq!(
+            under(&ws, "a::P", Keyed),
+            shape(&ws, "a::P"),
+            "keyed is the shape there always was"
+        );
+    }
+
+    #[test]
+    fn a_bag_counts_how_many_of_each() {
+        use super::View::Bag;
+        let ws = check(
+            r#"{"universes":[
+                {"name":"a","types":[{"k":"struct","name":"Two","fields":[
+                    {"name":"x","ty":"float"},{"name":"y","ty":"float"}]}]},
+                {"name":"b","types":[{"k":"struct","name":"One","fields":[
+                    {"name":"x","ty":"float"}]}]}]}"#,
+        );
+        assert_ne!(
+            under(&ws, "a::Two", Bag),
+            under(&ws, "b::One", Bag),
+            "two numbers are not one number"
+        );
+    }
+
+    #[test]
+    fn a_view_holds_all_the_way_down() {
+        use super::View::{Bag, Keyed, Positional};
+        let ws = check(
+            r#"{"universes":[
+                {"name":"a","types":[
+                    {"k":"struct","name":"Point","fields":[{"name":"x","ty":"float"},{"name":"y","ty":"float"}]},
+                    {"k":"struct","name":"Line","fields":[{"name":"start","ty":"Point"},{"name":"end","ty":"Point"}]}]},
+                {"name":"b","types":[
+                    {"k":"struct","name":"LatLong","fields":[{"name":"lat","ty":"float"},{"name":"long","ty":"float"}]},
+                    {"k":"struct","name":"Leg","fields":[{"name":"from","ty":"LatLong"},{"name":"to","ty":"LatLong"}]}]}]}"#,
+        );
+        assert_ne!(under(&ws, "a::Line", Keyed), under(&ws, "b::Leg", Keyed));
+        assert_eq!(
+            under(&ws, "a::Line", Positional),
+            under(&ws, "b::Leg", Positional),
+            "the points inside are compared by position too"
+        );
+        assert_eq!(under(&ws, "a::Line", Bag), under(&ws, "b::Leg", Bag));
+    }
+
+    #[test]
+    fn a_tag_and_a_record_key_keep_their_names_in_every_view() {
+        for view in super::View::ALL {
+            let ws = check(
+                r#"{"universes":[
+                    {"name":"a","types":[
+                        {"k":"enum","name":"E","variants":[{"name":"Red"}]},
+                        {"k":"struct","name":"R","fields":[{"name":"m","ty":{"k":"record","fields":[
+                            {"name":"a","ty":"i64"}]}}]}]},
+                    {"name":"b","types":[
+                        {"k":"enum","name":"E","variants":[{"name":"Blue"}]},
+                        {"k":"struct","name":"R","fields":[{"name":"m","ty":{"k":"record","fields":[
+                            {"name":"b","ty":"i64"}]}}]}]}]}"#,
+            );
+            assert_ne!(under(&ws, "a::E", view), under(&ws, "b::E", view), "{view}");
+            assert_ne!(under(&ws, "a::R", view), under(&ws, "b::R", view), "{view}");
+        }
+    }
+
+    #[test]
+    fn a_struct_and_an_interface_stay_apart_in_every_view() {
+        for view in super::View::ALL {
+            let ws = check(
+                r#"{"universes":[{"name":"demo","types":[
+                    {"k":"struct","name":"S","fields":[{"name":"id","ty":"str"}]},
+                    {"k":"interface","name":"I","fields":[{"name":"id","ty":"str"}]}]}]}"#,
+            );
+            assert_ne!(
+                under(&ws, "demo::S", view),
+                under(&ws, "demo::I", view),
+                "{view}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_recursive_type_reordered_and_renamed_is_the_same_bag() {
+        use super::View::{Bag, Positional};
+        let ws = check(
+            r#"{"universes":[
+                {"name":"a","types":[{"k":"struct","name":"Node","fields":[
+                    {"name":"value","ty":"i64"},{"name":"next","ty":"Node?"}]}]},
+                {"name":"b","types":[{"k":"struct","name":"Cell","fields":[
+                    {"name":"tail","ty":"Cell?"},{"name":"head","ty":"i64"}]}]}]}"#,
+        );
+        assert_eq!(under(&ws, "a::Node", Bag), under(&ws, "b::Cell", Bag));
+        assert_ne!(
+            under(&ws, "a::Node", Positional),
+            under(&ws, "b::Cell", Positional)
+        );
+    }
+
+    #[test]
+    fn a_signature_is_addressed_by_its_parameters_three_ways() {
+        use super::View::{Bag, Keyed, Positional};
+        let ws = check(
+            r#"{"universes":[
+                {"name":"node","functions":[{"name":"request","ret":"unit","params":[
+                    {"name":"url","ty":"str"},
+                    {"name":"cb","ty":{"k":"function","params":["str"],"ret":"unit"}}]},
+                  {"name":"swapped","ret":"unit","params":[
+                    {"name":"cb","ty":{"k":"function","params":["str"],"ret":"unit"}},
+                    {"name":"url","ty":"str"}]}]},
+                {"name":"browser","functions":[{"name":"request","ret":"unit","params":[
+                    {"name":"callback","ty":{"k":"function","params":["str"],"ret":"unit"}},
+                    {"name":"getUrl","ty":"str"}]}]}]}"#,
+        );
+        let at = |name: &str, view| ws.sig_address(&name.parse().unwrap(), view).unwrap();
+
+        assert_eq!(at("node::request", Keyed), at("node::swapped", Keyed));
+        assert_ne!(
+            at("node::request", Positional),
+            at("node::swapped", Positional)
+        );
+        assert_eq!(
+            at("node::swapped", Positional),
+            at("browser::request", Positional),
+            "a callback then a string, whatever they are called"
+        );
+        assert_eq!(at("node::request", Bag), at("browser::request", Bag));
+        assert_ne!(at("node::request", Keyed), at("browser::request", Keyed));
+    }
+
+    #[test]
+    fn a_bag_does_not_care_what_order_generic_parameters_were_declared_in() {
+        use super::View::{Bag, Positional};
+        let p = |n: &str| format!(r#"{{"k":"param","name":"{n}"}}"#);
+        let list = |n: &str| format!(r#"{{"k":"list","of":{}}}"#, p(n));
+        let sig = |name: &str, generics: [&str; 2], params: [(&str, String); 2], ret: String| {
+            format!(
+                r#"{{"name":"{name}","params_decl":[{{"name":"{}"}},{{"name":"{}"}}],
+                    "params":[{{"name":"{}","ty":{}}},{{"name":"{}","ty":{}}}],"ret":{ret}}}"#,
+                generics[0], generics[1], params[0].0, params[0].1, params[1].0, params[1].1
+            )
+        };
+        let ws = check(&format!(
+            r#"{{"universes":[{{"name":"a","functions":[{},{},{},{}]}}]}}"#,
+            sig("konst", ["A", "B"], [("x", p("A")), ("y", p("B"))], p("A")),
+            sig(
+                "flipped",
+                ["Y", "X"],
+                [("ignored", p("Y")), ("kept", p("X"))],
+                p("X")
+            ),
+            sig(
+                "plain",
+                ["A", "B"],
+                [("x", p("A")), ("ys", list("B"))],
+                p("A")
+            ),
+            sig(
+                "element",
+                ["A", "B"],
+                [("x", p("A")), ("ys", list("B"))],
+                p("B")
+            ),
+        ));
+        let at = |name: &str, view| {
+            ws.sig_address(&format!("a::{name}").parse().unwrap(), view)
+                .unwrap()
+        };
+
+        assert_eq!(
+            at("konst", Bag),
+            at("flipped", Bag),
+            "a value of one type and a value of another, answering the first"
+        );
+        assert_ne!(
+            at("konst", Positional),
+            at("flipped", Positional),
+            "a call names the generic parameters in order, so position keeps it"
+        );
+        assert_ne!(
+            at("plain", Bag),
+            at("element", Bag),
+            "the one on its own, or one out of the list, whatever the order"
+        );
+    }
+
+    #[test]
+    fn a_bag_takes_a_generic_parameters_bounds_as_a_set() {
+        let ws = check(
+            r#"{"universes":[{"name":"a",
+                "types":[{"k":"interface","name":"Named","fields":[{"name":"name","ty":"str"}]},
+                         {"k":"interface","name":"Sized","fields":[{"name":"size","ty":"i64"}]}],
+                "functions":[
+                  {"name":"f","params_decl":[{"name":"T","bounds":["Named","Sized"]}],
+                   "params":[{"name":"x","ty":{"k":"param","name":"T"}}],"ret":"str"},
+                  {"name":"g","params_decl":[{"name":"T","bounds":["Sized","Named"]}],
+                   "params":[{"name":"x","ty":{"k":"param","name":"T"}}],"ret":"str"}]}]}"#,
+        );
+        let at = |name: &str, view| {
+            ws.sig_address(&format!("a::{name}").parse().unwrap(), view)
+                .unwrap()
+        };
+        assert_eq!(at("f", super::View::Bag), at("g", super::View::Bag));
+        assert_ne!(
+            at("f", super::View::Positional),
+            at("g", super::View::Positional)
+        );
+    }
+
+    #[test]
+    fn numberings_start_where_everything_already_is() {
+        assert_eq!(super::numberings(0), [Vec::<usize>::new()]);
+        assert_eq!(
+            super::numberings(3),
+            [
+                [0, 1, 2],
+                [0, 2, 1],
+                [1, 0, 2],
+                [1, 2, 0],
+                [2, 0, 1],
+                [2, 1, 0]
+            ]
+        );
+    }
+
+    #[test]
+    fn structurally_a_proposition_over_named_types_is_the_data_it_takes() {
+        // Where `sig_hash` keeps the names of the types a proposition is over,
+        // its structural addresses compare what those types hold.
+        let ws = check(
+            r#"{"universes":[
+                {"name":"a","types":[{"k":"struct","name":"Req",
+                    "fields":[{"name":"url","ty":"str"}]}],
+                 "functions":[{"name":"send","params":[{"name":"r","ty":"Req"}],"ret":"i32"}]},
+                {"name":"b","types":[{"k":"struct","name":"Req",
+                    "fields":[{"name":"url","ty":"str"}]}],
+                 "functions":[{"name":"send","params":[{"name":"r","ty":"Req"}],"ret":"i32"}]}]}"#,
+        );
+        for view in super::View::ALL {
+            assert_eq!(
+                ws.sig_address(&"a::send".parse().unwrap(), view),
+                ws.sig_address(&"b::send".parse().unwrap(), view),
+                "{view}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_view_reads_back_from_its_own_name() {
+        for view in super::View::ALL {
+            assert_eq!(view.as_str().parse::<super::View>(), Ok(view));
+        }
+        assert!("sorted".parse::<super::View>().is_err());
     }
 }

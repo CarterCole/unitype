@@ -4,7 +4,9 @@ use std::sync::Arc;
 
 use clap::ValueEnum;
 use serde_json::json;
+use unitype_core::ir::Type;
 use unitype_core::value::Value;
+use unitype_core::{Ident, QualifiedName};
 use unitype_runtime::{Dispatcher, ImplId, Policy};
 
 use super::{Output, qualified};
@@ -23,22 +25,31 @@ pub enum Choice {
 }
 
 /// Calls a proposition.
+///
+/// `at` is the type arguments, as a JSON array, for a proposition that is
+/// generic: `reverse<T>` is a claim about every `T`, and a call is made at one.
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     project: &Project,
     signature: &str,
     args: &str,
+    at: Option<&str>,
     choice: Choice,
     pinned: Option<String>,
     verbose: bool,
     out: &Output,
 ) -> Result<(), Failure> {
     let name = qualified(signature, "signature name")?;
-    let Some(sig) = project.workspace.sig(&name) else {
+    let Some(declared) = project.workspace.sig(&name) else {
         return Err(Failure::check(format!(
             "`{name}` is not a proposition here. Try `unitype ls sigs`."
         )));
     };
+
+    let type_args = type_arguments(project, declared, &name, at)?;
+    // Everything below reads and checks against the proposition at those
+    // types, which for one that is not generic is the proposition itself.
+    let sig = &declared.instantiate(&type_args);
 
     // The arguments arrive as one JSON array and are read against the
     // parameters, so each becomes what its parameter says it is.
@@ -108,7 +119,11 @@ pub async fn run(
         .collect();
 
     if verbose && !out.is_machine() {
-        out.say(format!("{}::{sig}", name.universe));
+        out.say(format!(
+            "{}::{declared}{}",
+            name.universe,
+            binding(declared, &type_args)
+        ));
         out.say("candidates:");
         for line in &considered_before {
             out.say(format!("  {line}"));
@@ -116,7 +131,7 @@ pub async fn run(
     }
 
     let answer = dispatcher
-        .call(&name, values, &policy)
+        .call_at(&name, &type_args, values, &policy)
         .await
         .map_err(|e| Failure::run(e.to_string()))?;
 
@@ -124,27 +139,148 @@ pub async fn run(
         .write_json(&answer.value, &returned(sig))
         .unwrap_or_else(|_| answer.value.to_json_string().unwrap_or_default());
 
-    out.result(
-        json!({
-            "signature": name.to_string(),
-            "value": serde_json::from_str::<serde_json::Value>(&written).unwrap_or_default(),
-            "implementation": answer.implementation.to_string(),
-            "environment": answer.environment.to_string(),
-            "micros": answer.elapsed.as_micros(),
-            "candidates": considered_before,
-        }),
-        || {
-            if verbose {
-                out.say(format!(
-                    "chose {} in {}",
-                    answer.implementation, answer.environment
-                ));
-                out.say("");
-            }
-            out.say(&written);
-        },
-    );
+    let mut result = json!({
+        "signature": name.to_string(),
+        "value": serde_json::from_str::<serde_json::Value>(&written).unwrap_or_default(),
+        "implementation": answer.implementation.to_string(),
+        "environment": answer.environment.to_string(),
+        "micros": answer.elapsed.as_micros(),
+        "candidates": considered_before,
+    });
+    if !type_args.is_empty() {
+        result["at"] = type_args.iter().map(ToString::to_string).collect();
+    }
+    out.result(result, || {
+        if verbose {
+            out.say(format!(
+                "chose {} in {}",
+                answer.implementation, answer.environment
+            ));
+            out.say("");
+        }
+        out.say(&written);
+    });
     Ok(())
+}
+
+/// Reads the types a generic proposition is called at.
+///
+/// Written the way a universe writes a type — `"i64"`, `"[str]"`,
+/// `"map<str, i64>"`, or the object form — with a bare name taken to be in
+/// the proposition's own universe, as it would be there.
+fn type_arguments(
+    project: &Project,
+    sig: &unitype_core::FunctionSig,
+    name: &QualifiedName,
+    at: Option<&str>,
+) -> Result<Vec<Type>, Failure> {
+    let wanted: Vec<String> = sig.params_decl.iter().map(|p| p.name.to_string()).collect();
+    let Some(at) = at else {
+        if wanted.is_empty() {
+            return Ok(Vec::new());
+        }
+        return Err(Failure::usage(format!(
+            "`{name}` is generic over {}, so a call says which type{} with --at, \
+             as in --at '[{}]'.",
+            wanted.join(", "),
+            if wanted.len() == 1 {
+                " it is at"
+            } else {
+                "s it is at"
+            },
+            vec!["\"i64\""; wanted.len()].join(",")
+        )));
+    };
+
+    let parsed: serde_json::Value = serde_json::from_str(at)
+        .map_err(|e| Failure::usage(format!("--at must be a JSON array of types: {e}")))?;
+    let serde_json::Value::Array(given) = parsed else {
+        return Err(Failure::usage(
+            "--at must be a JSON array of types, even for one.",
+        ));
+    };
+    if given.len() != wanted.len() {
+        return Err(Failure::usage(if wanted.is_empty() {
+            format!("`{name}` is not generic, so it takes no --at.")
+        } else {
+            format!(
+                "`{name}` is generic over {}, but {} type{} given.",
+                wanted.join(", "),
+                given.len(),
+                if given.len() == 1 { " was" } else { "s were" }
+            )
+        }));
+    }
+
+    given
+        .into_iter()
+        .map(|mut ty| {
+            unitype_core::ir::sugar::desugar_type(&mut ty)
+                .map_err(|e| Failure::usage(format!("--at: {e}")))?;
+            let ty: Type = serde_json::from_value(ty)
+                .map_err(|e| Failure::usage(format!("--at: not a type: {e}")))?;
+            let ty = in_universe(&ty, &name.universe);
+            known(project, &ty)?;
+            Ok(ty)
+        })
+        .collect()
+}
+
+/// A type with every reference that names no universe put in `home`.
+fn in_universe(ty: &Type, home: &Ident) -> Type {
+    let kids: Vec<Type> = ty
+        .children()
+        .into_iter()
+        .map(|c| in_universe(c, home))
+        .collect();
+    match ty.with_children(kids) {
+        Type::Ref(mut r) => {
+            r.universe.get_or_insert_with(|| home.clone());
+            Type::Ref(r)
+        }
+        other => other,
+    }
+}
+
+/// Refuses a type that names a declaration the project does not have, or
+/// gives one the wrong number of arguments.
+fn known(project: &Project, ty: &Type) -> Result<(), Failure> {
+    if let Type::Ref(r) = ty {
+        let target = QualifiedName::new(
+            r.universe.clone().expect("put in a universe already"),
+            r.name.clone(),
+        );
+        let Some(def) = project.workspace.def(&target) else {
+            return Err(Failure::check(format!(
+                "--at: `{target}` is not a type here. Try `unitype ls types`."
+            )));
+        };
+        if def.params().len() != r.args.len() {
+            return Err(Failure::usage(format!(
+                "--at: `{target}` takes {} type argument(s), but {} were given.",
+                def.params().len(),
+                r.args.len()
+            )));
+        }
+    }
+    ty.children()
+        .into_iter()
+        .try_for_each(|c| known(project, c))
+}
+
+/// How a call binds a generic proposition's parameters, as ` at T = i64`, or
+/// nothing for one that has none.
+fn binding(sig: &unitype_core::FunctionSig, type_args: &[Type]) -> String {
+    if type_args.is_empty() {
+        return String::new();
+    }
+    let bound: Vec<String> = sig
+        .params_decl
+        .iter()
+        .zip(type_args)
+        .map(|(p, t)| format!("{} = {t}", p.name))
+        .collect();
+    format!(" at {}", bound.join(", "))
 }
 
 /// What a signature actually hands back, once waiting is accounted for.

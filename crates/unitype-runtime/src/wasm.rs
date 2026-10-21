@@ -97,6 +97,7 @@ impl WasmHost {
         environment: &Environment,
         implementation: &Implementation,
         args: Vec<Value>,
+        params: &[Type],
         expected: &Type,
     ) -> Result<Value, ExecError> {
         let Reach::Wasm { module, fuel } = &environment.reach else {
@@ -107,7 +108,7 @@ impl WasmHost {
         };
 
         let compiled = self.module(module, &environment.id)?;
-        let body = crate::subprocess::request_line(implementation, &args)?;
+        let body = crate::subprocess::request_line(ws, implementation, &args, params)?;
         let budget = fuel.unwrap_or(DEFAULT_FUEL);
 
         let answer = self.exchange(&compiled, &body, budget, implementation)?;

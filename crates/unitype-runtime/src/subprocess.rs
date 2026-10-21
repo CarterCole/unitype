@@ -86,11 +86,14 @@ pub struct ResponseError {
 }
 
 /// Runs an implementation by starting a program and exchanging one message.
+///
+/// `params` is the type each argument is written against, in the same order.
 pub async fn invoke(
     ws: &CheckedWorkspace,
     environment: &Environment,
     implementation: &Implementation,
     args: Vec<Value>,
+    params: &[Type],
     expected: &Type,
 ) -> Result<Value, ExecError> {
     let Reach::Subprocess {
@@ -111,7 +114,7 @@ pub async fn invoke(
     // A trailing newline costs nothing here — JSON ignores it — and means the
     // same bytes work for a child that reads lines, which is what a worker
     // needs. One message, framed two ways at once.
-    let mut body = request_line(implementation, &args)?;
+    let mut body = request_line(ws, implementation, &args, params)?;
     body.push(b'\n');
 
     let mut process = Command::new(command);
@@ -176,15 +179,25 @@ pub async fn invoke(
 
 /// The bytes of one request, ready to send.
 ///
-/// Shared by both ways of reaching a child, so a worker and a one-shot process
-/// are sent exactly the same thing.
+/// Shared by every way of reaching a child, so a worker, a one-shot process
+/// and a sandbox are sent exactly the same thing. Each argument is written
+/// against its parameter's type, in the typed form: a tuple arrives as the
+/// array the child's own code expects, not as an escape it would have to
+/// know about. An argument with no type given is written as it would be with
+/// no type at all.
 pub(crate) fn request_line(
+    ws: &CheckedWorkspace,
     implementation: &Implementation,
     args: &[Value],
+    params: &[Type],
 ) -> Result<Vec<u8>, ExecError> {
     let encoded: Vec<serde_json::Value> = args
         .iter()
-        .map(|a| a.to_json())
+        .enumerate()
+        .map(|(i, a)| match params.get(i) {
+            Some(ty) => ws.typed_json(a, ty),
+            None => a.to_json(),
+        })
         .collect::<Result<_, _>>()
         .map_err(|e| ExecError::Protocol {
             id: implementation.id.to_string(),
@@ -337,6 +350,7 @@ mod tests {
             &shell(script, timeout_ms),
             &implementation(),
             vec![Value::List(vec![Value::Int(3), Value::Int(1)])],
+            &[Type::I64.list()],
             &Type::I64.list(),
         )
         .await
@@ -426,6 +440,7 @@ mod tests {
             ),
             &implementation(),
             vec![Value::List(vec![Value::Int(3), Value::Int(1)])],
+            &[Type::I64.list()],
             &Type::String,
         )
         .await
@@ -443,6 +458,31 @@ mod tests {
         );
     }
 
+    #[test]
+    fn an_argument_is_sent_written_against_its_type() {
+        // A child reads JSON the way its own language does, and every language
+        // reads a pair as an array. Without the type, the pair would have to
+        // say it is one.
+        let ws = ws();
+        let pair = Value::Tuple(vec![Value::Int(1), Value::Str("a".into())]);
+        let pair_type = Type::Tuple {
+            items: vec![Type::I64, Type::String],
+        };
+        let line = request_line(
+            &ws,
+            &implementation(),
+            std::slice::from_ref(&pair),
+            &[pair_type],
+        )
+        .expect("encodes");
+        let sent: serde_json::Value = serde_json::from_slice(&line).expect("JSON");
+        assert_eq!(sent["args"], serde_json::json!([[1, "a"]]));
+
+        let untyped = request_line(&ws, &implementation(), &[pair], &[]).expect("encodes");
+        let sent: serde_json::Value = serde_json::from_slice(&untyped).expect("JSON");
+        assert_eq!(sent["args"], serde_json::json!([{"$tuple": [1, "a"]}]));
+    }
+
     #[tokio::test]
     async fn a_program_that_is_not_there_is_an_environment_problem() {
         let ws = ws();
@@ -451,6 +491,7 @@ mod tests {
             &Environment::subprocess("nope", "sh", "unitype_no_such_program", &[]),
             &implementation(),
             vec![Value::List(vec![])],
+            &[Type::I64.list()],
             &Type::I64.list(),
         )
         .await

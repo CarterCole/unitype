@@ -339,7 +339,17 @@ mod tests {
                     {"from":"n","to":"n","coercion":{"k":"through","functor":"list",
                         "of":{"k":"via_link","link":"plain"}}}]}},
                 {"name":"witnessed","from":"a::X","to":"b::Y",
-                 "kind":{"k":"witness","sig":"a::convert"}}]}"#,
+                 "kind":{"k":"witness","sig":"a::convert"}},
+                {"name":"renamed","from":"a::X","to":"b::Y","kind":{"k":"equivalent",
+                  "pairs":[
+                    {"from":"id","to":"ident","coercion":{"k":"identity"}},
+                    {"from":"n","to":"n","coercion":{"k":"via_link","link":"back",
+                        "reversed":true}}]}},
+                {"name":"left_open","from":"a::X","to":"b::Y",
+                 "kind":{"k":"equivalent"}},
+                {"name":"first_is_head","from":"a::first","to":"b::head","kind":{"k":"equivalent",
+                  "pairs":[{"from":"xs","to":"items"}],
+                  "generics":[{"from":"T","to":"E"}]}}]}"#,
         )
         .expect("reads");
 

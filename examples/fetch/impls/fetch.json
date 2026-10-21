@@ -1,0 +1,50 @@
+{
+  "version": "1.0",
+  "doc": "Three proofs of `fetch::fetch_text`, in three languages, each started as a process that reads one request and answers it. Paths are relative to this file.",
+  "environments": [
+    {
+      "id": "python",
+      "language": "python",
+      "doc": "CPython, standard library only.",
+      "reach": { "k": "subprocess", "command": "python3", "args": ["../proofs/fetch_text.py"], "timeout_ms": 15000 }
+    },
+    {
+      "id": "node",
+      "language": "typescript",
+      "doc": "Node 24 or later, which runs TypeScript by dropping the types.",
+      "reach": { "k": "subprocess", "command": "node", "args": ["../proofs/fetch_text.ts"], "timeout_ms": 15000 }
+    },
+    {
+      "id": "rust",
+      "language": "rust",
+      "doc": "A binary built from ../rust with `cargo build --release`. Until it is built, this environment is simply not there.",
+      "reach": { "k": "subprocess", "command": "../rust/target/release/fetch_text", "timeout_ms": 15000 }
+    }
+  ],
+  "implementations": [
+    {
+      "id": "fetch_text.urllib",
+      "proves": "fetch::fetch_text",
+      "environment": "python",
+      "entry": "urllib.request.urlopen",
+      "cost": { "time": "o_n", "space": "o_n", "notes": "Linear in the size of the page." },
+      "notes": "Where this is called `urllib.request.urlopen`. In the standard library, unlike `requests`."
+    },
+    {
+      "id": "fetch_text.fetch",
+      "proves": "fetch::fetch_text",
+      "environment": "node",
+      "entry": "fetch",
+      "cost": { "time": "o_n", "space": "o_n", "notes": "Linear in the size of the page." },
+      "notes": "Where this is called `fetch`. Decodes with `TextDecoder` rather than `response.text()`, which would ignore the declared charset."
+    },
+    {
+      "id": "fetch_text.ureq",
+      "proves": "fetch::fetch_text",
+      "environment": "rust",
+      "entry": "ureq::get",
+      "cost": { "time": "o_n", "space": "o_n", "notes": "Linear in the size of the page." },
+      "notes": "Where this is called `ureq::get`. Decodes with `encoding_rs`, which reads charset labels the way browsers and Node do."
+    }
+  ]
+}

@@ -104,6 +104,9 @@ pub async fn run(
 struct Hop {
     link: String,
     to: String,
+    /// True when the step follows an equivalence against the way it was
+    /// declared.
+    backwards: bool,
     /// Where the conversion runs, and how.
     by: String,
     lossy: bool,
@@ -118,6 +121,9 @@ impl Hop {
         let by = match &link.kind {
             unitype_core::LinkKind::Identical => "a cast, nothing to run".to_string(),
             unitype_core::LinkKind::FieldMap { .. } => "mapped here".to_string(),
+            unitype_core::LinkKind::Equivalent { .. } => {
+                "renamed and reordered here, nothing lost either way".to_string()
+            }
             unitype_core::LinkKind::Witness { sig } => {
                 match project.registry.proofs_of(sig).first() {
                     Some(proof) => {
@@ -132,16 +138,25 @@ impl Hop {
                 }
             }
         };
+        // A step backwards is the declared link turned around, so its ends
+        // are the other way round from the declaration's.
+        let backwards = project
+            .workspace
+            .workspace()
+            .link(&link.name)
+            .is_some_and(|declared| declared.from != link.from);
         Self {
             link: link.name.to_string(),
             to: link.to.to_string(),
+            backwards,
             by,
             lossy: link.is_lossy(),
         }
     }
 
     fn as_json(&self) -> serde_json::Value {
-        json!({ "link": self.link, "to": self.to, "by": self.by, "lossy": self.lossy })
+        json!({ "link": self.link, "to": self.to, "backwards": self.backwards,
+                "by": self.by, "lossy": self.lossy })
     }
 }
 
@@ -153,8 +168,9 @@ fn route(from: &str, hops: &[Hop]) -> String {
     let mut drawn = format!("{from}\n");
     for hop in hops {
         drawn.push_str(&format!(
-            "  --{}-->  {}\n      {}{}\n",
+            "  --{}{}-->  {}\n      {}{}\n",
             hop.link,
+            if hop.backwards { " (backwards)" } else { "" },
             hop.to,
             hop.by,
             if hop.lossy { ", dropping fields" } else { "" }

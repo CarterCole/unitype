@@ -13,6 +13,6 @@ mod model;
 
 pub use classes::Equivalence;
 pub use compile::CompileError;
-pub use derive::BridgeMismatch;
+pub use derive::{BridgeMismatch, Pairing};
 pub use discover::LinkSuggestion;
-pub use model::{Coercion, FieldPair, Link, LinkKind};
+pub use model::{Coercion, FieldPair, GenericPair, Link, LinkKind};

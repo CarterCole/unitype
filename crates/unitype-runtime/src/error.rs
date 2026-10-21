@@ -157,6 +157,21 @@ pub enum DispatchError {
         /// How many were given.
         got: usize,
     },
+    /// A type argument that is not what its parameter is bounded by.
+    ///
+    /// `pick<T: Named>` says something about every `T` that has a name, and
+    /// nothing about one that does not, so it cannot be asked at one.
+    #[error("`{sig}` takes `{param}` only where it is a `{bound}`, and `{arg}` is not")]
+    BoundNotMet {
+        /// The signature being called.
+        sig: QualifiedName,
+        /// The generic parameter.
+        param: unitype_core::Ident,
+        /// The type it was given.
+        arg: String,
+        /// The bound it does not meet.
+        bound: String,
+    },
     /// The wrong number of arguments.
     #[error("`{sig}` takes {expected} argument(s), but {got} were given")]
     Arity {

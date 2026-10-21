@@ -1,0 +1,8 @@
+{
+  "hello.txt": "text/plain; charset=utf-8",
+  "cafe.html": "text/html; charset=utf-8",
+  "latin1.txt": "text/plain; charset=iso-8859-1",
+  "undeclared.txt": "text/plain",
+  "empty.txt": "text/plain; charset=utf-8",
+  "long.txt": "text/plain; charset=utf-8"
+}

@@ -10,14 +10,119 @@
 //! A lossy bridge is reported as a warning rather than an error. Discarding
 //! fields is a legitimate thing to do — it is just something nobody should
 //! discover afterwards.
+//!
+//! An equivalence is settled before anything else looks at it: whatever
+//! pairing it leaves out is worked out, and the checked workspace carries the
+//! whole of it. An equivalence that cannot be settled — a field with nowhere to
+//! go, a pair that does not convert exactly — is an error, because the claim is
+//! that nothing is lost either way.
 
 use std::collections::HashMap;
 
-use crate::check::CheckedWorkspace;
 use crate::check::error::{CheckErrorKind, Diagnostics, PathSeg, TypePath, describe};
-use crate::ident::Ident;
+use crate::check::{CheckedWorkspace, Reordering};
+use crate::ident::{Ident, QualifiedName};
 use crate::ir::Type;
 use crate::link::{Coercion, Link, LinkKind};
+
+/// Works out every equivalence's pairing, and records which signatures are
+/// one proposition and how a call to one reorders into a call to another.
+pub(crate) fn settle(ws: &mut CheckedWorkspace, diags: &mut Diagnostics) {
+    let mut settled = Vec::new();
+    for (i, link) in ws.workspace().links.iter().enumerate() {
+        let LinkKind::Equivalent { pairs, generics } = &link.kind else {
+            continue;
+        };
+        // Endpoints that are not there, or a link that never leaves its
+        // universe, are reported once, by `verify`.
+        let present = |n: &QualifiedName| ws.def(n).is_some() || ws.sig(n).is_some();
+        if !present(&link.from) || !present(&link.to) || link.from.universe == link.to.universe {
+            continue;
+        }
+        let renames: Vec<(Ident, Ident)> = pairs
+            .iter()
+            .map(|p| (p.from.clone(), p.to.clone()))
+            .collect();
+        let generic_renames: Vec<(Ident, Ident)> = generics
+            .iter()
+            .map(|g| (g.from.clone(), g.to.clone()))
+            .collect();
+        match ws.derive_equivalence(&link.from, &link.to, &renames, &generic_renames) {
+            Ok(pairing) => settled.push((i, pairing)),
+            Err(problems) => diags.error(
+                CheckErrorKind::NotEquivalent {
+                    from: link.from.clone(),
+                    to: link.to.clone(),
+                    problems: problems.iter().map(ToString::to_string).collect(),
+                },
+                TypePath::root().then(PathSeg::Link(link.name.clone())),
+            ),
+        }
+    }
+    for (i, pairing) in settled {
+        ws.ws.links[i].kind = LinkKind::Equivalent {
+            pairs: pairing.pairs,
+            generics: pairing.generics,
+        };
+    }
+
+    let mut equivalents: HashMap<QualifiedName, Vec<Reordering>> = HashMap::new();
+    for link in &ws.ws.links {
+        let LinkKind::Equivalent { pairs, .. } = &link.kind else {
+            continue;
+        };
+        if !ws.joins_signatures(link) || ws.sig(&link.to).is_none() {
+            continue;
+        }
+        let (from, to) = (
+            ws.sig(&link.from).expect("joins"),
+            ws.sig(&link.to).expect("joins"),
+        );
+        let at = |params: &[crate::ir::NamedParam], name: &Ident| {
+            params.iter().position(|p| &p.name == name)
+        };
+        // A call to `from` reorders into a call to `to` by looking up, for each
+        // of `to`'s parameters, which of `from`'s feeds it — and the other way
+        // round by the same pairs read backwards.
+        let forward: Option<Vec<usize>> = to
+            .params
+            .iter()
+            .map(|p| {
+                let pair = pairs.iter().find(|pair| pair.to == p.name)?;
+                at(&from.params, &pair.from)
+            })
+            .collect();
+        let backward: Option<Vec<usize>> = from
+            .params
+            .iter()
+            .map(|p| {
+                let pair = pairs.iter().find(|pair| pair.from == p.name)?;
+                at(&to.params, &pair.to)
+            })
+            .collect();
+        if let (Some(forward), Some(backward)) = (forward, backward) {
+            equivalents
+                .entry(link.from.clone())
+                .or_default()
+                .push(Reordering {
+                    sig: link.to.clone(),
+                    order: forward,
+                });
+            equivalents
+                .entry(link.to.clone())
+                .or_default()
+                .push(Reordering {
+                    sig: link.from.clone(),
+                    order: backward,
+                });
+        }
+    }
+    for reorderings in equivalents.values_mut() {
+        reorderings.sort_by(|a, b| a.sig.cmp(&b.sig));
+        reorderings.dedup();
+    }
+    ws.equivalents = equivalents;
+}
 
 /// Checks every declared link.
 pub(crate) fn verify(ws: &CheckedWorkspace, diags: &mut Diagnostics) {
@@ -30,9 +135,24 @@ pub(crate) fn verify(ws: &CheckedWorkspace, diags: &mut Diagnostics) {
             diags.error(CheckErrorKind::DuplicateLink(link.name.clone()), at.clone());
         }
 
+        // Only an equivalence may join two signatures; every other link, and
+        // an equivalence that starts at a type, joins two types.
+        let over_signatures = ws.joins_signatures(link);
+        let equivalence = matches!(link.kind, LinkKind::Equivalent { .. });
         let mut endpoints_exist = true;
         for endpoint in [&link.from, &link.to] {
-            if ws.def(endpoint).is_none() {
+            // A type at one end of an equivalence and a signature at the other
+            // was reported when it was settled.
+            if equivalence && (ws.def(endpoint).is_some() || ws.sig(endpoint).is_some()) {
+                continue;
+            }
+            if over_signatures && ws.sig(endpoint).is_none() {
+                diags.error(
+                    CheckErrorKind::UnknownFunction(endpoint.clone()),
+                    at.clone(),
+                );
+                endpoints_exist = false;
+            } else if !over_signatures && ws.def(endpoint).is_none() {
                 diags.error(CheckErrorKind::UnknownType(endpoint.clone()), at.clone());
                 endpoints_exist = false;
             }
@@ -58,6 +178,12 @@ pub(crate) fn verify(ws: &CheckedWorkspace, diags: &mut Diagnostics) {
                 check_field_map(ws, link, pairs, dropped, &at, diags)
             }
             LinkKind::Witness { sig } => check_witness(ws, link, sig, &at, diags),
+            // Settled already, and reported then if it could not be.
+            LinkKind::Equivalent { pairs, .. } => {
+                for pair in pairs {
+                    check_coercion(ws, &pair.coercion, &at, diags);
+                }
+            }
         }
     }
 }
@@ -173,9 +299,13 @@ fn check_coercion(
     diags: &mut Diagnostics,
 ) {
     match coercion {
-        Coercion::ViaLink { link } if ws.workspace().link(link).is_none() => {
-            diags.error(CheckErrorKind::UnknownLink(link.clone()), at.clone());
-        }
+        Coercion::ViaLink { link, reversed } => match ws.workspace().link(link) {
+            None => diags.error(CheckErrorKind::UnknownLink(link.clone()), at.clone()),
+            Some(found) if *reversed && !found.is_reversible() => {
+                diags.error(CheckErrorKind::LinkNotReversible(link.clone()), at.clone());
+            }
+            Some(_) => {}
+        },
         Coercion::Through { of, .. } | Coercion::WrapOptional { of } => {
             check_coercion(ws, of, at, diags);
         }
@@ -361,6 +491,180 @@ mod tests {
             errors(json).iter().any(|m| m.contains("same universe")),
             "{:?}",
             errors(json)
+        );
+    }
+
+    /// Two structs holding the same numbers under other names, and two
+    /// signatures taking the same arguments in the other order.
+    const SAME_DATA: &str = r#"{"universes":[
+        {"name":"geo","types":[{"k":"struct","name":"Point","fields":[
+            {"name":"x","ty":"float"},{"name":"y","ty":"float"}]}],
+         "functions":[{"name":"fetch","ret":"str","params":[
+            {"name":"url","ty":"str"},{"name":"retries","ty":"i64"}]}]},
+        {"name":"map","types":[{"k":"struct","name":"LatLong","fields":[
+            {"name":"lat","ty":"float"},{"name":"long","ty":"float"}]}],
+         "functions":[{"name":"get","ret":"str","params":[
+            {"name":"attempts","ty":"i64"},{"name":"getUrl","ty":"str"}]}]}]"#;
+
+    fn with_links(links: &str) -> String {
+        format!(r#"{SAME_DATA},"links":[{links}]}}"#)
+    }
+
+    fn checked(json: &str) -> crate::check::CheckedWorkspace {
+        check_workspace(Workspace::from_json(json).expect("reads")).expect("checks")
+    }
+
+    #[test]
+    fn an_equivalence_left_to_be_worked_out_is_worked_out() {
+        let ws = checked(&with_links(
+            r#"{"name":"point_latlong","from":"geo::Point","to":"map::LatLong",
+                "kind":{"k":"equivalent"}}"#,
+        ));
+        let link = ws.workspace().links.first().expect("declared");
+        let crate::link::LinkKind::Equivalent { pairs, .. } = &link.kind else {
+            panic!("still an equivalence");
+        };
+        let pairs: Vec<String> = pairs
+            .iter()
+            .map(|p| format!("{} -> {}", p.from, p.to))
+            .collect();
+        assert_eq!(
+            pairs,
+            ["x -> lat", "y -> long"],
+            "the checked link carries the pairing"
+        );
+    }
+
+    #[test]
+    fn a_pairing_that_is_stated_is_kept() {
+        let ws = checked(&with_links(
+            r#"{"name":"point_latlong","from":"geo::Point","to":"map::LatLong",
+                "kind":{"k":"equivalent","pairs":[{"from":"x","to":"long"}]}}"#,
+        ));
+        let crate::link::LinkKind::Equivalent { pairs, .. } = &ws.workspace().links[0].kind else {
+            panic!("still an equivalence");
+        };
+        assert!(
+            pairs
+                .iter()
+                .any(|p| p.from.as_str() == "x" && p.to.as_str() == "long")
+        );
+        assert!(
+            pairs
+                .iter()
+                .any(|p| p.from.as_str() == "y" && p.to.as_str() == "lat")
+        );
+    }
+
+    #[test]
+    fn an_equivalence_that_would_lose_something_is_refused() {
+        let msgs = errors(&with_link(r#"{"k":"equivalent"}"#));
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("not the same thing renamed") && m.contains("nowhere to go")),
+            "{msgs:?}"
+        );
+    }
+
+    #[test]
+    fn running_a_one_way_link_backwards_is_refused() {
+        let json = r#"{"universes":[
+            {"name":"a","types":[
+                {"k":"struct","name":"P","fields":[{"name":"x","ty":"float"}]},
+                {"k":"struct","name":"Q","fields":[{"name":"p","ty":"P"}]}]},
+            {"name":"b","types":[
+                {"k":"struct","name":"V","fields":[{"name":"x","ty":"float"}]},
+                {"k":"struct","name":"W","fields":[{"name":"v","ty":"V"}]}]}],
+          "links":[
+            {"name":"v_to_p","from":"b::V","to":"a::P","kind":{"k":"identical"}},
+            {"name":"q_to_w","from":"a::Q","to":"b::W","kind":{"k":"field_map","pairs":[
+                {"from":"p","to":"v","coercion":{"k":"via_link","link":"v_to_p","reversed":true}}]}}]}"#;
+        assert!(
+            errors(json).iter().any(|m| m.contains("only runs one way")),
+            "{:?}",
+            errors(json)
+        );
+    }
+
+    #[test]
+    fn equivalent_signatures_know_how_to_reorder_a_call() {
+        let ws = checked(&with_links(
+            r#"{"name":"fetch_is_get","from":"geo::fetch","to":"map::get",
+                "kind":{"k":"equivalent"}}"#,
+        ));
+        let q = |s: &str| s.parse().unwrap();
+
+        let from_fetch = ws.equivalents_of(&q("geo::fetch"));
+        assert_eq!(from_fetch.len(), 1);
+        assert_eq!(from_fetch[0].sig, q("map::get"));
+        assert_eq!(
+            from_fetch[0].apply(&["https://x", "3"]),
+            ["3", "https://x"],
+            "get takes the attempts first"
+        );
+
+        let from_get = ws.equivalents_of(&q("map::get"));
+        assert_eq!(from_get[0].sig, q("geo::fetch"));
+        assert_eq!(from_get[0].apply(&["3", "https://x"]), ["https://x", "3"]);
+    }
+
+    #[test]
+    fn generic_signatures_settle_which_generic_parameter_is_which() {
+        let ws = checked(
+            r#"{"universes":[
+                {"name":"py","functions":[{"name":"konst","params_decl":[{"name":"A"},{"name":"B"}],
+                    "params":[{"name":"x","ty":{"k":"param","name":"A"}},{"name":"y","ty":{"k":"param","name":"B"}}],
+                    "ret":{"k":"param","name":"A"}}]},
+                {"name":"js","functions":[{"name":"always","params_decl":[{"name":"Y"},{"name":"X"}],
+                    "params":[{"name":"ignored","ty":{"k":"param","name":"Y"}},{"name":"kept","ty":{"k":"param","name":"X"}}],
+                    "ret":{"k":"param","name":"X"}}]}],
+              "links":[{"name":"konst_is_always","from":"py::konst","to":"js::always",
+                        "kind":{"k":"equivalent"}}]}"#,
+        );
+        let crate::link::LinkKind::Equivalent { generics, .. } = &ws.workspace().links[0].kind
+        else {
+            panic!("still an equivalence");
+        };
+        let generics: Vec<String> = generics
+            .iter()
+            .map(|g| format!("{} -> {}", g.from, g.to))
+            .collect();
+        assert_eq!(
+            generics,
+            ["B -> Y", "A -> X"],
+            "the checked link carries every generic pair"
+        );
+
+        let q = |s: &str| s.parse().unwrap();
+        assert_eq!(
+            ws.equivalents_of(&q("py::konst"))[0].apply(&["kept", "dropped"]),
+            ["dropped", "kept"],
+            "a call reorders the same way as for any other signature"
+        );
+    }
+
+    #[test]
+    fn a_generic_pair_on_an_equivalence_between_types_names_nothing() {
+        let msgs = errors(&with_links(
+            r#"{"name":"point_latlong","from":"geo::Point","to":"map::LatLong",
+                "kind":{"k":"equivalent","generics":[{"from":"T","to":"U"}]}}"#,
+        ));
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("no such generic parameter `T`")),
+            "{msgs:?}"
+        );
+    }
+
+    #[test]
+    fn a_type_and_a_signature_are_never_one_thing() {
+        let msgs = errors(&with_links(
+            r#"{"name":"odd","from":"geo::fetch","to":"map::LatLong","kind":{"k":"equivalent"}}"#,
+        ));
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("not both types or both signatures")),
+            "{msgs:?}"
         );
     }
 

@@ -308,3 +308,39 @@ pub(crate) fn header(comment: &str, universe: &Universe, ws: &CheckedWorkspace) 
     }
     out
 }
+
+/// A universe with something generic of every kind, for the backends' tests:
+/// a bounded parameter, a generic parent, a generic interface implemented, an
+/// enum and an alias over two parameters, a parameter nothing uses, and
+/// signatures with and without a body.
+#[cfg(test)]
+pub(crate) const GENERIC: &str = r#"{"universes":[{"name":"demo","types":[
+    {"k":"interface","name":"Named","fields":[{"name":"name","ty":"str"}]},
+    {"k":"interface","name":"Holder","params":[{"name":"T"}],
+     "fields":[{"name":"held","ty":{"k":"param","name":"T"}}]},
+    {"k":"struct","name":"Box","params":[{"name":"T"}],
+     "fields":[{"name":"value","ty":{"k":"param","name":"T"}}]},
+    {"k":"struct","name":"Labelled","params":[{"name":"T"},{"name":"N","bounds":["Named"]}],
+     "extends":{"name":"Box","args":[{"k":"param","name":"T"}]},
+     "fields":[{"name":"label","ty":{"k":"param","name":"N"}}]},
+    {"k":"struct","name":"Tagged","params":[{"name":"T"}],
+     "implements":[{"name":"Holder","args":[{"k":"param","name":"T"}]}],
+     "fields":[{"name":"held","ty":{"k":"param","name":"T"}},{"name":"tag","ty":"str"}]},
+    {"k":"enum","name":"Outcome","params":[{"name":"T"},{"name":"E"}],"variants":[
+        {"name":"Ok","payload":{"k":"param","name":"T"}},
+        {"name":"Err","payload":{"k":"param","name":"E"}},
+        {"name":"Pending"}]},
+    {"k":"alias","name":"Swap","params":[{"name":"A"},{"name":"B"}],
+     "target":{"k":"tuple","items":[{"k":"param","name":"B"},{"k":"param","name":"A"}]}},
+    {"k":"struct","name":"Ghost","params":[{"name":"T"}],"fields":[{"name":"id","ty":"str"}]},
+    {"k":"struct","name":"Uses","fields":[
+        {"name":"ghost","ty":{"k":"ref","name":"Ghost","args":["i64"]}},
+        {"name":"outcome","ty":{"k":"ref","name":"Outcome","args":["i64","str"]}},
+        {"name":"swapped","ty":{"k":"ref","name":"Swap","args":["i64","str"]}}]}],
+  "functions":[
+    {"name":"pick","params_decl":[{"name":"T","bounds":["Named"]}],
+     "params":[{"name":"xs","ty":{"k":"list","of":{"k":"param","name":"T"}}}],
+     "ret":{"k":"optional","of":{"k":"param","name":"T"}}},
+    {"name":"konst","params_decl":[{"name":"A"},{"name":"B"}],
+     "params":[{"name":"x","ty":{"k":"param","name":"A"}},{"name":"y","ty":{"k":"param","name":"B"}}],
+     "ret":{"k":"param","name":"A"},"body":{"k":"var","name":"x"}}]}]}"#;

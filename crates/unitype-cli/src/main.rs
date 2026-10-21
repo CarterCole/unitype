@@ -65,6 +65,12 @@ enum Command {
         /// What to list.
         #[arg(value_enum, default_value_t = commands::ls::What::All)]
         what: commands::ls::What,
+        /// Name types and propositions by their address under a view instead
+        /// of by shape: `positional` gives the same words to the same types in
+        /// the same places, `bag` to the same types under any names, in any
+        /// order.
+        #[arg(long)]
+        view: Option<unitype_core::check::View>,
     },
 
     /// Show a declaration's address and the words that name it.
@@ -138,6 +144,10 @@ enum Command {
         /// The arguments, as a JSON array.
         #[arg(long, default_value = "[]")]
         args: String,
+        /// For a generic proposition, the types it is called at, as a JSON
+        /// array: `--at '["i64"]'`.
+        #[arg(long, value_name = "TYPES")]
+        at: Option<String>,
         /// How to choose among the proofs.
         #[arg(long, value_enum, default_value_t = commands::run::Choice::Default)]
         policy: commands::run::Choice,
@@ -251,7 +261,7 @@ async fn run(cli: Cli) -> Result<(), Failure> {
 
     match cli.command {
         Command::Check => commands::check::run(&project, &out),
-        Command::Ls { what } => commands::ls::run(&project, what, &out),
+        Command::Ls { what, view } => commands::ls::run(&project, what, view, &out),
         Command::Words { name } => commands::words::run(&project, &name, &out),
         Command::Infer {
             data,
@@ -276,10 +286,23 @@ async fn run(cli: Cli) -> Result<(), Failure> {
         Command::Run {
             signature,
             args,
+            at,
             policy,
             r#impl,
             verbose,
-        } => commands::run::run(&project, &signature, &args, policy, r#impl, verbose, &out).await,
+        } => {
+            commands::run::run(
+                &project,
+                &signature,
+                &args,
+                at.as_deref(),
+                policy,
+                r#impl,
+                verbose,
+                &out,
+            )
+            .await
+        }
         Command::Bridge { from, to, data } => {
             commands::bridge::run(&project, &from, &to, data, &out).await
         }

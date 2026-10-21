@@ -431,6 +431,19 @@ pub enum CheckErrorKind {
         /// The type it actually has.
         found: String,
     },
+    /// An equivalence could not be settled.
+    #[error("`{from}` and `{to}` are not the same thing renamed and reordered: {}", .problems.join("; "))]
+    NotEquivalent {
+        /// The source.
+        from: QualifiedName,
+        /// The target.
+        to: QualifiedName,
+        /// What stood in the way.
+        problems: Vec<String>,
+    },
+    /// A conversion runs a link backwards that only goes one way.
+    #[error("link `{0}` only runs one way; only an equivalence runs backwards")]
+    LinkNotReversible(Ident),
     /// A bridge discards fields. Legitimate, but worth saying out loud.
     #[error("converting `{from}` to `{to}` discards {}", .fields.join(", "))]
     LossyLink {

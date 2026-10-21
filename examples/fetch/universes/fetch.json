@@ -1,0 +1,12 @@
+{
+  "name": "fetch",
+  "doc": "Reading a page as text, said once and proved three times.",
+  "functions": [
+    {
+      "name": "fetch_text",
+      "doc": "The body at a URL, as text.\n\nText means decoded: by the charset the response declares, and as UTF-8 when it declares none. Bytes that are not valid in that charset are a failure, not a guess, and so is a status outside 200 to 299. Saying all this is what lets three proofs be held to one answer, because each platform's shortest way of doing it decides these things differently: Node's `response.text()` ignores the declared charset altogether.\n\nA future, because none of them answers immediately.",
+      "params": [{ "name": "url", "ty": "str" }],
+      "ret": { "k": "future", "of": "str" }
+    }
+  ]
+}

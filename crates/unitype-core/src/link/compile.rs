@@ -39,6 +39,9 @@ pub enum CompileError {
     /// Links referred to each other too deeply.
     #[error("following this conversion did not terminate")]
     TooDeep,
+    /// A conversion ran a link backwards that only goes one way.
+    #[error("link `{0}` only runs one way, and this conversion runs it backwards")]
+    NotReversible(Ident),
 }
 
 impl CheckedWorkspace {
@@ -113,7 +116,7 @@ impl CheckedWorkspace {
                 .iter()
                 .map(|f| (f.name.clone(), f.name.clone(), Coercion::Identity))
                 .collect(),
-            LinkKind::FieldMap { pairs, .. } => pairs
+            LinkKind::FieldMap { pairs, .. } | LinkKind::Equivalent { pairs, .. } => pairs
                 .iter()
                 .map(|p| (p.from.clone(), p.to.clone(), p.coercion.clone()))
                 .collect(),
@@ -154,12 +157,19 @@ impl CheckedWorkspace {
                 }
             }
 
-            Coercion::ViaLink { link } => {
+            Coercion::ViaLink { link, reversed } => {
                 let nested = self
                     .workspace()
                     .link(link)
                     .ok_or_else(|| CompileError::MissingLink(link.clone()))?;
-                self.apply_link(nested, value, depth + 1)?
+                if *reversed {
+                    let backwards = nested
+                        .reversed()
+                        .ok_or_else(|| CompileError::NotReversible(link.clone()))?;
+                    self.apply_link(&backwards, value, depth + 1)?
+                } else {
+                    self.apply_link(nested, value, depth + 1)?
+                }
             }
         })
     }
@@ -377,6 +387,7 @@ mod tests {
                     to: Ident::new("id").unwrap(),
                     coercion: Coercion::ViaLink {
                         link: Ident::new("nowhere").unwrap(),
+                        reversed: false,
                     },
                 }],
                 dropped: vec![],

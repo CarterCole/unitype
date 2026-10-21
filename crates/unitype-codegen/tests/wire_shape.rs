@@ -26,8 +26,9 @@ use unitype_core::ir::{Type, TypeRef};
 use unitype_core::{Ident, Workspace};
 
 /// A universe with the cases most likely to drift between backends: an
-/// inherited field, a discriminating literal, a field that may be absent, and
-/// a list — and the cases most likely to stop a file loading at all: prose
+/// inherited field, a discriminating literal, a field that may be absent, a
+/// list, and a tuple, which every language writes as an array and unitype only
+/// does when it knows the type — and the cases most likely to stop a file loading at all: prose
 /// long enough to wrap, prose that tries to end its own comment, a union of
 /// strings, and bodies: one that builds a record, some that fold a list,
 /// compare and add, say what to do when something is absent, and take an enum
@@ -46,6 +47,7 @@ const UNIVERSE: &str = r#"{"universes":[{"name":"demo",
     {"k":"struct","name":"Circle","extends":"Shape","fields":[
         {"name":"kind","ty":{"k":"literal","value":{"str":"circle"}}},
         {"name":"radius","ty":"float"},
+        {"name":"centre","ty":{"k":"tuple","items":["float","float"]}},
         {"name":"tags","ty":"[str]"},
         {"name":"note","ty":"str?"}]},
     {"k":"alias","name":"Colour","doc":"The ones there are.","target":{"k":"union","members":[
@@ -206,7 +208,8 @@ fn expected_json() -> String {
     let ws = workspace();
     let circle = ws
         .read_json(
-            r#"{"id":"c-1","kind":"circle","radius":2.5,"tags":["round","blue"],"note":null}"#,
+            r#"{"id":"c-1","kind":"circle","radius":2.5,"centre":[1.5,-0.5],
+                "tags":["round","blue"],"note":null}"#,
             &circle_type(),
         )
         .expect("a real Circle");
@@ -241,9 +244,13 @@ fn normalize(json: &str) -> String {
 
 /// Writes a backend's output into a directory of its own.
 fn emit(backend: &dyn Backend, into: &Path) -> PathBuf {
-    let ws = workspace();
+    emit_from(&workspace(), backend, into)
+}
+
+/// Writes a backend's output for some workspace into a directory of its own.
+fn emit_from(ws: &CheckedWorkspace, backend: &dyn Backend, into: &Path) -> PathBuf {
     let files = backend
-        .generate(&ws, &GenOptions::default())
+        .generate(ws, &GenOptions::default())
         .expect("generates");
     let root = into.join(backend.id());
     for file in files {
@@ -299,7 +306,7 @@ fn the_generated_python_produces_the_shape_it_promised() {
         r#"import dataclasses, json
 from demo import Circle
 
-circle = Circle(id="c-1", kind="circle", radius=2.5, tags=["round", "blue"])
+circle = Circle(id="c-1", kind="circle", radius=2.5, centre=(1.5, -0.5), tags=["round", "blue"])
 shape = dataclasses.asdict(circle)
 # Absent and null are one state, so a field with nothing in it is not sent.
 shape = {k: v for k, v in shape.items() if v is not None}
@@ -360,6 +367,7 @@ const circle = {
   id: "c-1",
   kind: "circle",
   radius: 2.5,
+  centre: [1.5, -0.5],
   tags: ["round", "blue"],
 };
 const noted = { ...circle, note: "hi" };
@@ -441,7 +449,7 @@ def sent(record):
     return {k: v for k, v in dataclasses.asdict(record).items() if v is not None}
 
 
-circle = Circle(id="c-1", kind="circle", radius=2.5, tags=["round", "blue"])
+circle = Circle(id="c-1", kind="circle", radius=2.5, centre=(1.5, -0.5), tags=["round", "blue"])
 noted = dataclasses.replace(circle, note="hi")
 forms = {
     "total": total([1, 2, 3, 4]),
@@ -723,4 +731,494 @@ except TypeError:
             .is_err(),
         "and unitype does refuse it"
     );
+}
+
+/// Something generic of each kind a value can pass through: a generic struct,
+/// one that inherits from it with a bounded parameter, an enum over two
+/// parameters and an alias that hands it them the other way round, a pair
+/// whose parameters are the other way round too, and a struct whose parameter
+/// nothing uses — and two bodies over generic parameters.
+const GENERIC_UNIVERSE: &str = r#"{"universes":[{"name":"generic","types":[
+    {"k":"interface","name":"Named","fields":[{"name":"name","ty":"str"}]},
+    {"k":"struct","name":"Person","implements":["Named"],"fields":[{"name":"name","ty":"str"}]},
+    {"k":"struct","name":"Box","params":[{"name":"T"}],
+     "fields":[{"name":"value","ty":{"k":"param","name":"T"}}]},
+    {"k":"struct","name":"Labelled","params":[{"name":"T"},{"name":"N","bounds":["Named"]}],
+     "extends":{"name":"Box","args":[{"k":"param","name":"T"}]},
+     "fields":[{"name":"label","ty":{"k":"param","name":"N"}}]},
+    {"k":"enum","name":"Outcome","params":[{"name":"T"},{"name":"E"}],"variants":[
+        {"name":"Ok","payload":{"k":"param","name":"T"}},
+        {"name":"Err","payload":{"k":"param","name":"E"}},
+        {"name":"Pending"}]},
+    {"k":"alias","name":"Flip","params":[{"name":"A"},{"name":"B"}],
+     "target":{"k":"ref","name":"Outcome","args":[{"k":"param","name":"B"},{"k":"param","name":"A"}]}},
+    {"k":"alias","name":"Swap","params":[{"name":"A"},{"name":"B"}],
+     "target":{"k":"tuple","items":[{"k":"param","name":"B"},{"k":"param","name":"A"}]}},
+    {"k":"struct","name":"Ghost","params":[{"name":"T"}],"fields":[{"name":"id","ty":"str"}]},
+    {"k":"struct","name":"Uses","fields":[
+        {"name":"boxed","ty":{"k":"ref","name":"Box","args":["[i64]"]}},
+        {"name":"labelled","ty":{"k":"ref","name":"Labelled","args":["str","Person"]}},
+        {"name":"outcome","ty":{"k":"ref","name":"Outcome","args":["i64","str"]}},
+        {"name":"pending","ty":{"k":"ref","name":"Outcome","args":["i64","str"]}},
+        {"name":"flipped","ty":{"k":"ref","name":"Flip","args":["i64","str"]}},
+        {"name":"swapped","ty":{"k":"ref","name":"Swap","args":["i64","str"]}},
+        {"name":"ghost","ty":{"k":"ref","name":"Ghost","args":["bool"]}}]}],
+  "functions":[
+    {"name":"konst","params_decl":[{"name":"A"},{"name":"B"}],
+     "params":[{"name":"x","ty":{"k":"param","name":"A"}},{"name":"y","ty":{"k":"param","name":"B"}}],
+     "ret":{"k":"param","name":"A"},"body":{"k":"var","name":"x"}},
+    {"name":"unbox","params_decl":[{"name":"T"}],
+     "params":[{"name":"b","ty":{"k":"ref","name":"Box","args":[{"k":"param","name":"T"}]}}],
+     "ret":{"k":"param","name":"T"},
+     "body":{"k":"field","of":{"k":"var","name":"b"},"name":"value"}}]}]}"#;
+
+/// What each language is asked to build, and what the two bodies answer.
+const USES: &str = r#"{"boxed":{"value":[1,2]},"labelled":{"value":"x","label":{"name":"n"}},
+    "outcome":{"$tag":"Err","value":"bad"},"pending":{"$tag":"Pending"},
+    "flipped":{"$tag":"Ok","value":"a"},"swapped":["a",1],"ghost":{"id":"g"}}"#;
+const GENERIC_ANSWERS: &str = r#"{"konst":3,"unbox":[4]}"#;
+
+fn generic_workspace() -> CheckedWorkspace {
+    check_workspace(Workspace::from_json(GENERIC_UNIVERSE).expect("reads")).expect("checks")
+}
+
+/// A `Uses` as unitype writes it.
+fn uses_json() -> String {
+    let ws = generic_workspace();
+    let uses = Type::Ref(TypeRef::qualified(
+        Ident::new("generic").unwrap(),
+        Ident::new("Uses").unwrap(),
+    ));
+    let value = ws.read_json(USES, &uses).expect("a real Uses");
+    ws.write_json(&value, &uses).expect("writes")
+}
+
+/// Checks what a language produced: the value, and the bodies' answers.
+fn agrees(language: &str, produced: &str) {
+    let produced: serde_json::Value = serde_json::from_str(produced).expect("valid JSON");
+    assert_eq!(
+        normalize(&produced["uses"].to_string()),
+        normalize(&uses_json()),
+        "a value built from the generated {language} generics has a different shape than \
+         unitype says it does"
+    );
+    let answers = serde_json::json!({"konst": produced["konst"], "unbox": produced["unbox"]});
+    assert_eq!(
+        normalize(&answers.to_string()),
+        normalize(GENERIC_ANSWERS),
+        "the generic bodies, as {language}, answered differently"
+    );
+}
+
+/// Whether this `python3` reads the type parameter syntax generic code is
+/// written in, which arrived in 3.12.
+fn python_reads_type_parameters() -> bool {
+    Command::new("python3")
+        .args([
+            "-c",
+            "import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)",
+        ])
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+#[test]
+fn generated_python_generics_load_and_hold_what_unitype_says() {
+    if !python_reads_type_parameters() {
+        eprintln!("no python3 of 3.12 or later on this machine; skipping");
+        return;
+    }
+    let dir = scratch("python_generic");
+    let root = emit_from(&generic_workspace(), &python::Python, &dir);
+    std::fs::write(
+        root.join("check.py"),
+        r#"import dataclasses, json
+from generic import Box, Ghost, Labelled, Person, Uses, konst, unbox
+
+uses = Uses(
+    boxed=Box(value=[1, 2]),
+    labelled=Labelled(value="x", label=Person(name="n")),
+    outcome={"$tag": "Err", "value": "bad"},
+    pending={"$tag": "Pending"},
+    flipped={"$tag": "Ok", "value": "a"},
+    swapped=("a", 1),
+    ghost=Ghost(id="g"),
+)
+print(json.dumps({
+    "uses": dataclasses.asdict(uses),
+    "konst": konst(3, "a"),
+    "unbox": unbox(Box(value=[4])),
+}))
+"#,
+    )
+    .expect("writes the driver");
+    agrees("Python", &run("python3", &["check.py"], &root));
+}
+
+#[test]
+fn generated_typescript_generics_load_and_hold_what_unitype_says() {
+    if !node_reads_typescript() {
+        eprintln!("no node that reads TypeScript on this machine; skipping");
+        return;
+    }
+    let dir = scratch("typescript_generic");
+    let root = emit_from(&generic_workspace(), &typescript::TypeScript, &dir);
+    std::fs::write(root.join("package.json"), "{\"type\": \"module\"}\n").expect("writes");
+    std::fs::write(
+        root.join("check.mjs"),
+        r#"import { konst, unbox } from "./generic.ts";
+
+const uses = {
+  boxed: { value: [1, 2] },
+  labelled: { value: "x", label: { name: "n" } },
+  outcome: { $tag: "Err", value: "bad" },
+  pending: { $tag: "Pending" },
+  flipped: { $tag: "Ok", value: "a" },
+  swapped: ["a", 1],
+  ghost: { id: "g" },
+};
+process.stdout.write(JSON.stringify({ uses, konst: konst(3, "a"), unbox: unbox({ value: [4] }) }));
+"#,
+    )
+    .expect("writes the driver");
+    agrees("TypeScript", &run("node", &["check.mjs"], &root));
+}
+
+#[test]
+fn generated_rust_generics_compile_and_hold_what_unitype_says() {
+    let dir = scratch("rust_generic");
+    let root = emit_from(&generic_workspace(), &rust::Rust, &dir);
+    std::fs::create_dir_all(dir.join("src")).expect("makes src");
+    std::fs::rename(root.join("generic.rs"), dir.join("src/generic.rs")).expect("moves the module");
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[package]
+name = "generic-check"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[workspace]
+"#,
+    )
+    .expect("writes the manifest");
+    std::fs::write(
+        dir.join("src/main.rs"),
+        r#"#[allow(dead_code, unused_variables)]
+mod generic;
+
+fn main() {
+    let arrived = std::env::args().nth(1).expect("a Uses");
+    let uses: generic::Uses = serde_json::from_str(&arrived).expect("reads as a Uses");
+    println!(
+        "{}",
+        serde_json::json!({
+            "uses": uses,
+            "konst": generic::konst(3, "a".to_string()),
+            "unbox": generic::unbox(generic::Box { value: vec![4i64] }),
+        })
+    );
+}
+"#,
+    )
+    .expect("writes the driver");
+
+    // The same place the other Rust check builds, so the dependencies are
+    // compiled once between them.
+    let target = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("rust_wire_target");
+    let cargo = |args: &[&str]| {
+        Command::new(env!("CARGO"))
+            .args(args)
+            .env("CARGO_TARGET_DIR", &target)
+            .current_dir(&dir)
+            .output()
+            .expect("runs cargo")
+    };
+    let built = cargo(&["build", "--quiet", "--offline"]);
+    let said = String::from_utf8_lossy(&built.stderr);
+    if !built.status.success() && !said.contains("error[") && !said.contains("could not compile") {
+        eprintln!("serde is not available offline; skipping\n{said}");
+        return;
+    }
+    assert!(
+        built.status.success(),
+        "the generated Rust did not build:\n{said}"
+    );
+
+    let output = cargo(&["run", "--quiet", "--offline", "--", &uses_json()]);
+    assert!(
+        output.status.success(),
+        "the generated Rust failed when it ran:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    agrees(
+        "Rust",
+        &String::from_utf8(output.stdout).expect("output is text"),
+    );
+}
+
+/// What JSON has no shape of its own for, in each place a value can hold it:
+/// a map keyed by integers, one keyed by strings, and bytes — plain, in a list,
+/// absent, present, and as the value of a map.
+const CARRIED_UNIVERSE: &str = r#"{"universes":[{"name":"carried","types":[
+    {"k":"struct","name":"Doc","fields":[
+        {"name":"by_number","ty":"map<i64, str>"},
+        {"name":"by_name","ty":"map<str, i64>"},
+        {"name":"blob","ty":"bytes"},
+        {"name":"blobs","ty":"[bytes]"},
+        {"name":"maybe","ty":"bytes?"},
+        {"name":"later","ty":"bytes?"},
+        {"name":"labels","ty":"map<i64, bytes>"}]}]}]}"#;
+
+/// A `Doc`, as unitype writes one: property names that are the text of the
+/// integers they stand for, and base64 for the bytes. `later` is absent.
+const DOC: &str = r#"{"by_number":{"1":"one","20":"twenty"},"by_name":{"a":1,"b":2},
+    "blob":"AQID","blobs":["","AQ==","AQI="],"maybe":"AAEC","labels":{"7":"/w=="}}"#;
+
+fn carried_workspace() -> CheckedWorkspace {
+    check_workspace(Workspace::from_json(CARRIED_UNIVERSE).expect("reads")).expect("checks")
+}
+
+fn doc_type() -> Type {
+    Type::Ref(TypeRef::qualified(
+        Ident::new("carried").unwrap(),
+        Ident::new("Doc").unwrap(),
+    ))
+}
+
+/// What a language produced for the `Doc`, against what unitype writes for it.
+fn holds_the_doc(language: &str, produced: &serde_json::Value) {
+    let ws = carried_workspace();
+    // The form is pinned here, not only compared: unitype has to write the
+    // plain shapes for the languages to be able to read them.
+    let written = ws
+        .write_json(
+            &ws.read_json(DOC, &doc_type()).expect("a real Doc"),
+            &doc_type(),
+        )
+        .expect("writes");
+    assert_eq!(
+        normalize(&written),
+        normalize(DOC),
+        "unitype wrote a Doc some other way than the plain shapes"
+    );
+    assert_eq!(
+        normalize(&produced.to_string()),
+        normalize(&written),
+        "the generated {language} produced a different Doc than unitype says it is"
+    );
+    assert!(
+        ws.read_json(&produced.to_string(), &doc_type()).is_ok(),
+        "and unitype reads back what the generated {language} wrote"
+    );
+}
+
+#[test]
+fn generated_python_holds_maps_keyed_by_integers_and_bytes_the_way_unitype_writes_them() {
+    if !have("python3") {
+        eprintln!("no python3 on this machine; skipping");
+        return;
+    }
+    let dir = scratch("python_carried");
+    let root = emit_from(&carried_workspace(), &python::Python, &dir);
+    // Keys are the text JSON gives them, and bytes are base64 text: what the
+    // generated annotations say, and what `json.dumps` writes of them.
+    std::fs::write(
+        root.join("check.py"),
+        r#"import dataclasses, json
+from carried import Doc
+
+doc = Doc(
+    by_number={"1": "one", "20": "twenty"},
+    by_name={"a": 1, "b": 2},
+    blob="AQID",
+    blobs=["", "AQ==", "AQI="],
+    maybe="AAEC",
+    labels={"7": "/w=="},
+)
+print(json.dumps({k: v for k, v in dataclasses.asdict(doc).items() if v is not None}))
+"#,
+    )
+    .expect("writes the driver");
+    let produced: serde_json::Value =
+        serde_json::from_str(&run("python3", &["check.py"], &root)).expect("valid JSON");
+    holds_the_doc("Python", &produced);
+
+    let source = std::fs::read_to_string(root.join("carried.py")).expect("reads the module");
+    for expected in [
+        "by_number: dict[str, str]",
+        "blob: str",
+        "blobs: list[str]",
+        "labels: dict[str, str]",
+    ] {
+        assert!(
+            source.contains(expected),
+            "missing `{expected}` in:\n{source}"
+        );
+    }
+}
+
+#[test]
+fn generated_typescript_holds_maps_keyed_by_integers_and_bytes_the_way_unitype_writes_them() {
+    if !node_reads_typescript() {
+        eprintln!("no node that reads TypeScript on this machine; skipping");
+        return;
+    }
+    let dir = scratch("typescript_carried");
+    let root = emit_from(&carried_workspace(), &typescript::TypeScript, &dir);
+    std::fs::write(root.join("package.json"), "{\"type\": \"module\"}\n").expect("writes");
+    // A property name is text, so `{ 1: "one" }` is the object JSON calls
+    // `{"1": "one"}`; and the module has to parse for the import to succeed.
+    std::fs::write(
+        root.join("check.mjs"),
+        r#"import "./carried.ts";
+
+const doc = {
+  by_number: { 1: "one", 20: "twenty" },
+  by_name: { a: 1, b: 2 },
+  blob: "AQID",
+  blobs: ["", "AQ==", "AQI="],
+  maybe: "AAEC",
+  labels: { 7: "/w==" },
+};
+process.stdout.write(JSON.stringify(doc));
+"#,
+    )
+    .expect("writes the driver");
+    let produced: serde_json::Value =
+        serde_json::from_str(&run("node", &["check.mjs"], &root)).expect("valid JSON");
+    holds_the_doc("TypeScript", &produced);
+
+    let source = std::fs::read_to_string(root.join("carried.ts")).expect("reads the module");
+    for expected in [
+        "by_number: Record<number, string>;",
+        "blob: string;",
+        "blobs: string[];",
+        "labels: Record<number, string>;",
+    ] {
+        assert!(
+            source.contains(expected),
+            "missing `{expected}` in:\n{source}"
+        );
+    }
+}
+
+#[test]
+fn generated_rust_holds_maps_keyed_by_integers_and_bytes_the_way_unitype_writes_them() {
+    let dir = scratch("rust_carried");
+    let root = emit_from(&carried_workspace(), &rust::Rust, &dir);
+    std::fs::create_dir_all(dir.join("src")).expect("makes src");
+    for module in ["carried.rs", "unitype_support.rs"] {
+        std::fs::rename(root.join(module), dir.join("src").join(module)).expect("moves a module");
+    }
+    std::fs::write(
+        dir.join("Cargo.toml"),
+        r#"[package]
+name = "carried-check"
+version = "0.0.0"
+edition = "2024"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[workspace]
+"#,
+    )
+    .expect("writes the manifest");
+    std::fs::write(
+        dir.join("src/main.rs"),
+        r#"#[allow(dead_code, unused_variables)]
+mod carried;
+mod unitype_support;
+
+use unitype_support::Bytes;
+
+fn main() {
+    let arrived = std::env::args().nth(1).expect("a Doc");
+    let doc: carried::Doc = serde_json::from_str(&arrived).expect("reads as a Doc");
+
+    // Every length from nothing up, so that each amount of padding is written.
+    let lengths: Vec<serde_json::Value> = (0..=7u8)
+        .map(|n| {
+            let bytes = Bytes((0..n).map(|i| i.wrapping_mul(37).wrapping_add(250)).collect());
+            serde_json::to_value(&bytes).expect("writes")
+        })
+        .collect();
+    // Text that is not base64 as unitype writes it, or not text at all.
+    let refused: Vec<bool> = ["\"A\"", "\"A===\"", "\"A!==\"", "\"=AAA\"", "\"AA=A\"", "[1,2]"]
+        .iter()
+        .map(|bad| serde_json::from_str::<Bytes>(bad).is_err())
+        .collect();
+
+    println!(
+        "{}",
+        serde_json::json!({
+            "doc": doc, "lengths": lengths, "refused": refused,
+            "blob": doc.blob.to_vec(), "blobs": doc.blobs.iter().map(|b| b.len()).collect::<Vec<_>>(),
+        })
+    );
+}
+"#,
+    )
+    .expect("writes the driver");
+
+    let target = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("rust_wire_target");
+    let cargo = |args: &[&str]| {
+        Command::new(env!("CARGO"))
+            .args(args)
+            .env("CARGO_TARGET_DIR", &target)
+            .current_dir(&dir)
+            .output()
+            .expect("runs cargo")
+    };
+    let built = cargo(&["build", "--quiet", "--offline"]);
+    let said = String::from_utf8_lossy(&built.stderr);
+    if !built.status.success() && !said.contains("error[") && !said.contains("could not compile") {
+        eprintln!("serde is not available offline; skipping\n{said}");
+        return;
+    }
+    assert!(
+        built.status.success(),
+        "the generated Rust did not build:\n{said}"
+    );
+
+    let output = cargo(&["run", "--quiet", "--offline", "--", &DOC.replace('\n', "")]);
+    assert!(
+        output.status.success(),
+        "the generated Rust failed when it ran:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let produced: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
+    holds_the_doc("Rust", &produced["doc"]);
+
+    // Its base64 is its own, so it is checked against someone else's.
+    use base64::Engine as _;
+    let want: Vec<String> = (0..=7u8)
+        .map(|n| {
+            let bytes: Vec<u8> = (0..n)
+                .map(|i| i.wrapping_mul(37).wrapping_add(250))
+                .collect();
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        })
+        .collect();
+    assert_eq!(
+        produced["lengths"],
+        serde_json::json!(want),
+        "the bytes were written some other way than standard, padded base64"
+    );
+    assert_eq!(
+        produced["refused"],
+        serde_json::json!([true, true, true, true, true, true]),
+        "text that is not base64 should be refused"
+    );
+    assert_eq!(
+        produced["blob"],
+        serde_json::json!([1, 2, 3]),
+        "and what is read is the bytes"
+    );
+    assert_eq!(produced["blobs"], serde_json::json!([0, 1, 2]));
 }

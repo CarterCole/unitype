@@ -41,6 +41,9 @@ pub struct LanguageProfile {
     /// How each primitive is written, keyed by the type's kind token.
     pub scalars: BTreeMap<String, String>,
     /// How each constructor is written, with `{}` where its arguments go.
+    ///
+    /// `apply` is how a generic declaration is written applied to arguments:
+    /// its name, then the arguments, comma-separated.
     pub constructors: BTreeMap<String, String>,
     /// Caveats, keyed by the kind token they qualify.
     #[serde(default)]
@@ -153,7 +156,7 @@ impl LanguageProfile {
     /// Compositional: a list of optionals is spelled by spelling the optional
     /// and putting it through the list's template. Named types are spelled as
     /// their own name, since that is what the generated declaration will be
-    /// called.
+    /// called, and a generic one applied to arguments goes through `apply`.
     pub fn spell(&self, ty: &Type) -> String {
         self.spelling(ty).text
     }
@@ -171,7 +174,19 @@ impl LanguageProfile {
                 let inner: Vec<String> = items.iter().map(|t| self.spelling(t).text).collect();
                 self.wrap("tuple", &[Spelling::tight(inner.join(", "))])
             }
-            Type::Ref(r) => Spelling::tight(self.name(&r.name)),
+            Type::Ref(r) if r.args.is_empty() || !self.constructors.contains_key("apply") => {
+                Spelling::tight(self.name(&r.name))
+            }
+            Type::Ref(r) => {
+                let args: Vec<String> = r.args.iter().map(|a| self.spelling(a).text).collect();
+                self.wrap(
+                    "apply",
+                    &[
+                        Spelling::tight(self.name(&r.name)),
+                        Spelling::tight(args.join(", ")),
+                    ],
+                )
+            }
             Type::Param { name } => Spelling::tight(self.name(name)),
             // A union or an anonymous record has no one spelling: how it is
             // written depends on the backend's choices about declarations, so
@@ -368,6 +383,23 @@ mod tests {
             ts().spell(&Type::String.optional().map_from(Type::String)),
             "Record<string, string | null>"
         );
+    }
+
+    #[test]
+    fn a_generic_declaration_is_spelled_with_its_arguments() {
+        let boxed = Type::Ref(crate::ir::TypeRef {
+            universe: None,
+            name: Ident::new("Box").unwrap(),
+            args: vec![
+                Type::String.optional(),
+                Type::Param {
+                    name: Ident::new("T").unwrap(),
+                },
+            ],
+        });
+        assert_eq!(rust().spell(&boxed), "Box<Option<String>, T>");
+        assert_eq!(ts().spell(&boxed), "Box<string | null, T>");
+        assert_eq!(py().spell(&boxed.list()), "list[Box[str | None, T]]");
     }
 
     #[test]

@@ -33,7 +33,7 @@ use serde_json::Value as Json;
 
 use crate::check::CheckedWorkspace;
 use crate::ir::{Type, TypeDef, fits_f64_exactly};
-use crate::value::{Value, ValueError};
+use crate::value::{Value, ValueDecodeError, ValueError};
 
 /// Why text could not be read as a value of some type.
 #[derive(thiserror::Error, Debug)]
@@ -78,14 +78,142 @@ impl CheckedWorkspace {
         }
     }
 
-    /// Writes a value back out as JSON text.
+    /// Writes a value back out as JSON text, in the typed form of
+    /// [`typed_json`](Self::typed_json).
     ///
     /// The value is checked against `ty` first, so nothing that does not belong
     /// leaves the system. Fields that are absent are left out rather than
     /// written as `null`: absence has one representation here, and this is it.
     pub fn write_json(&self, value: &Value, ty: &Type) -> Result<String, ReadError> {
         self.validate(value, ty).map_err(ReadError::Invalid)?;
-        Ok(self.canonical(value, ty).to_json_string()?)
+        Ok(self.typed_json(value, ty)?.to_string())
+    }
+
+    /// A value as JSON written against its type: the **typed form**.
+    ///
+    /// The untyped encoding has to say what a tuple, a map and a byte string
+    /// are, because nothing else will. Written against a type, the type already
+    /// says, so each is written the way every language's own JSON writes it — a
+    /// tuple as an array, a map as an object whose property names are its keys
+    /// as text, bytes as base64 text — which is what generated code reads and writes, and what
+    /// [`read_json`](Self::read_json) reads back. Where the type does not say —
+    /// under `any`, or in a union where the plain shape would read back as one
+    /// of the other alternatives — the escape is written, as it would be with no
+    /// type at all.
+    ///
+    /// Absent fields are left out, as by [`canonical`](Self::canonical). The
+    /// value is not checked against `ty`; [`write_json`](Self::write_json) is
+    /// what checks first.
+    pub fn typed_json(&self, value: &Value, ty: &Type) -> Result<Json, ValueDecodeError> {
+        self.typed(&self.canonical(value, ty), ty)
+    }
+
+    fn typed(&self, value: &Value, ty: &Type) -> Result<Json, ValueDecodeError> {
+        use crate::value::json::{KEY_MAP, KEY_TAG, KEY_VALUE};
+        let ty = self.expand_alias(ty);
+
+        Ok(match (&ty, value) {
+            (Type::Optional { of }, present) if !matches!(present, Value::Null) => {
+                self.typed(present, of)?
+            }
+            (Type::List { of }, Value::List(items)) => Json::Array(
+                items
+                    .iter()
+                    .map(|i| self.typed(i, of))
+                    .collect::<Result<_, _>>()?,
+            ),
+            (Type::Tuple { items: types }, Value::Tuple(items)) if types.len() == items.len() => {
+                Json::Array(
+                    types
+                        .iter()
+                        .zip(items)
+                        .map(|(t, i)| self.typed(i, t))
+                        .collect::<Result<_, _>>()?,
+                )
+            }
+            // An object has text for keys, which holds a string as it is and an
+            // integer as its digits. Keys that would not read back as
+            // themselves keep the escape, which can hold any key at all.
+            (Type::Map { key, value: of }, Value::Map(entries)) => {
+                match self.property_names(entries, key) {
+                    Some(names) => {
+                        let mut obj = serde_json::Map::with_capacity(entries.len());
+                        for (name, (_, v)) in names.into_iter().zip(entries) {
+                            obj.insert(name, self.typed(v, of)?);
+                        }
+                        Json::Object(obj)
+                    }
+                    None => {
+                        let pairs = entries
+                            .iter()
+                            .map(|(k, v)| {
+                                Ok(Json::Array(vec![self.typed(k, key)?, self.typed(v, of)?]))
+                            })
+                            .collect::<Result<Vec<_>, ValueDecodeError>>()?;
+                        Json::Object(serde_json::Map::from_iter([(
+                            KEY_MAP.to_string(),
+                            Json::Array(pairs),
+                        )]))
+                    }
+                }
+            }
+            (Type::Bytes, Value::Bytes(bytes)) => Json::String(BASE64.encode(bytes)),
+            (Type::Record { fields }, Value::Record(entries)) => {
+                let mut obj = serde_json::Map::with_capacity(entries.len());
+                for (name, entry) in entries {
+                    let written = match fields.iter().find(|f| f.name.as_str() == name) {
+                        Some(field) => self.typed(entry, &field.ty)?,
+                        // A field this type does not know about has no type to
+                        // be written against.
+                        None => entry.to_json()?,
+                    };
+                    obj.insert(name.clone(), written);
+                }
+                Json::Object(obj)
+            }
+            (Type::Ref(r), Value::Record(_)) => match self.fields_of(r) {
+                Some(fields) => self.typed(value, &Type::Record { fields })?,
+                None => value.to_json()?,
+            },
+            (
+                Type::Ref(r),
+                Value::Variant {
+                    tag,
+                    value: payload,
+                },
+            ) => {
+                let declared = self
+                    .variants_of(r)
+                    .and_then(|vs| vs.into_iter().find(|v| v.name.as_str() == tag));
+                let Some(variant) = declared else {
+                    return value.to_json();
+                };
+                let mut obj = serde_json::Map::new();
+                obj.insert(KEY_TAG.to_string(), Json::String(tag.clone()));
+                if !matches!(**payload, Value::Null) {
+                    obj.insert(
+                        KEY_VALUE.to_string(),
+                        self.typed(payload, &variant.payload)?,
+                    );
+                }
+                Json::Object(obj)
+            }
+            // The plain shape can mean more than one thing in a union — `[1, 2]`
+            // is a pair as well as a list — so it is written only where reading
+            // it back against the whole union gives this value again.
+            (Type::Union { members }, _) => {
+                let Some(member) = members.iter().find(|m| self.validate(value, m).is_ok()) else {
+                    return value.to_json();
+                };
+                let plain = self.typed(value, member)?;
+                if self.interpret(&plain, &ty).is_ok_and(|back| &back == value) {
+                    plain
+                } else {
+                    value.to_json()?
+                }
+            }
+            _ => value.to_json()?,
+        })
     }
 
     /// A value with nothing absent spelled out.
@@ -179,6 +307,45 @@ impl CheckedWorkspace {
         }
     }
 
+    /// The key an object's property name stands for, read against the key type.
+    ///
+    /// A property name is always text, so a map keyed by integers writes `1`
+    /// as `"1"`. Whichever of the text itself and the number it spells is a
+    /// key of this type is what the name means, text first; and where neither
+    /// is, the text is kept so that the check that follows can say what was
+    /// wrong with it.
+    fn map_key(&self, name: &str, key: &Type) -> Value {
+        let text = Value::Str(name.to_string());
+        let number = name
+            .parse::<i64>()
+            .ok()
+            .filter(|n| n.to_string() == name)
+            .map(Value::Int);
+        std::iter::once(text.clone())
+            .chain(number)
+            .find(|candidate| self.validate(candidate, key).is_ok())
+            .unwrap_or(text)
+    }
+
+    /// The property names a map's keys are written as, if an object can hold
+    /// it: every key a string or an integer, no two with the same text, and
+    /// each reading back as the key it came from. Mixed keys can fail that
+    /// last test — in `str | i64`, `"1"` and `1` are both written `1`.
+    fn property_names(&self, entries: &[(Value, Value)], key: &Type) -> Option<Vec<String>> {
+        let mut seen = std::collections::HashSet::new();
+        entries
+            .iter()
+            .map(|(k, _)| {
+                let name = match k {
+                    Value::Str(s) => s.clone(),
+                    Value::Int(i) => i.to_string(),
+                    _ => return None,
+                };
+                (self.map_key(&name, key) == *k && seen.insert(name.clone())).then_some(name)
+            })
+            .collect()
+    }
+
     /// Whether a field of this type may simply not be there.
     fn admits_absence(&self, ty: &Type) -> bool {
         matches!(
@@ -270,12 +437,7 @@ impl CheckedWorkspace {
                 Ok(Value::Map(
                     entries
                         .iter()
-                        .map(|(k, v)| {
-                            Ok((
-                                self.interpret(&Json::String(k.clone()), key)?,
-                                self.interpret(v, value)?,
-                            ))
-                        })
+                        .map(|(k, v)| Ok((self.map_key(k, key), self.interpret(v, value)?)))
                         .collect::<Result<Vec<_>, crate::value::ValueDecodeError>>()?,
                 ))
             }
@@ -529,16 +691,111 @@ mod tests {
         let ws = ws();
         let counts = Type::I64.map_from(Type::String);
         let plain = ws.read_json(r#"{"a":1}"#, &counts).expect("reads");
-        let text = ws.write_json(&plain, &counts).expect("writes");
-        assert!(
-            text.contains("$map"),
-            "the escape is what gets written: {text}"
-        );
+        let escaped = ws
+            .read_json(r#"{"$map":[["a",1]]}"#, &counts)
+            .expect("reads the escape too");
+        assert_eq!(plain, escaped, "both spellings have to mean the same thing");
+    }
+
+    #[test]
+    fn written_against_its_type_a_value_takes_the_shape_every_language_gives_it() {
+        let ws = ws();
+        let doc = ws
+            .read_json(
+                r#"{"tags":{"$map":[["a",1]]},"blob":{"$bytes":"AQI="},
+                    "span":{"$tuple":[1,2]},"colour":"Red"}"#,
+                &named("Doc"),
+            )
+            .expect("reads the escapes");
+        let written: serde_json::Value =
+            serde_json::from_str(&ws.write_json(&doc, &named("Doc")).expect("writes")).unwrap();
         assert_eq!(
-            ws.read_json(&text, &counts).expect("re-reads"),
-            plain,
-            "both spellings have to mean the same thing"
+            written,
+            serde_json::json!({"tags":{"a":1},"blob":"AQI=","span":[1,2],"colour":{"$tag":"Red"}}),
+            "a map with string keys is an object, bytes are base64 text, and a tuple is an array"
         );
+    }
+
+    #[test]
+    fn a_map_keyed_by_integers_is_an_object_whose_names_are_their_digits() {
+        let ws = ws();
+        let by_number = Type::String.map_from(Type::I64);
+        // In the order an object hands its properties back, which is by name:
+        // a map's entries are a list, and `==` on one is order-sensitive.
+        let value = ws
+            .read_json(r#"{"$map":[[-20,"minus"],[1,"one"]]}"#, &by_number)
+            .expect("reads the escape");
+        let text = ws.write_json(&value, &by_number).expect("writes");
+        assert_eq!(text, r#"{"-20":"minus","1":"one"}"#);
+        assert_eq!(
+            ws.read_json(&text, &by_number).expect("re-reads"),
+            value,
+            "the digits are read back as the integers they spell"
+        );
+    }
+
+    #[test]
+    fn an_object_with_a_name_that_is_not_an_integer_is_not_a_map_of_integers() {
+        let ws = ws();
+        let by_number = Type::String.map_from(Type::I64);
+        for name in ["one", "01", "1.0", "+1", " 1"] {
+            let err = ws
+                .read_json(&format!(r#"{{"{name}":"x"}}"#), &by_number)
+                .expect_err(name);
+            assert!(
+                err.to_string().contains("expected i64"),
+                "`{name}` is not how an integer is written: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn keys_that_would_not_read_back_as_themselves_keep_the_escape() {
+        let ws = ws();
+        // `"1"` and `1` are both written `1`, so an object could hold only one
+        // of them and could not say which it was.
+        let either = Type::String.map_from(Type::Union {
+            members: vec![Type::String, Type::I64],
+        });
+        let both = Value::Map(vec![
+            (Value::Str("1".into()), Value::Str("text".into())),
+            (Value::Int(1), Value::Str("number".into())),
+        ]);
+        let text = ws.write_json(&both, &either).expect("writes");
+        assert_eq!(text, r#"{"$map":[["1","text"],[1,"number"]]}"#);
+        assert_eq!(ws.read_json(&text, &either).expect("re-reads"), both);
+    }
+
+    #[test]
+    fn without_a_type_to_say_so_a_tuple_keeps_the_escape() {
+        let ws = ws();
+        let pair = Value::Tuple(vec![Value::Int(1), Value::Str("a".into())]);
+        assert_eq!(
+            ws.write_json(&pair, &Type::Any).expect("writes"),
+            r#"{"$tuple":[1,"a"]}"#
+        );
+    }
+
+    #[test]
+    fn in_a_union_the_plain_shape_is_written_only_where_it_reads_back_as_itself() {
+        let ws = ws();
+        let pair = Type::Tuple {
+            items: vec![Type::I64, Type::I64],
+        };
+        // A list comes first, so `[1, 2]` would read back as a list.
+        let either = Type::Union {
+            members: vec![Type::I64.list(), pair.clone()],
+        };
+        let tuple = Value::Tuple(vec![Value::Int(1), Value::Int(2)]);
+        let text = ws.write_json(&tuple, &either).expect("writes");
+        assert_eq!(text, r#"{"$tuple":[1,2]}"#);
+        assert_eq!(ws.read_json(&text, &either).expect("re-reads"), tuple);
+
+        // Where nothing else could claim it, the array is enough.
+        let only_pairs = Type::Union {
+            members: vec![Type::String, pair],
+        };
+        assert_eq!(ws.write_json(&tuple, &only_pairs).expect("writes"), "[1,2]");
     }
 
     #[test]

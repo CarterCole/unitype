@@ -10,9 +10,10 @@
     "i64": "i64",
     "f64": "f64",
     "string": "String",
-    "bytes": "Vec<u8>"
+    "bytes": "Bytes"
   },
   "constructors": {
+    "apply": "{}<{}>",
     "list": "Vec<{}>",
     "optional": "Option<{}>",
     "map": "BTreeMap<{}, {}>",
@@ -21,6 +22,7 @@
   },
   "notes": {
     "map": "An ordered map, so that generated code serializes the same way twice.",
+    "bytes": "Base64 text on the wire, so this is a wrapper that reads and writes it, not a bare `Vec<u8>`, which serde writes as an array of numbers.",
     "any": "Held as parsed JSON, since Rust has no dynamic type of its own."
   },
   "reserved": [

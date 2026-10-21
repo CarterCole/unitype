@@ -1464,6 +1464,11 @@
         {
           "name": "link",
           "ty": "str"
+        },
+        {
+          "name": "reversed",
+          "ty": "bool?",
+          "doc": "True to run that link backwards, which only an equivalence allows."
         }
       ],
       "doc": "The field's own type is bridged by another link."
@@ -1501,6 +1506,21 @@
         }
       ],
       "doc": "One field correspondence within a mapping."
+    },
+    {
+      "k": "struct",
+      "name": "GenericPair",
+      "fields": [
+        {
+          "name": "from",
+          "ty": "str"
+        },
+        {
+          "name": "to",
+          "ty": "str"
+        }
+      ],
+      "doc": "One generic parameter of a signature paired with one of another's, in an equivalence between two generic signatures."
     },
     {
       "k": "struct",
@@ -1564,6 +1584,32 @@
       "doc": "An arbitrary conversion, witnessed by a signature somebody implemented."
     },
     {
+      "k": "struct",
+      "name": "LinkEquivalent",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "equivalent"
+            }
+          }
+        },
+        {
+          "name": "pairs",
+          "ty": "[FieldPair]?",
+          "doc": "Which part is which. Any left out are worked out when the link is checked."
+        },
+        {
+          "name": "generics",
+          "ty": "[GenericPair]?",
+          "doc": "Between two generic signatures, which generic parameter is which. Worked out like the parameters when left out."
+        }
+      ],
+      "doc": "The same thing renamed and reordered: nothing lost, so it holds both ways. Between two signatures, one proposition with its parameters reordered."
+    },
+    {
       "k": "alias",
       "name": "LinkKind",
       "target": {
@@ -1571,7 +1617,8 @@
         "members": [
           "LinkIdentical",
           "LinkFieldMap",
-          "LinkWitness"
+          "LinkWitness",
+          "LinkEquivalent"
         ]
       },
       "doc": "What justifies a link."
@@ -1591,7 +1638,7 @@
         {
           "name": "from",
           "ty": "str",
-          "doc": "The source type, as `universe::Name`."
+          "doc": "The source type, as `universe::Name` — or, for an equivalence, the source signature."
         },
         {
           "name": "to",

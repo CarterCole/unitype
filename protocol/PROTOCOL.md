@@ -239,6 +239,39 @@ cannot carry them.
 An unrecognized key alongside a `$` escape is an error, so that a typo is
 reported instead of silently dropped.
 
+### 4.1 Written against a type
+
+The escapes are there because, without a type, nothing else says what a shape
+means. Written against a known type, the type says, so a value takes the
+**typed form**: the §4 encoding, except that
+
+- a tuple is a plain array;
+- a map is a plain object, each key written as the text of a property name: a
+  string as it is, an integer as its decimal digits, with no sign but `-`, no
+  leading zeros and no exponent;
+- bytes are a base64 string, standard and padded.
+
+That is how every target language's own JSON writes those three, so it is what
+generated code reads and writes. A field that may be absent and is — an
+optional, `null`, or `any` holding nothing — is left out rather than written as
+`null`, since absence has one representation. Under `any`, and for a field the
+type does not declare, there is no type to say, and the §4 encoding is written.
+
+A property name is text, which is why §1 limits a map's keys to strings and
+integers: every target can turn an integer into its digits and back. Reading a
+property name against the key type takes it as the text itself if that is a key
+of the type, and otherwise as the integer it spells if it spells one. A map
+keeps the escape instead when its keys would not read back as themselves that
+way — a key type that admits both strings and integers makes `"1"` and `1` the
+same property name, and an object could hold only one.
+
+A plain shape can mean more than one thing in a union — `[1, 2]` is a pair as
+well as a list — so a value in a union takes the typed form of the first
+alternative it is a value of only when that reads back, against the whole
+union, as the same value; otherwise it is written in the §4 encoding. Read
+against a type, both the typed form and the §4 encoding are accepted, and mean
+the same value.
+
 ---
 
 ## 5. Content addressing **(frozen)**
@@ -272,6 +305,8 @@ two different things can never collide even if their encodings coincide:
 
 A **structural** hash, which erases names by resolving references across a whole
 workspace, has its own domain, `unitype shape v2`, and is specified in §5.4.
+Its positional and bag counterparts, and the structural addresses of
+signatures, have domains of their own, given in §5.5.
 
 ### 5.2 Text form **(frozen)**
 
@@ -388,6 +423,67 @@ unfolds to does. Unfolding stops at its group's edge, where a declaration
 outside the group is taken as its address. A non-recursive declaration wrapping
 a recursive one is therefore not identified with the recursive type it would
 unfold to, even where the two infinite trees agree.
+
+### 5.5 Views *(specified, in progress)*
+
+A struct's fields and a signature's parameters are both a list of names with a
+type each, and there is more than one honest answer to when two such lists are
+the same. A **view** is one answer, and every declaration and every signature in
+a checked workspace has an address under each:
+
+| View | Names count | Order counts | Declaration domain | Signature domain |
+|---|---|---|---|---|
+| keyed | yes | no | `unitype shape v2` | `unitype sig keyed v1` |
+| positional | no | yes | `unitype layout v1` | `unitype sig positional v1` |
+| bag | no | no | `unitype bag v1` | `unitype sig bag v1` |
+
+Two lists share a bag address exactly when some renaming and reordering of one
+is the other.
+
+**Declarations.** The keyed address is the structural address of §5.4,
+unchanged. The positional and bag addresses are that same construction with
+these differences:
+
+- every digest is taken in the view's domain, and an `id` carries the
+  referenced declaration's address under the same view, so the view holds all
+  the way down;
+- a struct's or an interface's field is `{"ty":…}`, with no name. Positional,
+  fields keep the flattened order — inherited fields first, as declared. In a
+  bag, fields are ordered by `s` wherever unions are: sorted ascending by the
+  canonical bytes of their types' stand-in forms. Unlike union members, fields
+  whose stand-in forms are identical are all kept, since two numbers are not
+  one;
+- variants and anonymous record fields keep their names and sort by name in
+  every view. A tag and a record key are what is on the wire, and neither has a
+  declared order to fall back on.
+
+Aliases are addressed as in §5.4, in the view's domain.
+
+**Signatures.** A signature's address under a view is the digest, in the view's
+signature domain, of `{"generics":[…],"params":[…],"ret":…}`, where every type
+is in shape form with no group involved and every reference is its keyed
+address. Parameters are compared by the data they hold whatever the view,
+because a call hands arguments over as they are.
+
+- `generics` has one entry per generic parameter, by number: the list of its
+  bounds in shape form. It is omitted when there are none.
+- `params` is each parameter as `{"name":…,"ty":…}` sorted by name (keyed), as
+  `{"ty":…}` in declared order (positional), or as `{"ty":…}` sorted by the
+  canonical bytes of `ty` (bag).
+
+Keyed and positional, a generic parameter's number is its position, because a
+call at type arguments (§7.6) binds them in that order. A bag keeps no order, of
+generic parameters any more than of parameters: each numbering of the generic
+parameters is tried — the one declared `i`th becoming `n(i)` everywhere it
+appears, unions put back in order since the numbers are part of what orders
+them, and each parameter's bounds sorted by their canonical bytes with
+duplicates removed — and the address is taken over the numbering whose
+encoding is least, compared byte by byte. So `<A, B>(x: A, ys: [B]) -> A` and
+`<Y, X>(ignored: [Y], kept: X) -> X` are one bag.
+
+These are not the signature hash of §5.1. That one is what an implementation
+pins itself to, and it keeps the names of the types a proposition is over; these
+compare what those types hold.
 
 ---
 
@@ -515,9 +611,12 @@ A failure the child recognizes as its own:
 ← {"ok": false, "error": {"code": "value_error", "message": "..."}}
 ```
 
-Arguments are values in the §4 encoding. The response value is read against the
-signature's return type by §5's rules, so it becomes a map, an enum, or a tuple
-where the type says so.
+Each argument is written in the typed form of §4.1, against the type of its
+parameter at the call — the proposition instantiated, for a generic one — so a
+child receives what its own language's JSON makes of the value, and code
+generated from the signature reads it as it is. The response value is read
+against the signature's return type, in either form, so it becomes a map, an
+enum, or a tuple where the type says so.
 
 A child MUST check `unitype` and refuse a version it does not know. A child that
 reports a failure this way SHOULD still exit zero: a non-zero exit says the
@@ -652,6 +751,14 @@ integer spelled as a TypeScript `number` is exact only to 2^53, that a Python
 A profile is data, so a language this specification never mentions is added by
 writing one.
 
+A generic declaration or signature is generated with its parameters, and a
+reference with arguments is spelled through the profile's `apply` constructor
+(`{}<{}>`, `{}[{}]`): the declaration's name, then its arguments. A bound is
+written as the language writes one where it can. How a backend says what its
+language cannot — Rust refusing a parameter nothing uses, Python having no way
+to require two bounds at once — is the backend's to decide and to say, and
+nothing it decides may change what a value looks like on the wire.
+
 ### 7.6 Free theorems *(specified, in progress)*
 
 A generic proposition says more than a vector file can. A proof of
@@ -692,21 +799,76 @@ be filled from nothing — a function, an interface — cannot be tried.
 
 A call to a generic proposition is made *at* type arguments (§7's boundary
 checks run against the instantiated signature), and the proof is not told
-which: a proof of a generic proposition is one that did not need to know.
+which: a proof of a generic proposition is one that did not need to know. Each
+type argument has to meet its parameter's bounds, with the other arguments put
+into them first, or the call is refused before any proof is asked: a
+proposition about every `T` that is `Named` says nothing at a `T` that is not.
 
 ---
 
 ## 8. Links *(specified, in progress)*
 
 A link is a directed correspondence from a type in one universe to a type in
-another, justified in one of three ways: the two are structurally identical, so
+another, justified in one of four ways: the two are structurally identical, so
 the conversion is a cast; the conversion is a mechanical field mapping, which
-every backend can generate; or the conversion is arbitrary and a named signature
-is the obligation someone discharged by implementing it.
+every backend can generate; the conversion is arbitrary and a named signature
+is the obligation someone discharged by implementing it; or the two are
+equivalent, the same thing renamed and reordered.
 
 Links are directed. A round trip is two links, which keeps a lossy conversion
 from masquerading as a reversible one. A field mapping that drops source fields
 is lossy and must say so.
+
+An **equivalence** is the exception, because it cannot lose anything. Its pairs
+are a bijection between the two sides' fields — every field on each side in
+exactly one pair — and every pair converts exactly: the same type, a container
+of things that convert exactly, or another equivalence, followed either way.
+Nothing is widened, wrapped, or dropped. So an equivalence holds in both
+directions, and following it backwards turns each pair, and each conversion in
+it, around. A conversion through another link may say `"reversed": true` only
+when that link is an equivalence.
+
+An equivalence may leave pairs out; the checker works them out, and the checked
+link carries the whole pairing. Pairs are found in this order: those declared;
+then, until nothing changes, a field with exactly one possible partner, a field
+that is the only possible partner of one on the other side, an exact name match,
+and a folded name match unique on both sides; then declared order, the first
+field left on one side pairing with the first field left on the other that it
+converts with. Anything still unpaired is an error. A bag match (§5.5) is the
+condition under which such a pairing can exist.
+
+An equivalence may also join two signatures, pairing parameters instead of
+fields. Each pair, and the two return types, must hold the same data — equal
+keyed shapes. It says the two are one proposition: a proof of either answers a
+call to the other, with the arguments reordered and nothing converted. An
+equivalence between signatures takes no part in bridges between types.
+
+Two generic signatures are one proposition only under some pairing of their
+generic parameters as well — `first<T>` is `head<E>` once `T` is `E` — so an
+equivalence between them carries that too, as `"generics":
+[{"from":"T","to":"E"}]` beside its `pairs`. Both must have the same number of
+generic parameters. Any generic pair left out is worked out with the
+parameters: each bijection between the two lists of generic parameters that
+keeps the declared pairs is tried, in lexicographic order of the partner each
+`from` parameter takes, beginning with each paired with the one declared in its
+place. Under a bijection, a type on one side holds the same data as a type on
+the other when the two have equal keyed shapes with each generic parameter
+numbered as its partner is; the two return types must, each pair of generic
+parameters must have the same bounds taken as a set, and the parameters must
+pair up as above. Of the bijections under which all of that holds, the one kept
+pairs the most parameters by exact name, then the most by folded name, then the
+most generic parameters by exact name, and then comes first. Names have the
+last word only when a signature is symmetric — when swapping some of its generic
+parameters, and the parameters along with them, gives the same signature back —
+and then they are the only thing that can say which way round was meant. If no
+bijection works the link is an error, and a bag match (§5.5) is again the
+condition under which one can. Following the link backwards turns each generic
+pair around with the rest.
+
+A call to a generic signature at type arguments is checked against that
+signature instantiated (§7.6), whichever proof answers it; the proof is not told
+the type arguments, so a proof of the other side needs only its arguments
+reordered.
 
 ---
 
@@ -742,3 +904,18 @@ what it describes. Adding a variant without adding it here has to fail.
   alias that fixes a generic's arguments no longer shares the generic's
   address. Schema and the other domains are unchanged. Every `v1` structural
   address changes.
+- **Typed form** — §4.1. A value written against a known type writes a tuple
+  as an array, a map as an object (an integer key as its digits), and bytes as
+  base64 text, which is what generated code reads; §7.1 sends arguments that
+  way. Generated Python holds bytes as that base64 text and the keys of an
+  integer-keyed map as text, because that is what a proof is handed, and
+  generated Rust reads and writes bytes through a `Bytes` type of its own. The §4
+  encoding is unchanged and still read everywhere, so no address or domain
+  moves. The message version stays `1`. A child that decoded §4's escapes in
+  its arguments now gets the plain shapes instead; the harnesses §7.5's
+  backends generate never decoded them, and hand arguments on as JSON reads
+  them, which is why tuples, maps and bytes reached their proofs as escapes.
+- **Views** — §5.5. Adds `unitype layout v1`, `unitype bag v1`, and
+  `unitype sig {keyed,positional,bag} v1`, and the `equivalent` link (§8),
+  which may join two generic signatures and pair their generic parameters.
+  Every existing domain and address is unchanged.

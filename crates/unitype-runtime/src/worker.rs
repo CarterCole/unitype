@@ -150,6 +150,7 @@ impl Workers {
         environment: &Environment,
         implementation: &Implementation,
         args: Vec<Value>,
+        params: &[Type],
         expected: &Type,
     ) -> Result<Value, ExecError> {
         let lane = {
@@ -167,7 +168,7 @@ impl Workers {
         }
         let worker = held.as_mut().expect("just started");
 
-        let mut line = request_line(implementation, &args)?;
+        let mut line = request_line(ws, implementation, &args, params)?;
         line.push(b'\n');
 
         let timeout = environment.reach.timeout_ms().unwrap_or(30_000);

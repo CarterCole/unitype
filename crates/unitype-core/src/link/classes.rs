@@ -11,6 +11,10 @@
 //! expression body and expressions compose. Nobody has to declare the `a` to
 //! `c` link that `a` to `b` to `c` already implies.
 //!
+//! An equivalence is the one link that can be followed backwards, since it
+//! cannot lose anything either way. Every other link is followed only the way
+//! it points.
+//!
 //! Two cautions the classes carry with them. A class is only lossless if every
 //! link in it is: once one conversion drops a field, going around the class does
 //! not bring it back. And membership is deliberately about *declared* links, not
@@ -18,6 +22,7 @@
 //! the types, whereas being the same thing is a claim about the world, and only
 //! a person makes that claim.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::check::CheckedWorkspace;
@@ -55,8 +60,10 @@ impl CheckedWorkspace {
 
         // Direction does not matter for membership. A one-way conversion still
         // says the two are the same thing; it says something else about how
-        // much of it survives the trip, which `lossless` records.
-        for link in &self.workspace().links {
+        // much of it survives the trip, which `lossless` records. An
+        // equivalence between two signatures is about propositions, not data,
+        // and has no place in a class of types.
+        for link in self.type_links() {
             let (a, b) = (find(&mut groups, &link.from), find(&mut groups, &link.to));
             if a != b {
                 // Keep the smaller name as the representative, so that the same
@@ -79,9 +86,7 @@ impl CheckedWorkspace {
             .map(|mut members| {
                 members.sort();
                 let lossless = self
-                    .workspace()
-                    .links
-                    .iter()
+                    .type_links()
                     .filter(|l| members.binary_search(&l.from).is_ok())
                     .all(|l| !l.is_lossy());
                 Equivalence { members, lossless }
@@ -98,41 +103,71 @@ impl CheckedWorkspace {
             .find(|c| c.contains(name))
     }
 
+    /// The links between types, leaving out equivalences between signatures.
+    fn type_links(&self) -> impl Iterator<Item = &Link> {
+        self.workspace()
+            .links
+            .iter()
+            .filter(|l| !self.joins_signatures(l))
+    }
+
     /// The shortest chain of links leading from one declaration to another.
     ///
     /// Returns an empty chain when the two are the same declaration, and `None`
     /// when no sequence of declared links gets there. Ties are broken by link
-    /// name so that two runs agree.
-    pub fn bridge_path(&self, from: &QualifiedName, to: &QualifiedName) -> Option<Vec<&Link>> {
+    /// name so that two runs agree, and a link followed the way it points comes
+    /// before one followed backwards.
+    ///
+    /// A step that follows an equivalence backwards is that link
+    /// [reversed](Link::reversed): the same name, its ends and its pairs turned
+    /// around.
+    pub fn bridge_path(
+        &self,
+        from: &QualifiedName,
+        to: &QualifiedName,
+    ) -> Option<Vec<Cow<'_, Link>>> {
         if from == to {
             return Some(Vec::new());
         }
 
-        let mut outgoing: HashMap<&QualifiedName, Vec<&Link>> = HashMap::new();
-        for link in &self.workspace().links {
-            outgoing.entry(&link.from).or_default().push(link);
+        let mut outgoing: HashMap<QualifiedName, Vec<Cow<'_, Link>>> = HashMap::new();
+        for link in self.type_links() {
+            outgoing
+                .entry(link.from.clone())
+                .or_default()
+                .push(Cow::Borrowed(link));
+            if let Some(backwards) = link.reversed() {
+                outgoing
+                    .entry(backwards.from.clone())
+                    .or_default()
+                    .push(Cow::Owned(backwards));
+            }
         }
         for links in outgoing.values_mut() {
-            links.sort_by(|a, b| a.name.cmp(&b.name));
+            links.sort_by(|a, b| {
+                a.name
+                    .cmp(&b.name)
+                    .then_with(|| matches!(a, Cow::Owned(_)).cmp(&matches!(b, Cow::Owned(_))))
+            });
         }
 
         // Breadth-first, so the chain found is the shortest — which matters,
         // since every extra hop is another chance to lose something.
-        let mut seen: HashSet<&QualifiedName> = HashSet::from([from]);
-        let mut queue: VecDeque<(&QualifiedName, Vec<&Link>)> =
-            VecDeque::from([(from, Vec::new())]);
+        let mut seen: HashSet<QualifiedName> = HashSet::from([from.clone()]);
+        let mut queue: VecDeque<(QualifiedName, Vec<Cow<'_, Link>>)> =
+            VecDeque::from([(from.clone(), Vec::new())]);
 
         while let Some((at, path)) = queue.pop_front() {
-            for link in outgoing.get(at).into_iter().flatten() {
-                if !seen.insert(&link.to) {
+            for link in outgoing.get(&at).into_iter().flatten() {
+                if !seen.insert(link.to.clone()) {
                     continue;
                 }
                 let mut next = path.clone();
-                next.push(link);
+                next.push(link.clone());
                 if &link.to == to {
                     return Some(next);
                 }
-                queue.push_back((&link.to, next));
+                queue.push_back((link.to.clone(), next));
             }
         }
         None
@@ -155,7 +190,7 @@ impl CheckedWorkspace {
 
     fn compose_path(
         &self,
-        path: &[&Link],
+        path: &[Cow<'_, Link>],
         from: &QualifiedName,
         to: &QualifiedName,
         name: crate::ident::Ident,
@@ -311,6 +346,63 @@ mod tests {
                 .is_none(),
             "these links only run one way, and a round trip is two links"
         );
+    }
+
+    #[test]
+    fn an_equivalence_is_a_way_back_as_well_as_a_way_there() {
+        let ws = ws(r#"{"universes":[
+            {"name":"geo","types":[{"k":"struct","name":"Point","fields":[
+                {"name":"x","ty":"float"},{"name":"y","ty":"float"}]}]},
+            {"name":"map","types":[{"k":"struct","name":"LatLong","fields":[
+                {"name":"lat","ty":"float"},{"name":"long","ty":"float"}]}]}],
+          "links":[{"name":"point_latlong","from":"geo::Point","to":"map::LatLong",
+                    "kind":{"k":"equivalent","pairs":[{"from":"x","to":"long"}]}}]}"#);
+
+        let there = ws
+            .bridge_path(&q("geo::Point"), &q("map::LatLong"))
+            .expect("declared this way");
+        assert_eq!(there[0].from, q("geo::Point"));
+
+        let back = ws
+            .bridge_path(&q("map::LatLong"), &q("geo::Point"))
+            .expect("an equivalence loses nothing, so it runs back too");
+        assert_eq!(back.len(), 1);
+        assert_eq!(back[0].name.as_str(), "point_latlong", "the same claim");
+        assert_eq!(back[0].from, q("map::LatLong"), "followed the other way");
+
+        // Going back reads each field from wherever it went: `x` from `long`.
+        let composed = ws
+            .compose_bridge(
+                &q("map::LatLong"),
+                &q("geo::Point"),
+                Ident::new("back").unwrap(),
+            )
+            .expect("reachable")
+            .expect("composes");
+        let Some(Expr::MakeRecord { fields, .. }) = &composed.body else {
+            panic!("expected a record, got {:?}", composed.body);
+        };
+        let read = |name: &str| {
+            let field = fields
+                .iter()
+                .find(|f| f.name.as_str() == name)
+                .expect("built");
+            let Expr::Field { name, .. } = &field.value else {
+                panic!("expected a field read, got {:?}", field.value);
+            };
+            name.to_string()
+        };
+        assert_eq!((read("x"), read("y")), ("long".into(), "lat".into()));
+    }
+
+    #[test]
+    fn an_equivalence_between_signatures_is_not_a_class_of_types() {
+        let ws = ws(r#"{"universes":[
+            {"name":"a","functions":[{"name":"f","params":[{"name":"n","ty":"i64"}],"ret":"str"}]},
+            {"name":"b","functions":[{"name":"g","params":[{"name":"m","ty":"i64"}],"ret":"str"}]}],
+          "links":[{"name":"f_is_g","from":"a::f","to":"b::g","kind":{"k":"equivalent"}}]}"#);
+        assert!(ws.equivalence_classes().is_empty());
+        assert!(ws.bridge_path(&q("a::f"), &q("b::g")).is_none());
     }
 
     #[test]

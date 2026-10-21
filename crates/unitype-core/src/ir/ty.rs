@@ -397,7 +397,7 @@ impl Type {
     /// Rebuilds this node with `children` in place of its current children,
     /// preserving everything else. The slice must have the length that
     /// [`Type::children`] returns.
-    pub(crate) fn with_children(&self, mut children: Vec<Type>) -> Type {
+    pub fn with_children(&self, mut children: Vec<Type>) -> Type {
         debug_assert_eq!(children.len(), self.children().len());
         match self {
             t if t.is_leaf() => self.clone(),

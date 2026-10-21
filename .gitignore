@@ -7,3 +7,5 @@ __pycache__/
 node_modules/
 examples/demo/generated/
 /examples/wasm-guest/target
+examples/fetch/generated/
+/examples/fetch/rust/target

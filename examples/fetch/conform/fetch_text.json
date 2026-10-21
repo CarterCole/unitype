@@ -1,0 +1,12 @@
+{
+  "version": "1.0",
+  "signature": "fetch::fetch_text",
+  "vectors": [
+    { "name": "plain ASCII", "args": ["http://127.0.0.1:8765/hello.txt"], "expect": "Hello, world.\n" },
+    { "name": "UTF-8, declared", "args": ["http://127.0.0.1:8765/cafe.html"], "expect": "<p>café, naïve, 東京</p>\n" },
+    { "name": "Latin-1, declared", "args": ["http://127.0.0.1:8765/latin1.txt"], "expect": "café\n" },
+    { "name": "no charset declared, so UTF-8", "args": ["http://127.0.0.1:8765/undeclared.txt"], "expect": "ünïcödé\n" },
+    { "name": "nothing at all", "args": ["http://127.0.0.1:8765/empty.txt"], "expect": "" },
+    { "name": "a longer page, with no answer given so the proofs must agree with each other", "args": ["http://127.0.0.1:8765/long.txt"] }
+  ]
+}

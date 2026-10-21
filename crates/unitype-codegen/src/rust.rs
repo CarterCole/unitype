@@ -11,14 +11,40 @@
 //! hierarchy went. Rust was never going to give subtype polymorphism anyway;
 //! what it gives is traits, and an interface becomes one, so the polymorphism
 //! that does exist lands where Rust can actually use it.
+//!
+//! # Generics
+//!
+//! Generic declarations and signatures keep their parameters, and a bound,
+//! being an interface, is a trait bound. Two things differ from the universe:
+//!
+//! - Rust refuses a struct, an enum or an alias with a parameter it never
+//!   uses, and the checker already knows which those are, so they are left
+//!   out — of the declaration, and of every argument list that names it. A
+//!   parameter that is not used cannot change what a value holds, so nothing
+//!   on the wire moves.
+//! - A body clones what it reads and may compare what it is given, so a
+//!   signature with a body asks `Clone + PartialEq` of each of its parameters.
+//!   One without a body asks only what the universe asks.
+//!
+//! A type alias's bounds are left out too: Rust does not enforce them there and
+//! says so.
+//!
+//! # Bytes
+//!
+//! Bytes travel as base64 text, which is how every language's JSON can hold
+//! them. serde writes a `Vec<u8>` as an array of numbers instead, and cannot be
+//! told otherwise for a `Vec<Vec<u8>>` or an `Option<Vec<u8>>` without a
+//! wrapper, so bytes are a type of their own, `Bytes`. There is one, shared by
+//! every universe, in a module beside them named `unitype_support`, which is
+//! written only when something uses it.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use heck::ToUpperCamelCase;
-use unitype_core::check::CheckedWorkspace;
+use unitype_core::check::{CheckedWorkspace, Variance};
 use unitype_core::ir::{
     AliasDef, EnumDef, Expr, Field, FunctionSig, InterfaceDef, LiteralValue, PrimOp, StructDef,
-    Type, TypeDef, Universe,
+    Type, TypeDef, TypeParamDecl, TypeRef, Universe,
 };
 use unitype_core::lang::{LanguageProfile, profile};
 use unitype_core::value::Value;
@@ -49,10 +75,24 @@ impl Backend for Rust {
     ) -> Result<Vec<GeneratedFile>, GenError> {
         let profile = profile("rust")?;
         let mut files = Vec::new();
-        for universe in selected(ws, options) {
+        let chosen = selected(ws, options);
+        for universe in &chosen {
             files.push(GeneratedFile {
                 path: format!("rust/{}.rs", universe.name).into(),
                 contents: universe_file(ws, universe, &profile, options),
+            });
+        }
+        if chosen.iter().any(|u| mentions_bytes(u)) {
+            if let Some(clash) = chosen.iter().find(|u| u.name.as_str() == SUPPORT) {
+                return Err(GenError::Unsupported {
+                    language: "rust".into(),
+                    what: format!("a universe named `{}`", clash.name),
+                    detail: "that is the module the shared `Bytes` is written to".into(),
+                });
+            }
+            files.push(GeneratedFile {
+                path: format!("rust/{SUPPORT}.rs").into(),
+                contents: SUPPORT_MODULE.to_string(),
             });
         }
         Ok(files)
@@ -89,13 +129,17 @@ fn universe_file(
         w.line("use std::collections::BTreeMap;");
         w.blank();
     }
+    if mentions_bytes(universe) {
+        w.write(format_args!("use super::{SUPPORT}::Bytes;"));
+        w.blank();
+    }
 
     for def in ordered_defs(universe) {
         match def {
             TypeDef::Struct(d) => emit_struct(&mut w, ws, universe, d, profile),
             TypeDef::Interface(d) => emit_interface(&mut w, ws, universe, d, profile),
-            TypeDef::Enum(d) => emit_enum(&mut w, d, profile),
-            TypeDef::Alias(d) => emit_alias(&mut w, d, profile),
+            TypeDef::Enum(d) => emit_enum(&mut w, ws, universe, d, profile),
+            TypeDef::Alias(d) => emit_alias(&mut w, ws, universe, d, profile),
         }
         w.blank();
     }
@@ -141,6 +185,151 @@ fn mentions_map(universe: &Universe) -> bool {
     found
 }
 
+/// Whether anything here is bytes, at any depth, or a body writes some out.
+fn mentions_bytes(universe: &Universe) -> bool {
+    fn anywhere(ty: &Type) -> bool {
+        matches!(ty, Type::Bytes) || ty.children().iter().any(|c| anywhere(c))
+    }
+    fn holds(value: &Value) -> bool {
+        match value {
+            Value::Bytes(_) => true,
+            Value::List(items) | Value::Tuple(items) => items.iter().any(holds),
+            Value::Record(fields) => fields.values().any(holds),
+            Value::Map(entries) => entries.iter().any(|(k, v)| holds(k) || holds(v)),
+            Value::Variant { value, .. } => holds(value),
+            _ => false,
+        }
+    }
+    let mut found = false;
+    for_each_type(universe, &mut |ty| found |= anywhere(ty));
+    found
+        || crate::bodies_use(
+            universe,
+            |e| matches!(e, Expr::Lit { value } if holds(value)),
+        )
+}
+
+/// The module the shared definitions are written to, beside the universes.
+const SUPPORT: &str = "unitype_support";
+
+/// What generated Rust shares between universes: bytes, as base64 text.
+///
+/// Written out by hand, base64 and all, so that generated code needs nothing
+/// beyond the `serde` it already uses.
+const SUPPORT_MODULE: &str = r#"// Generated by unitype. Do not edit.
+//
+// What generated code shares between universes.
+
+/// Bytes, which travel as base64 text: JSON has no byte string, and an array of
+/// numbers is a poor way to write one.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Bytes(pub Vec<u8>);
+
+impl From<Vec<u8>> for Bytes {
+    fn from(bytes: Vec<u8>) -> Self {
+        Bytes(bytes)
+    }
+}
+
+impl From<Bytes> for Vec<u8> {
+    fn from(bytes: Bytes) -> Self {
+        bytes.0
+    }
+}
+
+impl std::ops::Deref for Bytes {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn encode(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = (u32::from(chunk[0]) << 16)
+            | (u32::from(*chunk.get(1).unwrap_or(&0)) << 8)
+            | u32::from(*chunk.get(2).unwrap_or(&0));
+        for (i, shift) in [18, 12, 6, 0].into_iter().enumerate() {
+            if i <= chunk.len() {
+                out.push(ALPHABET[(n >> shift & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+fn decode(text: &str) -> Result<Vec<u8>, String> {
+    let text = text.as_bytes();
+    if text.len() % 4 != 0 {
+        return Err("base64 text comes in groups of four".to_string());
+    }
+    let mut out = Vec::with_capacity(text.len() / 4 * 3);
+    for (i, group) in text.chunks(4).enumerate() {
+        let last = (i + 1) * 4 == text.len();
+        let padding = if last {
+            group.iter().rev().take_while(|&&c| c == b'=').count()
+        } else {
+            0
+        };
+        if padding > 2 {
+            return Err("too much padding".to_string());
+        }
+        let mut n = 0u32;
+        for (j, &c) in group.iter().enumerate() {
+            let sextet = if j >= 4 - padding {
+                0
+            } else {
+                ALPHABET
+                    .iter()
+                    .position(|&a| a == c)
+                    .ok_or_else(|| format!("`{}` is not base64", c as char))? as u32
+            };
+            n = n << 6 | sextet;
+        }
+        out.push((n >> 16) as u8);
+        if padding < 2 {
+            out.push((n >> 8) as u8);
+        }
+        if padding < 1 {
+            out.push(n as u8);
+        }
+    }
+    Ok(out)
+}
+
+impl serde::Serialize for Bytes {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&encode(&self.0))
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Bytes {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Text;
+
+        impl serde::de::Visitor<'_> for Text {
+            type Value = Bytes;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("base64 text")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, text: &str) -> Result<Bytes, E> {
+                decode(text).map(Bytes).map_err(E::custom)
+            }
+        }
+
+        deserializer.deserialize_str(Text)
+    }
+}
+"#;
+
 fn for_each_type(universe: &Universe, f: &mut impl FnMut(&Type)) {
     for def in &universe.types {
         match def {
@@ -149,11 +338,110 @@ fn for_each_type(universe: &Universe, f: &mut impl FnMut(&Type)) {
             TypeDef::Enum(d) => d.variants.iter().for_each(|v| f(&v.payload)),
             TypeDef::Alias(d) => f(&d.target),
         }
+        for bound in def.params().iter().flat_map(|p| &p.bounds) {
+            f(&Type::Ref(bound.clone()));
+        }
     }
     for sig in &universe.functions {
         sig.params.iter().for_each(|p| f(&p.ty));
         f(&sig.ret);
+        for bound in sig.params_decl.iter().flat_map(|p| &p.bounds) {
+            f(&Type::Ref(bound.clone()));
+        }
     }
+}
+
+/// How Rust writes a type: as the profile spells it, without the argument for
+/// any generic parameter the declaration it is given to never uses.
+fn spell(ws: &CheckedWorkspace, profile: &LanguageProfile, ty: &Type) -> String {
+    profile.spell(&used(ws, ty))
+}
+
+/// A type with every argument for an unused generic parameter left out.
+///
+/// The checker composes variance, so a parameter it calls unused is mentioned
+/// only where some other declaration ignores it. Leaving those arguments out
+/// everywhere leaves the parameter mentioned nowhere.
+fn used(ws: &CheckedWorkspace, ty: &Type) -> Type {
+    let kids: Vec<Type> = ty.children().into_iter().map(|c| used(ws, c)).collect();
+    match ty.with_children(kids) {
+        Type::Ref(mut r) => {
+            if let Some(variance) = ws.ref_target_of(&r).and_then(|q| ws.variance_of(&q)) {
+                r.args = r
+                    .args
+                    .into_iter()
+                    .zip(variance)
+                    .filter(|(_, v)| **v != Variance::Unused)
+                    .map(|(a, _)| a)
+                    .collect();
+            }
+            Type::Ref(r)
+        }
+        other => other,
+    }
+}
+
+/// A declaration's generic parameters that Rust will accept, which are the
+/// ones it uses.
+fn kept<'a>(
+    ws: &CheckedWorkspace,
+    name: &QualifiedName,
+    params: &'a [TypeParamDecl],
+) -> Vec<&'a TypeParamDecl> {
+    let variance = ws.variance_of(name).unwrap_or_default();
+    params
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| variance.get(*i) != Some(&Variance::Unused))
+        .map(|(_, p)| p)
+        .collect()
+}
+
+/// Generic parameters as Rust writes them where they are declared — `<T: Named,
+/// U>` — or nothing when there are none.
+///
+/// `bounded` is false where Rust would not enforce a bound, and `also` is
+/// asked of every parameter on top of what the universe asks.
+fn generics(
+    ws: &CheckedWorkspace,
+    profile: &LanguageProfile,
+    params: &[&TypeParamDecl],
+    bounded: bool,
+    also: &[&str],
+) -> String {
+    if params.is_empty() {
+        return String::new();
+    }
+    let parts: Vec<String> = params
+        .iter()
+        .map(|p| {
+            let mut bounds: Vec<String> = Vec::new();
+            if bounded {
+                bounds.extend(
+                    p.bounds
+                        .iter()
+                        .map(|b| spell(ws, profile, &Type::Ref(b.clone()))),
+                );
+            }
+            bounds.extend(also.iter().map(ToString::to_string));
+            let name = profile.name(&p.name);
+            if bounds.is_empty() {
+                name
+            } else {
+                format!("{name}: {}", bounds.join(" + "))
+            }
+        })
+        .collect();
+    format!("<{}>", parts.join(", "))
+}
+
+/// Generic parameters as Rust writes them where they are used: `<T, U>`.
+fn arguments(profile: &LanguageProfile, params: &[&TypeParamDecl]) -> String {
+    if params.is_empty() {
+        return String::new();
+    }
+    let names: Vec<String> = params.iter().map(|p| profile.name(&p.name)).collect();
+    format!("<{}>", names.join(", "))
 }
 
 fn emit_struct(
@@ -186,38 +474,45 @@ fn emit_struct(
     }
     w.line(DERIVES);
 
+    let params = kept(ws, &name, &def.params);
+    let declared = format!(
+        "{}{}",
+        profile.name(&def.name),
+        generics(ws, profile, &params, true, &[])
+    );
     if fields.is_empty() {
-        w.write(format_args!("pub struct {};", profile.name(&def.name)));
+        w.write(format_args!("pub struct {declared};"));
     } else {
-        w.block(
-            format!("pub struct {} {{", profile.name(&def.name)),
-            "}",
-            |w| emit_fields(w, ws, &fields, profile),
-        );
+        w.block(format!("pub struct {declared} {{"), "}", |w| {
+            emit_fields(w, ws, &fields, profile)
+        });
     }
 
     // What it claims to satisfy becomes what Rust can actually dispatch on.
     for iface in &def.implements {
         w.blank();
+        // What the interface asks for, at the arguments this struct gives it.
+        let iface = TypeRef {
+            universe: Some(iface.universe.clone().unwrap_or(universe.name.clone())),
+            name: iface.name.clone(),
+            args: iface.args.clone(),
+        };
         w.block(
             format!(
-                "impl {} for {} {{",
-                profile.name(&iface.name),
-                profile.name(&def.name)
+                "impl{} {} for {}{} {{",
+                generics(ws, profile, &params, true, &[]),
+                spell(ws, profile, &Type::Ref(iface.clone())),
+                profile.name(&def.name),
+                arguments(profile, &params)
             ),
             "}",
             |w| {
-                let required = ws
-                    .fields_by_name(&QualifiedName::new(
-                        iface.universe.clone().unwrap_or(universe.name.clone()),
-                        iface.name.clone(),
-                    ))
-                    .unwrap_or_default();
+                let required = ws.fields_of(&iface).unwrap_or_default();
                 for (i, field) in required.iter().enumerate() {
                     if i > 0 {
                         w.blank();
                     }
-                    let spelled = profile.spell(&field.ty);
+                    let spelled = spell(ws, profile, &field.ty);
                     w.block(
                         format!("fn {}(&self) -> &{spelled} {{", profile.name(&field.name)),
                         "}",
@@ -269,7 +564,7 @@ fn emit_fields(
         w.write(format_args!(
             "pub {}: {},",
             profile.name(&field.name),
-            profile.spell(&field.ty)
+            spell(ws, profile, &field.ty)
         ));
     }
 }
@@ -292,40 +587,52 @@ fn emit_interface(
 
     // A field contract is a trait of accessors: the closest thing Rust has to
     // "anything with these fields".
+    let declared = format!(
+        "{}{}",
+        profile.name(&def.name),
+        generics(ws, profile, &kept(ws, &name, &def.params), true, &[])
+    );
     if fields.is_empty() {
-        w.write(format_args!("pub trait {} {{}}", profile.name(&def.name)));
+        w.write(format_args!("pub trait {declared} {{}}"));
         return;
     }
-    w.block(
-        format!("pub trait {} {{", profile.name(&def.name)),
-        "}",
-        |w| {
-            for (i, field) in fields.iter().enumerate() {
-                if i > 0 {
-                    w.blank();
-                }
-                if let Some(doc) = &field.doc {
-                    w.comment("/// ", doc);
-                }
-                w.write(format_args!(
-                    "fn {}(&self) -> &{};",
-                    profile.name(&field.name),
-                    profile.spell(&field.ty)
-                ));
+    w.block(format!("pub trait {declared} {{"), "}", |w| {
+        for (i, field) in fields.iter().enumerate() {
+            if i > 0 {
+                w.blank();
             }
-        },
-    );
+            if let Some(doc) = &field.doc {
+                w.comment("/// ", doc);
+            }
+            w.write(format_args!(
+                "fn {}(&self) -> &{};",
+                profile.name(&field.name),
+                spell(ws, profile, &field.ty)
+            ));
+        }
+    });
 }
 
-fn emit_enum(w: &mut CodeWriter, def: &EnumDef, profile: &LanguageProfile) {
+fn emit_enum(
+    w: &mut CodeWriter,
+    ws: &CheckedWorkspace,
+    universe: &Universe,
+    def: &EnumDef,
+    profile: &LanguageProfile,
+) {
     if let Some(doc) = &def.doc {
         w.comment("/// ", doc);
     }
+    let name = QualifiedName::new(universe.name.clone(), def.name.clone());
     w.line(DERIVES);
     // Adjacent tagging is exactly the wire form: a tag beside a payload.
     w.line("#[serde(tag = \"$tag\", content = \"value\")]");
     w.block(
-        format!("pub enum {} {{", profile.name(&def.name)),
+        format!(
+            "pub enum {}{} {{",
+            profile.name(&def.name),
+            generics(ws, profile, &kept(ws, &name, &def.params), true, &[])
+        ),
         "}",
         |w| {
             for variant in &def.variants {
@@ -338,7 +645,7 @@ fn emit_enum(w: &mut CodeWriter, def: &EnumDef, profile: &LanguageProfile) {
                     w.write(format_args!(
                         "{}({}),",
                         variant.name,
-                        profile.spell(&variant.payload)
+                        spell(ws, profile, &variant.payload)
                     ));
                 }
             }
@@ -346,10 +653,21 @@ fn emit_enum(w: &mut CodeWriter, def: &EnumDef, profile: &LanguageProfile) {
     );
 }
 
-fn emit_alias(w: &mut CodeWriter, def: &AliasDef, profile: &LanguageProfile) {
+fn emit_alias(
+    w: &mut CodeWriter,
+    ws: &CheckedWorkspace,
+    universe: &Universe,
+    def: &AliasDef,
+    profile: &LanguageProfile,
+) {
     if let Some(doc) = &def.doc {
         w.comment("/// ", doc);
     }
+    let params = kept(
+        ws,
+        &QualifiedName::new(universe.name.clone(), def.name.clone()),
+        &def.params,
+    );
     match &def.target {
         // A union of nothing but strings is a set of names, and Rust has a
         // word for that: an enum whose variants carry nothing, each one
@@ -383,11 +701,15 @@ fn emit_alias(w: &mut CodeWriter, def: &AliasDef, profile: &LanguageProfile) {
             w.line(DERIVES);
             w.line("#[serde(untagged)]");
             w.block(
-                format!("pub enum {} {{", profile.name(&def.name)),
+                format!(
+                    "pub enum {}{} {{",
+                    profile.name(&def.name),
+                    generics(ws, profile, &params, true, &[])
+                ),
                 "}",
                 |w| {
                     for member in members {
-                        let spelled = profile.spell(member);
+                        let spelled = spell(ws, profile, member);
                         // Two arms can spell alike — two literals of one base
                         // type do — and an enum cannot name two variants the
                         // same thing.
@@ -398,9 +720,10 @@ fn emit_alias(w: &mut CodeWriter, def: &AliasDef, profile: &LanguageProfile) {
             );
         }
         other => w.write(format_args!(
-            "pub type {} = {};",
+            "pub type {}{} = {};",
             profile.name(&def.name),
-            profile.spell(other)
+            generics(ws, profile, &params, false, &[]),
+            spell(ws, profile, other)
         )),
     }
 }
@@ -475,18 +798,31 @@ fn emit_signature(
     let params: Vec<String> = sig
         .params
         .iter()
-        .map(|p| format!("{}: {}", profile.name(&p.name), profile.spell(&p.ty)))
+        .map(|p| format!("{}: {}", profile.name(&p.name), spell(ws, profile, &p.ty)))
         .collect();
     let qualified = QualifiedName::new(universe.name.clone(), sig.name.clone());
 
     // A future in the return type is what `async` means here.
     let (keyword, ret) = match &sig.ret {
-        Type::Future { of } => ("pub async fn", profile.spell(of)),
-        other => ("pub fn", profile.spell(other)),
+        Type::Future { of } => ("pub async fn", spell(ws, profile, of)),
+        other => ("pub fn", spell(ws, profile, other)),
+    };
+    // A function may leave a parameter unused, so all of them are kept.
+    let also: &[&str] = if sig.body.is_some() {
+        &["Clone", "PartialEq"]
+    } else {
+        &[]
     };
     let head = format!(
-        "{keyword} {}({}) -> {ret} {{",
+        "{keyword} {}{}({}) -> {ret} {{",
         profile.name(&sig.name),
+        generics(
+            ws,
+            profile,
+            &sig.params_decl.iter().collect::<Vec<_>>(),
+            true,
+            also
+        ),
         params.join(", ")
     );
 
@@ -984,7 +1320,7 @@ pub fn literal(value: &Value) -> String {
         Value::Str(s) => format!("{s:?}.to_string()"),
         Value::Bytes(b) => {
             let parts: Vec<String> = b.iter().map(|x| x.to_string()).collect();
-            format!("vec![{}]", parts.join(", "))
+            format!("Bytes(vec![{}])", parts.join(", "))
         }
         Value::List(items) => {
             let parts: Vec<String> = items.iter().map(literal).collect();
@@ -1411,5 +1747,107 @@ mod tests {
             "vec![1, 2]"
         );
         assert_eq!(literal(&Value::Null), "None");
+    }
+
+    #[test]
+    fn generic_declarations_and_signatures_keep_their_parameters() {
+        let rs = generate(crate::GENERIC);
+        for expected in [
+            "pub struct Box<T> {",
+            "pub struct Labelled<T, N: Named> {",
+            "pub trait Holder<T> {",
+            "impl<T> Holder<T> for Tagged<T> {\n    fn held(&self) -> &T {",
+            "pub enum Outcome<T, E> {",
+            "pub type Swap<A, B> = (B, A);",
+            "pub outcome: Outcome<i64, String>,",
+            "pub fn pick<T: Named>(xs: Vec<T>) -> Option<T> {",
+        ] {
+            assert!(rs.contains(expected), "missing `{expected}` in:\n{rs}");
+        }
+    }
+
+    #[test]
+    fn a_parameter_nothing_uses_is_left_out_wherever_it_would_appear() {
+        let rs = generate(crate::GENERIC);
+        assert!(rs.contains("pub struct Ghost {"), "{rs}");
+        assert!(rs.contains("pub ghost: Ghost,"), "{rs}");
+    }
+
+    #[test]
+    fn a_body_asks_what_it_needs_of_a_generic_parameter() {
+        let rs = generate(crate::GENERIC);
+        assert!(
+            rs.contains(
+                "pub fn konst<A: Clone + PartialEq, B: Clone + PartialEq>(x: A, y: B) -> A {"
+            ),
+            "{rs}"
+        );
+    }
+
+    fn files_for(json: &str) -> Result<Vec<crate::GeneratedFile>, GenError> {
+        let ws = check_workspace(Workspace::from_json(json).expect("reads")).expect("checks");
+        Rust.generate(&ws, &GenOptions::default())
+    }
+
+    const WITH_BYTES: &str = r#"{"universes":[{"name":"demo","types":[
+        {"k":"struct","name":"Doc","fields":[
+            {"name":"blob","ty":"bytes"},{"name":"blobs","ty":"[bytes]"},
+            {"name":"by_number","ty":"map<i64, str>"}]}]}]}"#;
+
+    #[test]
+    fn bytes_are_a_type_of_their_own_that_every_universe_shares() {
+        let files = files_for(WITH_BYTES).expect("generates");
+        let paths: Vec<String> = files
+            .iter()
+            .map(|f| f.path.to_string_lossy().into())
+            .collect();
+        assert_eq!(paths, ["rust/demo.rs", "rust/unitype_support.rs"]);
+
+        let demo = &files[0].contents;
+        assert!(
+            demo.contains("use super::unitype_support::Bytes;"),
+            "{demo}"
+        );
+        assert!(demo.contains("pub blob: Bytes,"), "{demo}");
+        assert!(demo.contains("pub blobs: Vec<Bytes>,"), "{demo}");
+        assert!(
+            demo.contains("pub by_number: BTreeMap<i64, String>,"),
+            "{demo}"
+        );
+        assert!(files[1].contents.contains("pub struct Bytes(pub Vec<u8>);"));
+    }
+
+    #[test]
+    fn nothing_is_shared_when_nothing_is_bytes() {
+        let files = files_for(
+            r#"{"universes":[{"name":"demo","types":[
+                {"k":"struct","name":"Shape","fields":[{"name":"id","ty":"str"}]}]}]}"#,
+        )
+        .expect("generates");
+        assert_eq!(
+            files.len(),
+            1,
+            "no support module for a universe that needs none"
+        );
+        assert!(!files[0].contents.contains("unitype_support"));
+    }
+
+    #[test]
+    fn a_universe_may_not_take_the_name_of_the_module_bytes_live_in() {
+        let err = files_for(
+            r#"{"universes":[{"name":"unitype_support","types":[
+                {"k":"struct","name":"Doc","fields":[{"name":"blob","ty":"bytes"}]}]}]}"#,
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("unitype_support"), "{err}");
+    }
+
+    #[test]
+    fn bytes_in_a_literal_are_written_as_bytes() {
+        assert_eq!(
+            literal(&Value::Bytes(vec![1, 2])),
+            "Bytes(vec![1, 2])",
+            "a bare vec would not be the type a field of bytes has"
+        );
     }
 }

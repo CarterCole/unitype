@@ -1,0 +1,11 @@
+{
+  "unitype": "1.0",
+  "name": "fetch",
+  "universes": ["universes"],
+  "impls": ["impls"],
+  "conform": ["conform"],
+  "gen": {
+    "out": "generated",
+    "langs": ["python", "typescript"]
+  }
+}

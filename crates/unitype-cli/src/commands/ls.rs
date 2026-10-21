@@ -3,6 +3,7 @@
 use clap::ValueEnum;
 use serde_json::json;
 use unitype_core::canon::AliasIndex;
+use unitype_core::check::View;
 
 use super::Output;
 use crate::Failure;
@@ -28,12 +29,20 @@ pub enum What {
 }
 
 /// Lists what was asked for.
-pub fn run(project: &Project, what: What, out: &Output) -> Result<(), Failure> {
+///
+/// With a view, types and propositions are named by their address under it,
+/// so that whatever it counts as the same reads the same.
+pub fn run(
+    project: &Project,
+    what: What,
+    view: Option<View>,
+    out: &Output,
+) -> Result<(), Failure> {
     match what {
-        What::All => all(project, out),
+        What::All => all(project, view, out),
         What::Universes => universes(project, out),
-        What::Types => types(project, out),
-        What::Sigs => sigs(project, out),
+        What::Types => types(project, view, out),
+        What::Sigs => sigs(project, view, out),
         What::Impls => impls(project, out),
         What::Links => links(project, out),
         What::Environments => environments(project, out),
@@ -41,16 +50,16 @@ pub fn run(project: &Project, what: What, out: &Output) -> Result<(), Failure> {
     Ok(())
 }
 
-fn all(project: &Project, out: &Output) {
+fn all(project: &Project, view: Option<View>, out: &Output) {
     if out.is_machine() {
         universes(project, out);
         return;
     }
     universes(project, out);
     out.heading("Types");
-    types(project, out);
+    types(project, view, out);
     out.heading("Propositions");
-    sigs(project, out);
+    sigs(project, view, out);
     if !project.workspace.workspace().links.is_empty() {
         out.heading("Links");
         links(project, out);
@@ -91,21 +100,29 @@ fn universes(project: &Project, out: &Output) {
     );
 }
 
-fn types(project: &Project, out: &Output) {
+fn types(project: &Project, view: Option<View>, out: &Output) {
     let ws = &project.workspace;
     // Aliases are shortened against everything loaded, so the words shown are
     // as short as they can be while still picking one declaration out.
-    let index: AliasIndex = ws.alias_index();
+    let index: AliasIndex = match view {
+        Some(view) => ws.alias_index_under(view),
+        None => ws.alias_index(),
+    };
 
     let rows: Vec<serde_json::Value> = ws
         .def_names()
         .map(|name| {
             let shape = ws.shape_hash(name);
+            let named = match view {
+                Some(view) => ws.address(name, view),
+                None => shape,
+            };
             json!({
                 "name": name.to_string(),
                 "kind": ws.def(name).map(|d| d.kind_name()),
                 "address": shape.map(|s| s.to_string()),
-                "words": shape.and_then(|s| index.alias_for(&s)),
+                "addresses": by_view(|v| ws.address(name, v)),
+                "words": named.and_then(|s| index.alias_for(&s)),
             })
         })
         .collect();
@@ -123,21 +140,28 @@ fn types(project: &Project, out: &Output) {
     });
 }
 
-fn sigs(project: &Project, out: &Output) {
+fn sigs(project: &Project, view: Option<View>, out: &Output) {
     let ws = &project.workspace;
+    let index = view.map(|v| ws.alias_index_under(v));
     let rows: Vec<serde_json::Value> = ws
         .sig_names()
         .map(|name| {
             let sig = ws.sig(name).expect("listed");
             let proofs = project.registry.proofs_of(name).len();
+            let words = view
+                .zip(index.as_ref())
+                .and_then(|(v, index)| index.alias_for(&ws.sig_address(name, v)?));
             json!({
                 "name": name.to_string(),
                 "type": unitype_core::canon::canonical_string(&sig.function_type()),
                 "refines": sig.refines.as_ref().map(ToString::to_string),
                 "refined_by": ws.refiners_of(name).iter().map(ToString::to_string).collect::<Vec<_>>(),
+                "equivalent_to": ws.equivalents_of(name).iter().map(|e| e.sig.to_string()).collect::<Vec<_>>(),
                 "has_body": sig.body.is_some(),
                 "proofs": proofs,
                 "address": ws.sig_hash(name).map(|h| h.to_string()),
+                "addresses": by_view(|v| ws.sig_address(name, v)),
+                "words": words,
             })
         })
         .collect();
@@ -146,8 +170,12 @@ fn sigs(project: &Project, out: &Output) {
         for row in &rows {
             let name = row["name"].as_str().unwrap_or("");
             let proofs = row["proofs"].as_u64().unwrap_or(0);
+            let words = row["words"]
+                .as_str()
+                .map(|w| format!("  {w}"))
+                .unwrap_or_default();
             out.say(format!(
-                "  {:<28} {} proof{}{}",
+                "  {:<28} {} proof{}{}{}",
                 name,
                 proofs,
                 plural(proofs as usize),
@@ -155,13 +183,29 @@ fn sigs(project: &Project, out: &Output) {
                     "  (proves itself)"
                 } else {
                     ""
-                }
+                },
+                words,
             ));
             if let Some(refines) = row["refines"].as_str() {
                 out.say(format!("      strengthens {refines}"));
             }
+            for same in row["equivalent_to"].as_array().into_iter().flatten() {
+                out.say(format!(
+                    "      the same as {}, arguments reordered",
+                    same.as_str().unwrap_or("")
+                ));
+            }
         }
     });
+}
+
+/// An address under each view, keyed by the view's name.
+fn by_view(address: impl Fn(View) -> Option<unitype_core::TypeId>) -> serde_json::Value {
+    View::ALL
+        .into_iter()
+        .map(|v| (v.as_str().to_string(), json!(address(v).map(|a| a.to_string()))))
+        .collect::<serde_json::Map<_, _>>()
+        .into()
 }
 
 fn impls(project: &Project, out: &Output) {
@@ -209,7 +253,9 @@ fn links(project: &Project, out: &Output) {
                     unitype_core::LinkKind::Identical => "identical",
                     unitype_core::LinkKind::FieldMap { .. } => "field map",
                     unitype_core::LinkKind::Witness { .. } => "witnessed",
+                    unitype_core::LinkKind::Equivalent { .. } => "equivalent",
                 },
+                "both_ways": l.is_reversible(),
                 "lossy": l.is_lossy(),
             })
         })
@@ -218,8 +264,13 @@ fn links(project: &Project, out: &Output) {
     out.result(json!(rows), || {
         for row in &rows {
             out.say(format!(
-                "  {} -> {}  ({}{})",
+                "  {} {} {}  ({}{})",
                 row["from"].as_str().unwrap_or(""),
+                if row["both_ways"].as_bool() == Some(true) {
+                    "<->"
+                } else {
+                    "->"
+                },
                 row["to"].as_str().unwrap_or(""),
                 row["kind"].as_str().unwrap_or(""),
                 if row["lossy"].as_bool() == Some(true) {

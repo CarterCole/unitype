@@ -35,6 +35,8 @@ use crate::ir::{Field, FunctionSig, TypeDef, TypeRef, Workspace};
 
 pub use apply::CallError;
 pub use error::{CheckError, CheckErrorKind, Diagnostics, PathSeg, TypePath};
+pub(crate) use shape::numberings;
+pub use shape::{View, ViewParseError};
 pub use subst::{Subst, bind, substitute, substitute_ref};
 pub use subtype::SubtypeFailure;
 pub use variance::Variance;
@@ -65,6 +67,25 @@ pub(crate) struct DefEntry {
     pub(crate) shape: Option<TypeId>,
 }
 
+/// Another signature that states the same proposition, and how a call to one
+/// becomes a call to the other.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Reordering {
+    /// The equivalent signature.
+    pub sig: QualifiedName,
+    /// `order[j]` is which of the caller's arguments becomes that signature's
+    /// `j`th: the reordering a call needs, and nothing else, since an
+    /// equivalence only pairs parameters that hold the same data.
+    pub order: Vec<usize>,
+}
+
+impl Reordering {
+    /// Puts a call's arguments in the order the other signature takes them.
+    pub fn apply<T: Clone>(&self, args: &[T]) -> Vec<T> {
+        self.order.iter().map(|&i| args[i].clone()).collect()
+    }
+}
+
 /// What the checker learned about one signature.
 pub(crate) struct SigEntry {
     pub(crate) name: QualifiedName,
@@ -82,7 +103,13 @@ pub struct CheckedWorkspace {
     def_index: HashMap<QualifiedName, DefIx>,
     pub(crate) sigs: Vec<SigEntry>,
     sig_index: HashMap<QualifiedName, SigIx>,
-    shape_index: HashMap<TypeId, Vec<QualifiedName>>,
+    /// Every declaration's address under each view, by [`View::index`].
+    addresses: [shape::Addresses; 3],
+    /// Every signature's address under each view, by [`View::index`].
+    sig_addresses: [shape::Addresses; 3],
+    /// For each signature, the others an equivalence link says are the same
+    /// proposition, and how to put its arguments in their order.
+    equivalents: HashMap<QualifiedName, Vec<Reordering>>,
     refiners: HashMap<QualifiedName, Vec<QualifiedName>>,
     warnings: Vec<CheckError>,
 }
@@ -114,6 +141,9 @@ pub fn check_workspace(ws: Workspace) -> Result<CheckedWorkspace, Diagnostics> {
     // Structural addresses come before link checking, which uses them to decide
     // whether a link claiming two types are identical is telling the truth.
     shape::compute(&mut checked);
+    // An equivalence may leave its pairing to be worked out, and the rest of
+    // the checker should see the pairing rather than the gap.
+    links::settle(&mut checked, &mut diags);
     links::verify(&checked, &mut diags);
 
     if !diags.is_ok() {
@@ -189,7 +219,9 @@ impl CheckedWorkspace {
             def_index,
             sigs,
             sig_index,
-            shape_index: HashMap::new(),
+            addresses: Default::default(),
+            sig_addresses: Default::default(),
+            equivalents: HashMap::new(),
             refiners: HashMap::new(),
             warnings: Vec::new(),
         }
@@ -295,8 +327,42 @@ impl CheckedWorkspace {
     /// More than one means the same data is described in more than one place —
     /// which is where a bridge suggests itself.
     pub fn defs_with_shape(&self, shape: &TypeId) -> &[QualifiedName] {
-        self.shape_index
-            .get(shape)
+        self.defs_with_address(View::Keyed, shape)
+    }
+
+    /// A declaration's address under a view.
+    ///
+    /// Keyed, this is its [shape](Self::shape_hash). Positional, two structs
+    /// share it when the same types sit in the same places whatever they are
+    /// called. As a bag, when some renaming and reordering of one is the other.
+    pub fn address(&self, name: &QualifiedName, view: View) -> Option<TypeId> {
+        self.addresses[view.index()].by_name.get(name).copied()
+    }
+
+    /// Every declaration sharing an address under a view.
+    pub fn defs_with_address(&self, view: View, address: &TypeId) -> &[QualifiedName] {
+        self.addresses[view.index()]
+            .index
+            .get(address)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    /// A proposition's address under a view.
+    ///
+    /// Unlike [`sig_hash`](Self::sig_hash), which is what an implementation
+    /// pins itself to and follows references by name, these are structural:
+    /// each parameter is compared by the data it holds. The view says whether
+    /// the parameters are compared by name, by position, or as a bag.
+    pub fn sig_address(&self, name: &QualifiedName, view: View) -> Option<TypeId> {
+        self.sig_addresses[view.index()].by_name.get(name).copied()
+    }
+
+    /// Every proposition sharing an address under a view.
+    pub fn sigs_with_address(&self, view: View, address: &TypeId) -> &[QualifiedName] {
+        self.sig_addresses[view.index()]
+            .index
+            .get(address)
             .map(Vec::as_slice)
             .unwrap_or_default()
     }
@@ -307,6 +373,34 @@ impl CheckedWorkspace {
             .get(name)
             .map(Vec::as_slice)
             .unwrap_or_default()
+    }
+
+    /// Signatures a declared equivalence says are this same proposition, with
+    /// its parameters renamed and reordered, and how to reorder a call to this
+    /// one into a call to each of them.
+    pub fn equivalents_of(&self, name: &QualifiedName) -> &[Reordering] {
+        self.equivalents
+            .get(name)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    /// What a type holds, as an address: two types share one exactly when they
+    /// accept the same values, whatever their declarations are called.
+    ///
+    /// `generics` are the generic parameters in scope.
+    pub(crate) fn data_address(&self, t: &crate::ir::Type, generics: &[Ident]) -> TypeId {
+        shape::data_address(self, t, generics)
+    }
+
+    /// Whether a link joins two signatures rather than two types.
+    ///
+    /// Only an equivalence can: it says two propositions are one, up to what
+    /// their parameters are called and the order they come in.
+    pub fn joins_signatures(&self, link: &crate::link::Link) -> bool {
+        matches!(link.kind, crate::link::LinkKind::Equivalent { .. })
+            && self.def(&link.from).is_none()
+            && self.sig(&link.from).is_some()
     }
 
     /// Every proposition sharing an address.
@@ -338,6 +432,23 @@ impl CheckedWorkspace {
                 .iter()
                 .filter_map(|d| d.shape)
                 .chain(self.sigs.iter().map(|s| s.hash)),
+        )
+    }
+
+    /// Word aliases for every address under one view, declarations and
+    /// propositions together, as [`alias_index`](Self::alias_index) does for
+    /// shapes.
+    ///
+    /// Two things given the same words here are the same under that view: the
+    /// same data in the same places, or the same data under any names in any
+    /// order.
+    pub fn alias_index_under(&self, view: View) -> AliasIndex {
+        AliasIndex::new(
+            self.addresses[view.index()]
+                .by_name
+                .values()
+                .chain(self.sig_addresses[view.index()].by_name.values())
+                .copied(),
         )
     }
 

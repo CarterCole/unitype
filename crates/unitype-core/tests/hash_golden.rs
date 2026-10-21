@@ -222,15 +222,58 @@ const SHAPES: &str = r#"{"universes":[
         {"k":"struct","name":"Name","fields":[
             {"name":"value","ty":"str"},{"name":"scope","ty":"Expr"}]}]}]}"#;
 
+/// Propositions over the same arguments in another order and under other
+/// names, so that each view of a parameter list has something to tell apart.
+/// The two `konst`s also declare their generic parameters the other way round,
+/// which only the bag forgets.
+const SIGS: &str = r#"{"universes":[
+    {"name":"node","functions":[
+        {"name":"request","ret":"unit","params":[
+            {"name":"url","ty":"str"},
+            {"name":"cb","ty":{"k":"function","params":["str"],"ret":"unit"}}]},
+        {"name":"first","params_decl":[{"name":"T"}],"ret":{"k":"param","name":"T"},
+         "params":[{"name":"xs","ty":{"k":"list","of":{"k":"param","name":"T"}}}]},
+        {"name":"konst","params_decl":[{"name":"A"},{"name":"B"}],"ret":{"k":"param","name":"A"},
+         "params":[{"name":"x","ty":{"k":"param","name":"A"}},
+                   {"name":"ys","ty":{"k":"list","of":{"k":"param","name":"B"}}}]}]},
+    {"name":"browser","functions":[
+        {"name":"request","ret":"unit","params":[
+            {"name":"callback","ty":{"k":"function","params":["str"],"ret":"unit"}},
+            {"name":"getUrl","ty":"str"}]},
+        {"name":"konst","params_decl":[{"name":"Y"},{"name":"X"}],"ret":{"k":"param","name":"X"},
+         "params":[{"name":"ignored","ty":{"k":"list","of":{"k":"param","name":"Y"}}},
+                   {"name":"kept","ty":{"k":"param","name":"X"}}]}]}]}"#;
+
 fn shape_vectors() -> Vec<(String, unitype_core::TypeId)> {
+    use unitype_core::check::View;
+
     let ws = unitype_core::check::check_workspace(
         unitype_core::Workspace::from_json(SHAPES).expect("reads"),
     )
     .expect("checks");
 
-    ws.def_names()
+    // Keyed is the shape, and keeps the name it was always pinned under.
+    let mut out: Vec<(String, unitype_core::TypeId)> = ws
+        .def_names()
         .filter_map(|name| Some((format!("shape/{name}"), ws.shape_hash(name)?)))
-        .collect()
+        .collect();
+    for view in [View::Positional, View::Bag] {
+        out.extend(
+            ws.def_names()
+                .filter_map(|name| Some((format!("{view}/{name}"), ws.address(name, view)?))),
+        );
+    }
+
+    let sigs = unitype_core::check::check_workspace(
+        unitype_core::Workspace::from_json(SIGS).expect("reads"),
+    )
+    .expect("checks");
+    for view in View::ALL {
+        out.extend(sigs.sig_names().filter_map(|name| {
+            Some((format!("sig-{view}/{name}"), sigs.sig_address(name, view)?))
+        }));
+    }
+    out
 }
 
 fn golden_path() -> PathBuf {

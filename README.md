@@ -57,9 +57,12 @@ today.
   aliases.
 - **The checker.** Inheritance, subtyping, refinement, generic bounds,
   variance inferred from where each parameter occurs, and structural
-  addressing that erases names across a whole workspace.
+  addressing that erases names across a whole workspace — by key, by
+  position, and as a bag of types in any order under any names.
 - **Bridges.** Derived from two declarations, composed along a path, and run
-  through the same expression language a person writes a proof in.
+  through the same expression language a person writes a proof in. An
+  equivalence — the same data renamed and reordered — loses nothing, so one
+  link runs both ways.
 - **The expression language.** Total by construction, and now able to say
   something: a `fold` carries a value through a list, `case` and `match` take
   an optional and an enum apart, and a closed set of operations compares,
@@ -69,6 +72,8 @@ today.
   object become a map and `"Red"` become a variant.
 - **The runtime.** Environments register what they can prove; a policy decides
   which proof answers a call; a worker keeps an interpreter alive between calls.
+  A proof of `request(url, cb)` answers `request(callback, getUrl)` once the two
+  are declared equivalent, handed the arguments in its own order.
 - **A sandbox.** A proof compiled to WebAssembly gets memory, a budget, and
   nothing else — no files, no sockets, no clock — so a proof you did not write
   has somewhere to run where it can only answer. Behind `--features wasm`,
@@ -77,7 +82,12 @@ today.
 - **Code generation.** TypeScript, Python, and Rust — checked by running the
   generated code in all three and comparing what it produces against what
   unitype says the value is. The Python and Node harnesses are each reached
-  through the dispatcher as a proof.
+  through the dispatcher as a proof. Generic declarations and signatures keep
+  their parameters and bounds in all three; generic Python is written in the
+  type parameter syntax of 3.12, and everything else still reads on 3.10. A
+  value written against its type takes the shape each language's own JSON
+  gives it — a tuple is an array, a map an object, bytes base64 text — so what
+  unitype writes, and what a proof is sent, is what the generated code reads.
 - **The `unitype` command**, over all of it.
 - **Conformance.** The proofs of one proposition checked against each other,
   since `sort` and `reverse` have the same type and only running both tells them
@@ -90,9 +100,9 @@ today.
 - **Reflection.** A built-in universe describes the representation, and is
   checked against it, so it cannot drift.
 
-656 tests, including the subtyping, inference and shape laws as property
+735 tests, including the subtyping, inference and shape laws as property
 tests, and pinned golden vectors that make canonical drift impossible to do by
-accident. 667 with the sandbox turned on.
+accident. 746 with the sandbox turned on.
 
 ```bash
 cargo test
@@ -116,6 +126,10 @@ cargo run -p unitype-cli -- --project examples/demo \
     run demo::sort --args '[[5,3,9,1]]' --policy fastest -v
 cargo run -p unitype-cli -- --project examples/demo \
     run demo::sort --args '[[5,3,9,1]]' --policy min-memory -v
+
+# A generic proposition is a claim about every type, and a call is made at one.
+cargo run -p unitype-cli -- --project examples/demo \
+    run demo::reverse --args '[["a","b","c"]]' --at '["str"]' -v
 
 # The same proposition again, proved somewhere it can reach nothing at all.
 cargo build --release --target wasm32-unknown-unknown \
@@ -167,6 +181,27 @@ http::request(req: http::Request) -> future<http::Response>
 three different kinds of thing, which is why an environment and a language are
 separate here. Underneath they answer the same proposition, and `essay-border-siren`
 is what that proposition is called when you have to say it to a person.
+
+That example only names its proofs. `examples/fetch` runs them: one smaller
+proposition, `fetch_text(url: str) -> future<str>`, proved with `urllib` in
+Python, `fetch` in Node, and `ureq` in Rust, and held to one answer against a
+local server.
+
+```bash
+cargo run -p unitype-cli -- --project examples/fetch gen        # the harnesses the proofs import
+cargo build --release --manifest-path examples/fetch/rust/Cargo.toml
+python3 examples/fetch/serve.py &                                # pages on 127.0.0.1:8765
+cargo run -p unitype-cli -- --project examples/fetch conform
+```
+
+```
+fetch::fetch_text  3 proofs, 6 cases  — all agree
+```
+
+The case that earns its place is a page sent as Latin-1. Its bytes only read as
+`café` if the declared charset is honoured, and the shortest way to fetch text
+in Node — `response.text()` — does not honour it. A proof written that way
+returns `caf�`, and `conform` says so and exits 4.
 
 ## What it looks like
 
@@ -237,6 +272,50 @@ assert_eq!(
 Which is how the system notices, without being told, that two teams have been
 describing the same thing.
 
+That address keeps field names and ignores their order, the way a JSON object
+does. It is one of three. Every declaration and every signature also has a
+**positional** address, where order counts and names do not — a tuple, an
+argument list — and a **bag** address, where neither does:
+
+|                   | `{x: f64, n: i64}` | `{n: i64, x: f64}` | `{lat: f64, count: i64}` |
+|-------------------|:------------------:|:------------------:|:------------------------:|
+| keyed (the shape) | A                  | A                  | B                        |
+| positional        | C                  | D                  | C                        |
+| bag               | E                  | E                  | E                        |
+
+Two things share a bag address exactly when some renaming and reordering makes
+one the other, and an **equivalence** is the link that says which:
+
+```json
+{"name": "point_is_latlong", "from": "geo::Point", "to": "map::LatLong",
+ "kind": {"k": "equivalent", "pairs": [{"from": "x", "to": "long"}]}}
+```
+
+Every field pairs with exactly one on the other side, and nothing is widened or
+dropped, so the conversion undoes and one link holds both ways: `unitype bridge`
+follows it backwards as readily as forwards. Pairs left out are worked out —
+by type where only one pairing fits, then by name, then by position — so here
+`y` goes to `lat` without being told.
+
+Between two signatures the same link says they are one proposition with the
+parameters reordered. `request(url: str, cb: fn)` and
+`request(callback: fn, getUrl: str)` pair up by type alone, since a string and a
+callback can only line up one way, and a proof of either answers a call to the
+other, handed the arguments in the order it takes them. Nothing is converted on
+the way: an equivalence between signatures only pairs parameters that hold the
+same data.
+
+Generic signatures pair their generic parameters as well.
+`konst<A, B>(x: A, ys: [B]) -> A` and `konst<Y, X>(ignored: [Y], kept: X) -> X`
+are one proposition once `A` is `X` and `B` is `Y`, which the checker works out
+from where each appears, and they share a bag address, which does not care
+which order the generic parameters were declared in either.
+
+```bash
+unitype ls types --view bag      # the same words for the same data under other names
+unitype ls types --view positional
+```
+
 And the headline arrangement, end to end — one proposition, two proofs, in two
 languages, chosen at the moment of the call:
 
@@ -262,6 +341,7 @@ crates/unitype-codegen/     TypeScript, Python, and Rust backends
 crates/unitype-cli/         the `unitype` command
 examples/demo/              a worked example: shapes, three proofs of sort, a bridge
 examples/http/              one call, and what each platform calls it
+examples/fetch/             one call proved in Python, Node, and Rust, and checked
 ```
 
 Why Rust: futures are a first-class type constructor here rather than an

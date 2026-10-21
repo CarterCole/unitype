@@ -13,6 +13,7 @@
     "bytes": "string"
   },
   "constructors": {
+    "apply": "{}<{}>",
     "list": "{}[]",
     "optional": "{} | null",
     "map": "Record<{}, {}>",

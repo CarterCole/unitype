@@ -9,6 +9,12 @@
 //! folded field names appear in another's, the two are worth looking at, and
 //! derivation is run to see whether a mapping actually closes.
 //!
+//! Between the two sits the same data under other names: declarations that
+//! share a bag address hold the same types, and some renaming makes one the
+//! other. That is weaker evidence than a shape — plenty of unrelated things are
+//! a single string — so it starts at the threshold a name hunch has to clear,
+//! and climbs with whatever names do agree.
+//!
 //! Nothing here creates a link. Suggestions are for a person to look at and
 //! accept, because deciding that two universes are talking about the same thing
 //! is a judgement about the world rather than about the types.
@@ -28,8 +34,8 @@ pub struct LinkSuggestion {
     pub to: QualifiedName,
     /// How the conversion would work.
     pub kind: LinkKind,
-    /// How confident this is: 1.0 for the same structure, lower for a match
-    /// found by name.
+    /// How confident this is: 1.0 for the same structure, at least 0.5 for
+    /// the same data under other names, and lower for a match found by name.
     pub score: f32,
     /// True when the conversion would discard fields.
     pub lossy: bool,
@@ -42,12 +48,14 @@ impl CheckedWorkspace {
     /// miss to be reported; 0.5 is a reasonable starting point. Declarations
     /// already linked are left out, since the answer is known.
     pub fn suggest_links(&self, min_score: f32) -> Vec<LinkSuggestion> {
-        let linked: HashSet<(QualifiedName, QualifiedName)> = self
-            .workspace()
-            .links
-            .iter()
-            .map(|l| (l.from.clone(), l.to.clone()))
-            .collect();
+        // An equivalence already settles both directions.
+        let mut linked: HashSet<(QualifiedName, QualifiedName)> = HashSet::new();
+        for l in &self.workspace().links {
+            linked.insert((l.from.clone(), l.to.clone()));
+            if l.is_reversible() {
+                linked.insert((l.to.clone(), l.from.clone()));
+            }
+        }
 
         let mut named: Vec<(QualifiedName, Vec<String>)> = Vec::new();
         for name in self.def_names() {
@@ -62,12 +70,16 @@ impl CheckedWorkspace {
                 if from.universe == to.universe {
                     continue;
                 }
+                let mut both_ways = false;
                 for (from, to) in [(from, to), (to, from)] {
-                    if linked.contains(&(from.clone(), to.clone())) {
+                    if both_ways || linked.contains(&(from.clone(), to.clone())) {
                         continue;
                     }
+                    let bag = |n| self.address(n, crate::check::View::Bag);
                     let score = if self.shape_hash(from) == self.shape_hash(to) {
                         1.0
+                    } else if bag(from).is_some() && bag(from) == bag(to) {
+                        0.5 + overlap(from_keys, to_keys) / 2.0
                     } else {
                         overlap(from_keys, to_keys)
                     };
@@ -78,6 +90,9 @@ impl CheckedWorkspace {
                     let Ok(kind) = self.derive_link(from, to, &[]) else {
                         continue;
                     };
+                    // One equivalence is both directions; suggesting the
+                    // second would be suggesting the same link twice.
+                    both_ways = matches!(kind, LinkKind::Equivalent { .. });
                     out.push(LinkSuggestion {
                         from: from.clone(),
                         to: to.clone(),
@@ -144,8 +159,9 @@ mod tests {
             "these hold the same data under different spellings"
         );
         assert!(
-            matches!(best.kind, LinkKind::FieldMap { .. }),
-            "the fields are spelled differently, so a mapping is needed: {:?}",
+            matches!(best.kind, LinkKind::Equivalent { .. }),
+            "the fields are spelled differently, so they are renamed — and a renaming \
+             undoes, so it is an equivalence: {:?}",
             best.kind
         );
     }
@@ -203,6 +219,52 @@ mod tests {
             .find(|s| s.from.to_string() == "a::X")
             .expect("suggested");
         assert!(lossy.lossy, "dropping `secret` should be flagged");
+    }
+
+    #[test]
+    fn the_same_data_under_other_names_is_worth_a_look() {
+        let ws = ws(r#"{"universes":[
+            {"name":"geo","types":[{"k":"struct","name":"Point","fields":[
+                {"name":"x","ty":"float"},{"name":"y","ty":"float"}]}]},
+            {"name":"map","types":[{"k":"struct","name":"LatLong","fields":[
+                {"name":"lat","ty":"float"},{"name":"long","ty":"float"}]}]}]}"#);
+
+        let found = ws
+            .suggest_links(0.5)
+            .into_iter()
+            .find(|s| s.from.to_string() == "geo::Point")
+            .expect("no name agrees, but the data is the same");
+        assert_eq!(found.score, 0.5, "and nothing else vouches for it");
+        assert!(
+            matches!(found.kind, LinkKind::Equivalent { .. }),
+            "{:?}",
+            found.kind
+        );
+    }
+
+    #[test]
+    fn an_equivalence_is_suggested_once_and_settles_both_directions() {
+        const PAIR: &str = r#"{"universes":[
+            {"name":"geo","types":[{"k":"struct","name":"Point","fields":[
+                {"name":"x","ty":"float"},{"name":"y","ty":"float"}]}]},
+            {"name":"map","types":[{"k":"struct","name":"LatLong","fields":[
+                {"name":"lat","ty":"float"},{"name":"long","ty":"float"}]}]}]"#;
+
+        let open = ws(&format!("{PAIR}}}"));
+        assert_eq!(
+            open.suggest_links(0.5).len(),
+            1,
+            "one link would do for both ways"
+        );
+
+        let declared = ws(&format!(
+            r#"{PAIR},"links":[{{"name":"same","from":"map::LatLong","to":"geo::Point",
+                "kind":{{"k":"equivalent"}}}}]}}"#
+        ));
+        assert!(
+            declared.suggest_links(0.0).is_empty(),
+            "and once declared, nothing is left"
+        );
     }
 
     #[test]

@@ -6,6 +6,10 @@
 //! what arrives over a pipe, which is what lets a TypeScript proof and a Rust
 //! proof of the same proposition agree without either being told about the
 //! other.
+//!
+//! Generic declarations and signatures keep their parameters, and a bound
+//! becomes `extends`: TypeScript is structural, so `T extends Named` says what
+//! the bound says, and several bounds are one intersection.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -13,7 +17,7 @@ use std::collections::HashMap;
 use unitype_core::check::CheckedWorkspace;
 use unitype_core::ir::{
     AliasDef, EnumDef, Expr, Field, FunctionSig, InterfaceDef, PrimOp, StructDef, Type, TypeDef,
-    Universe,
+    TypeParamDecl, Universe,
 };
 use unitype_core::lang::{LanguageProfile, profile};
 use unitype_core::{Ident, QualifiedName};
@@ -143,10 +147,16 @@ fn imports(
             TypeDef::Enum(d) => d.variants.iter().for_each(|v| note(&v.payload)),
             TypeDef::Alias(d) => note(&d.target),
         }
+        for bound in def.params().iter().flat_map(|p| &p.bounds) {
+            note(&Type::Ref(bound.clone()));
+        }
     }
     for sig in &universe.functions {
         sig.params.iter().for_each(|p| note(&p.ty));
         note(&sig.ret);
+        for bound in sig.params_decl.iter().flat_map(|p| &p.bounds) {
+            note(&Type::Ref(bound.clone()));
+        }
         // A body names types of its own, in what a fold carries and what a
         // binding holds, so it is written out here to find out which.
         if let Some(body) = &sig.body {
@@ -195,18 +205,19 @@ fn emit_struct(
         .extends
         .iter()
         .chain(&def.implements)
-        .map(|r| profile.name(&r.name))
+        .map(|r| profile.spell(&Type::Ref(r.clone())))
         .collect();
     parents.dedup();
 
+    let name = format!(
+        "{}{}",
+        profile.name(&def.name),
+        generics(&def.params, profile)
+    );
     let head = if parents.is_empty() {
-        format!("export interface {} {{", profile.name(&def.name))
+        format!("export interface {name} {{")
     } else {
-        format!(
-            "export interface {} extends {} {{",
-            profile.name(&def.name),
-            parents.join(", ")
-        )
+        format!("export interface {name} extends {} {{", parents.join(", "))
     };
 
     // Only what this declaration adds: TypeScript inherits the rest.
@@ -227,15 +238,20 @@ fn emit_interface(
     if let Some(doc) = &def.doc {
         jsdoc(w, doc);
     }
-    let parents: Vec<String> = def.extends.iter().map(|r| profile.name(&r.name)).collect();
+    let parents: Vec<String> = def
+        .extends
+        .iter()
+        .map(|r| profile.spell(&Type::Ref(r.clone())))
+        .collect();
+    let name = format!(
+        "{}{}",
+        profile.name(&def.name),
+        generics(&def.params, profile)
+    );
     let head = if parents.is_empty() {
-        format!("export interface {} {{", profile.name(&def.name))
+        format!("export interface {name} {{")
     } else {
-        format!(
-            "export interface {} extends {} {{",
-            profile.name(&def.name),
-            parents.join(", ")
-        )
+        format!("export interface {name} extends {} {{", parents.join(", "))
     };
     let own: Vec<&Field> = def.fields.iter().collect();
     if own.is_empty() {
@@ -281,7 +297,11 @@ fn emit_enum(w: &mut CodeWriter, def: &EnumDef, profile: &LanguageProfile) {
     }
     // Tagged the way the wire tags it, so what a reader destructures is what
     // actually arrived.
-    w.line(format!("export type {} =", profile.name(&def.name)));
+    w.line(format!(
+        "export type {}{} =",
+        profile.name(&def.name),
+        generics(&def.params, profile)
+    ));
     w.indented(|w| {
         for variant in &def.variants {
             let tag = format!("$tag: {:?}", variant.name.as_str());
@@ -313,9 +333,34 @@ fn emit_alias(w: &mut CodeWriter, def: &AliasDef, profile: &LanguageProfile) {
         other => profile.spell(other),
     };
     w.write(format_args!(
-        "export type {} = {spelled};",
-        profile.name(&def.name)
+        "export type {}{} = {spelled};",
+        profile.name(&def.name),
+        generics(&def.params, profile)
     ));
+}
+
+/// A declaration's or a signature's generic parameters as TypeScript writes
+/// them — `<T, K extends Named & Sized>` — or nothing when there are none.
+fn generics(params: &[TypeParamDecl], profile: &LanguageProfile) -> String {
+    if params.is_empty() {
+        return String::new();
+    }
+    let parts: Vec<String> = params
+        .iter()
+        .map(|p| {
+            let name = profile.name(&p.name);
+            if p.bounds.is_empty() {
+                return name;
+            }
+            let bounds: Vec<String> = p
+                .bounds
+                .iter()
+                .map(|b| profile.spell(&Type::Ref(b.clone())))
+                .collect();
+            format!("{name} extends {}", bounds.join(" & "))
+        })
+        .collect();
+    format!("<{}>", parts.join(", "))
 }
 
 fn emit_signature(
@@ -335,7 +380,11 @@ fn emit_signature(
         .map(|p| format!("{}: {}", profile.name(&p.name), profile.spell(&p.ty)))
         .collect();
     let ret = profile.spell(&sig.ret);
-    let name = profile.name(&sig.name);
+    let name = format!(
+        "{}{}",
+        profile.name(&sig.name),
+        generics(&sig.params_decl, profile)
+    );
 
     match &sig.body {
         // A body is a proof already: transpile it rather than leaving a hole.
@@ -727,13 +776,9 @@ fn known(expr: &Expr) -> bool {
 }
 
 /// Whether the profile spells every part of a type as itself.
-///
-/// A reference is spelled by its name alone, so whatever it is applied to does
-/// not come into it.
 fn spelled_whole(ty: &Type) -> bool {
     match ty {
         Type::Union { .. } | Type::Record { .. } | Type::Function { .. } => false,
-        Type::Ref(_) => true,
         other => other.children().into_iter().all(spelled_whole),
     }
 }
@@ -1455,6 +1500,39 @@ mod tests {
         assert_eq!(
             literal(&Value::record([("not-ok", Value::Int(1))])),
             r#"{ "not-ok": 1 }"#
+        );
+    }
+
+    #[test]
+    fn generic_declarations_and_signatures_keep_their_parameters() {
+        let ts = generate(crate::GENERIC);
+        for expected in [
+            "export interface Box<T> {",
+            "export interface Labelled<T, N extends Named> extends Box<T> {",
+            "export interface Tagged<T> extends Holder<T> {",
+            "export type Outcome<T, E> =",
+            "export type Swap<A, B> = [B, A];",
+            "outcome: Outcome<number, string>;",
+            "swapped: Swap<number, string>;",
+            "export function pick<T extends Named>(xs: T[]): T | null {",
+            "export function konst<A, B>(x: A, y: B): A {",
+        ] {
+            assert!(ts.contains(expected), "missing `{expected}` in:\n{ts}");
+        }
+    }
+
+    #[test]
+    fn several_bounds_are_one_intersection() {
+        let ts = generate(
+            r#"{"universes":[{"name":"demo","types":[
+                {"k":"interface","name":"Named","fields":[{"name":"name","ty":"str"}]},
+                {"k":"interface","name":"Sized","fields":[{"name":"size","ty":"i64"}]}],
+              "functions":[{"name":"f","params_decl":[{"name":"T","bounds":["Named","Sized"]}],
+                "params":[{"name":"x","ty":{"k":"param","name":"T"}}],"ret":"str"}]}]}"#,
+        );
+        assert!(
+            ts.contains("export function f<T extends Named & Sized>(x: T): string {"),
+            "{ts}"
         );
     }
 }

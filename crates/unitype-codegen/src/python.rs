@@ -12,13 +12,29 @@
 //! a variant with `$tag`, which is not a name a dataclass field can have, and
 //! describing something other than what actually arrives would defeat the
 //! purpose.
+//!
+//! # Generics
+//!
+//! Anything generic is written with the type parameter syntax of PEP 695 —
+//! `class Box[T]:`, `def reverse[T](xs: list[T])`, `type Swap[A, B] = …` — so
+//! generated code that declares one needs Python 3.12. Everything else still
+//! reads on 3.10. The older way, a module-level `TypeVar`, cannot say which
+//! order an alias takes its parameters in: `Swap = tuple[B, A]` would take `B`
+//! first, because Python orders them by where they first appear. A bound is
+//! written as one, and several bounds are left out with a comment saying so,
+//! since Python has no way to say a type must be two things at once.
+//!
+//! A variant that carries a generic parameter is a class: a `TypedDict` made
+//! the functional way holds the `$tag`, and a generic class inheriting from it
+//! adds the payload, which is the only way a `TypedDict` with a `$tag` in it
+//! can be generic.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use unitype_core::check::CheckedWorkspace;
 use unitype_core::ir::{
     AliasDef, EnumDef, Expr, Field, FunctionSig, Functor, InterfaceDef, PrimOp, StructDef, Type,
-    TypeDef, Universe,
+    TypeDef, TypeParamDecl, Universe,
 };
 use unitype_core::lang::{LanguageProfile, profile};
 use unitype_core::value::Value;
@@ -103,16 +119,16 @@ fn universe_file(
     for def in ordered_defs(universe) {
         match def {
             TypeDef::Struct(d) => emit_struct(&mut w, ws, d, profile),
-            TypeDef::Interface(d) => emit_interface(&mut w, d, profile),
-            TypeDef::Enum(d) => emit_enum(&mut w, d, profile),
-            TypeDef::Alias(d) => emit_alias(&mut w, d, profile),
+            TypeDef::Interface(d) => emit_interface(&mut w, ws, d, profile),
+            TypeDef::Enum(d) => emit_enum(&mut w, ws, d, profile),
+            TypeDef::Alias(d) => emit_alias(&mut w, ws, d, profile),
         }
         w.blank();
     }
 
     if options.stubs {
         for sig in &universe.functions {
-            emit_signature(&mut w, universe, sig, profile);
+            emit_signature(&mut w, ws, universe, sig, profile);
             w.blank();
         }
     }
@@ -141,10 +157,16 @@ fn imports(universe: &Universe) -> Vec<(String, Vec<String>)> {
             TypeDef::Enum(d) => d.variants.iter().for_each(|v| note(&v.payload)),
             TypeDef::Alias(d) => note(&d.target),
         }
+        for bound in def.params().iter().flat_map(|p| &p.bounds) {
+            note(&Type::Ref(bound.clone()));
+        }
     }
     for sig in &universe.functions {
         sig.params.iter().for_each(|p| note(&p.ty));
         note(&sig.ret);
+        for bound in sig.params_decl.iter().flat_map(|p| &p.bounds) {
+            note(&Type::Ref(bound.clone()));
+        }
     }
     found
         .into_iter()
@@ -158,6 +180,7 @@ fn emit_struct(
     def: &StructDef,
     profile: &LanguageProfile,
 ) {
+    let generics = type_params(w, &def.params, profile);
     // Keyword-only, so a parent's optional field cannot stop a child adding a
     // required one.
     w.line("@dataclass(kw_only=True)");
@@ -165,12 +188,16 @@ fn emit_struct(
         .extends
         .iter()
         .chain(&def.implements)
-        .map(|r| profile.name(&r.name))
+        .map(|r| spell(ws, profile, &Type::Ref(r.clone())))
         .collect();
     let head = if bases.is_empty() {
-        format!("class {}:", profile.name(&def.name))
+        format!("class {}{generics}:", profile.name(&def.name))
     } else {
-        format!("class {}({}):", profile.name(&def.name), bases.join(", "))
+        format!(
+            "class {}{generics}({}):",
+            profile.name(&def.name),
+            bases.join(", ")
+        )
     };
 
     w.block(head, "", |w| {
@@ -187,15 +214,29 @@ fn emit_struct(
     });
 }
 
-fn emit_interface(w: &mut CodeWriter, def: &InterfaceDef, profile: &LanguageProfile) {
+fn emit_interface(
+    w: &mut CodeWriter,
+    ws: &CheckedWorkspace,
+    def: &InterfaceDef,
+    profile: &LanguageProfile,
+) {
     // A field contract is a protocol: anything with these fields satisfies it,
     // which is what the interface actually says.
-    let mut bases: Vec<String> = def.extends.iter().map(|r| profile.name(&r.name)).collect();
+    let generics = type_params(w, &def.params, profile);
+    let mut bases: Vec<String> = def
+        .extends
+        .iter()
+        .map(|r| spell(ws, profile, &Type::Ref(r.clone())))
+        .collect();
     if bases.is_empty() {
         bases.push("typing.Protocol".to_string());
     }
     w.block(
-        format!("class {}({}):", profile.name(&def.name), bases.join(", ")),
+        format!(
+            "class {}{generics}({}):",
+            profile.name(&def.name),
+            bases.join(", ")
+        ),
         "",
         |w| {
             if let Some(doc) = &def.doc {
@@ -211,7 +252,7 @@ fn emit_interface(w: &mut CodeWriter, def: &InterfaceDef, profile: &LanguageProf
                 w.write(format_args!(
                     "{}: {}",
                     profile.name(&field.name),
-                    profile.spell(&field.ty)
+                    spell(ws, profile, &field.ty)
                 ));
             }
         },
@@ -242,7 +283,10 @@ fn emit_fields(
             w.comment("# ", doc);
         }
 
-        let spelled = profile.spell(&f.ty);
+        if has_integer_keys(ws, &f.ty) {
+            w.comment("# ", INTEGER_KEYS);
+        }
+        let spelled = spell(ws, profile, &f.ty);
         // A field that may be absent defaults to absent, so a caller need not
         // spell out what they do not have. That is anything that expands to
         // `T?`, `null` or `any`, which is what a body may leave out.
@@ -261,7 +305,7 @@ fn emit_fields(
     }
 }
 
-fn emit_enum(w: &mut CodeWriter, def: &EnumDef, profile: &LanguageProfile) {
+fn emit_enum(w: &mut CodeWriter, ws: &CheckedWorkspace, def: &EnumDef, profile: &LanguageProfile) {
     if let Some(doc) = &def.doc {
         w.comment("# ", doc);
     }
@@ -272,36 +316,133 @@ fn emit_enum(w: &mut CodeWriter, def: &EnumDef, profile: &LanguageProfile) {
     for variant in &def.variants {
         let variant_name = format!("{name}{}", variant.name);
         let tag = format!("\"$tag\": typing.Literal[{:?}]", variant.name.as_str());
-        let members = if matches!(variant.payload, Type::Unit) {
-            tag
-        } else {
-            format!("{tag}, \"value\": {}", profile.spell(&variant.payload))
-        };
+        // The enum's generic parameters this variant's payload mentions, in
+        // the order the enum declares them.
+        let carried: Vec<TypeParamDecl> = def
+            .params
+            .iter()
+            .filter(|p| mentions(&variant.payload, &p.name))
+            .cloned()
+            .collect();
+        if carried.is_empty() {
+            let members = if matches!(variant.payload, Type::Unit) {
+                tag
+            } else {
+                format!("{tag}, \"value\": {}", spell(ws, profile, &variant.payload))
+            };
+            w.write(format_args!(
+                "{variant_name} = typing.TypedDict({variant_name:?}, {{{members}}})"
+            ));
+            variants.push(variant_name);
+            continue;
+        }
+        // Only a class can be generic, and a class cannot have a field called
+        // `$tag`, so the tag goes in a functional `TypedDict` the class
+        // inherits from.
+        let tagged = format!("_{variant_name}");
         w.write(format_args!(
-            "{variant_name} = typing.TypedDict({variant_name:?}, {{{members}}})"
+            "{tagged} = typing.TypedDict({tagged:?}, {{{tag}}})"
         ));
-        variants.push(variant_name);
+        let generics = type_params(w, &carried, profile);
+        w.block(
+            format!("class {variant_name}{generics}({tagged}):"),
+            "",
+            |w| {
+                w.write(format_args!(
+                    "value: {}",
+                    spell(ws, profile, &variant.payload)
+                ));
+            },
+        );
+        let args: Vec<String> = carried.iter().map(|p| profile.name(&p.name)).collect();
+        variants.push(format!("{variant_name}[{}]", args.join(", ")));
     }
-    w.write(format_args!("{name} = {}", variants.join(" | ")));
+    if def.params.is_empty() {
+        w.write(format_args!("{name} = {}", variants.join(" | ")));
+    } else {
+        let generics = type_params(w, &def.params, profile);
+        w.write(format_args!(
+            "type {name}{generics} = {}",
+            variants.join(" | ")
+        ));
+    }
 }
 
-fn emit_alias(w: &mut CodeWriter, def: &AliasDef, profile: &LanguageProfile) {
+/// Whether a generic parameter appears anywhere in a type.
+fn mentions(ty: &Type, param: &Ident) -> bool {
+    matches!(ty, Type::Param { name } if name == param)
+        || ty.children().into_iter().any(|c| mentions(c, param))
+}
+
+/// Generic parameters in the syntax of PEP 695 — `[T, N: Named]` — or nothing
+/// when there are none.
+///
+/// Python has no way to say a type must be several things at once, so a
+/// parameter with more than one bound is left unbounded, and a comment says
+/// what it was meant to be.
+fn type_params(w: &mut CodeWriter, params: &[TypeParamDecl], profile: &LanguageProfile) -> String {
+    if params.is_empty() {
+        return String::new();
+    }
+    let spell = |b: &unitype_core::ir::TypeRef| profile.spell(&Type::Ref(b.clone()));
+    let parts: Vec<String> = params
+        .iter()
+        .map(|p| {
+            let name = profile.name(&p.name);
+            match p.bounds.as_slice() {
+                [] => name,
+                [only] => format!("{name}: {}", spell(only)),
+                several => {
+                    let all: Vec<String> = several.iter().map(spell).collect();
+                    w.comment(
+                        "# ",
+                        &format!(
+                            "`{name}` has to be each of {}, which Python has no way to say, \
+                             so it is left unbounded here.",
+                            all.join(", ")
+                        ),
+                    );
+                    name
+                }
+            }
+        })
+        .collect();
+    format!("[{}]", parts.join(", "))
+}
+
+fn emit_alias(
+    w: &mut CodeWriter,
+    ws: &CheckedWorkspace,
+    def: &AliasDef,
+    profile: &LanguageProfile,
+) {
     if let Some(doc) = &def.doc {
         w.comment("# ", doc);
     }
     let spelled = match &def.target {
         Type::Union { members } => members
             .iter()
-            .map(|m| profile.spell(m))
+            .map(|m| spell(ws, profile, m))
             .collect::<Vec<_>>()
             .join(" | "),
-        other => profile.spell(other),
+        other => spell(ws, profile, other),
     };
-    w.write(format_args!("{} = {spelled}", profile.name(&def.name)));
+    // A generic alias says which order it takes its parameters in, which only
+    // a `type` statement can.
+    if def.params.is_empty() {
+        w.write(format_args!("{} = {spelled}", profile.name(&def.name)));
+    } else {
+        let generics = type_params(w, &def.params, profile);
+        w.write(format_args!(
+            "type {}{generics} = {spelled}",
+            profile.name(&def.name)
+        ));
+    }
 }
 
 fn emit_signature(
     w: &mut CodeWriter,
+    ws: &CheckedWorkspace,
     universe: &Universe,
     sig: &FunctionSig,
     profile: &LanguageProfile,
@@ -309,7 +450,7 @@ fn emit_signature(
     let params: Vec<String> = sig
         .params
         .iter()
-        .map(|p| format!("{}: {}", profile.name(&p.name), profile.spell(&p.ty)))
+        .map(|p| format!("{}: {}", profile.name(&p.name), spell(ws, profile, &p.ty)))
         .collect();
     // A body that waits for something has to be a coroutine to be allowed to,
     // and what it returns is then what the future held.
@@ -327,11 +468,12 @@ fn emit_signature(
         found
     });
     let (keyword, ret) = match &sig.ret {
-        Type::Future { of } if awaits => ("async def", profile.spell(of)),
-        other => ("def", profile.spell(other)),
+        Type::Future { of } if awaits => ("async def", spell(ws, profile, of)),
+        other => ("def", spell(ws, profile, other)),
     };
+    let generics = type_params(w, &sig.params_decl, profile);
     let head = format!(
-        "{keyword} {}({}) -> {ret}:",
+        "{keyword} {}{generics}({}) -> {ret}:",
         profile.name(&sig.name),
         params.join(", "),
     );
@@ -357,6 +499,57 @@ fn emit_signature(
             }
         }
     });
+}
+
+/// What a field holding an integer-keyed map says about its keys.
+const INTEGER_KEYS: &str = "Integer keys arrive as text, because a JSON object's property names \
+are text: {1: ...} is {\"1\": ...}.";
+
+/// How Python spells a type: as the profile does, except that the keys of a map
+/// that is keyed by integers are `str`.
+///
+/// A proof is handed what JSON gives it, and JSON has no object with an
+/// integer for a name, so `{1: "one"}` arrives as `{"1": "one"}`. `dict[int,
+/// str]` would be a type nothing ever has. The other direction already
+/// agrees: `json.dumps({1: "one"})` writes `{"1": "one"}`.
+fn spell(ws: &CheckedWorkspace, profile: &LanguageProfile, ty: &Type) -> String {
+    profile.spell(&textual_keys(ws, ty))
+}
+
+fn textual_keys(ws: &CheckedWorkspace, ty: &Type) -> Type {
+    let kids: Vec<Type> = ty
+        .children()
+        .into_iter()
+        .map(|c| textual_keys(ws, c))
+        .collect();
+    match ty.with_children(kids) {
+        Type::Map { key, value } if integer_keys(ws, &key) => Type::Map {
+            key: Box::new(Type::String),
+            value,
+        },
+        other => other,
+    }
+}
+
+/// Whether every key a type admits is an integer.
+fn integer_keys(ws: &CheckedWorkspace, key: &Type) -> bool {
+    match ws.expand_alias(key) {
+        Type::I32
+        | Type::I64
+        | Type::Literal {
+            value: unitype_core::ir::LiteralValue::Int(_),
+        } => true,
+        Type::Union { members } => {
+            !members.is_empty() && members.iter().all(|m| integer_keys(ws, m))
+        }
+        _ => false,
+    }
+}
+
+/// Whether a map keyed by integers appears anywhere in a type.
+fn has_integer_keys(ws: &CheckedWorkspace, ty: &Type) -> bool {
+    matches!(ty, Type::Map { key, .. } if integer_keys(ws, key))
+        || ty.children().into_iter().any(|c| has_integer_keys(ws, c))
 }
 
 fn docstring(w: &mut CodeWriter, text: &str) {
@@ -551,12 +744,11 @@ pub fn literal(value: &Value) -> String {
             }
         }
         Value::Str(s) => format!("{s:?}"),
+        // Base64 text, which is what a Python proof is handed and what it
+        // writes back (see the profile's note on `bytes`).
         Value::Bytes(b) => {
             use base64::Engine as _;
-            format!(
-                "base64.b64decode({:?})",
-                base64::engine::general_purpose::STANDARD.encode(b)
-            )
+            format!("{:?}", base64::engine::general_purpose::STANDARD.encode(b))
         }
         Value::List(items) => {
             let parts: Vec<String> = items.iter().map(literal).collect();
@@ -580,7 +772,14 @@ pub fn literal(value: &Value) -> String {
         Value::Map(entries) => {
             let parts: Vec<String> = entries
                 .iter()
-                .map(|(k, v)| format!("{}: {}", literal(k), literal(v)))
+                .map(|(k, v)| {
+                    // A property name is text, whatever the key was.
+                    let name = match k {
+                        Value::Int(i) => format!("{:?}", i.to_string()),
+                        other => literal(other),
+                    };
+                    format!("{name}: {}", literal(v))
+                })
                 .collect();
             format!("{{{}}}", parts.join(", "))
         }
@@ -917,6 +1116,96 @@ mod tests {
         assert_eq!(
             literal(&Value::record([("a", Value::Int(1))])),
             r#"{"a": 1}"#
+        );
+    }
+
+    #[test]
+    fn generic_declarations_and_signatures_use_type_parameter_syntax() {
+        let py = generate(crate::GENERIC);
+        for expected in [
+            "class Box[T]:",
+            "class Labelled[T, N: Named](Box[T]):",
+            "class Tagged[T](Holder[T]):",
+            "class Holder[T](typing.Protocol):",
+            "type Swap[A, B] = tuple[B, A]",
+            "outcome: Outcome[int, str]",
+            "def pick[T: Named](xs: list[T]) -> T | None:",
+            "def konst[A, B](x: A, y: B) -> A:",
+        ] {
+            assert!(py.contains(expected), "missing `{expected}` in:\n{py}");
+        }
+    }
+
+    #[test]
+    fn a_variant_that_carries_a_generic_parameter_is_a_class_on_top_of_its_tag() {
+        let py = generate(crate::GENERIC);
+        for expected in [
+            "_OutcomeOk = typing.TypedDict(\"_OutcomeOk\", {\"$tag\": typing.Literal[\"Ok\"]})",
+            "class OutcomeOk[T](_OutcomeOk):\n    value: T",
+            "class OutcomeErr[E](_OutcomeErr):\n    value: E",
+            "OutcomePending = typing.TypedDict(\"OutcomePending\", {\"$tag\": typing.Literal[\"Pending\"]})",
+            "type Outcome[T, E] = OutcomeOk[T] | OutcomeErr[E] | OutcomePending",
+        ] {
+            assert!(py.contains(expected), "missing `{expected}` in:\n{py}");
+        }
+    }
+
+    #[test]
+    fn several_bounds_are_left_out_and_said_to_be() {
+        let py = generate(
+            r#"{"universes":[{"name":"demo","types":[
+                {"k":"interface","name":"Named","fields":[{"name":"name","ty":"str"}]},
+                {"k":"interface","name":"Sized","fields":[{"name":"size","ty":"i64"}]}],
+              "functions":[{"name":"f","params_decl":[{"name":"T","bounds":["Named","Sized"]}],
+                "params":[{"name":"x","ty":{"k":"param","name":"T"}}],"ret":"str"}]}]}"#,
+        );
+        assert!(py.contains("def f[T](x: T) -> str:"), "{py}");
+        assert!(py.contains("`T` has to be each of Named, Sized"), "{py}");
+    }
+
+    #[test]
+    fn nothing_that_is_not_generic_needs_a_newer_python() {
+        let py = generate(SHAPES);
+        // A `type` statement, or type parameters before a class's bases or a
+        // function's parameters.
+        let newer = |line: &str| {
+            line.starts_with("type ")
+                || ["class ", "def "].iter().any(|kw| {
+                    line.strip_prefix(kw).is_some_and(|rest| {
+                        rest.split(['(', ':']).next().unwrap_or("").contains('[')
+                    })
+                })
+        };
+        assert!(!py.lines().any(newer), "{py}");
+    }
+
+    #[test]
+    fn what_a_proof_is_handed_is_what_the_annotations_say() {
+        let py = generate(
+            r#"{"universes":[{"name":"demo","types":[
+                {"k":"struct","name":"Doc","fields":[
+                    {"name":"blob","ty":"bytes"},
+                    {"name":"by_number","ty":"map<i64, [bytes]>"},
+                    {"name":"by_name","ty":"map<str, i64>"}]}]}]}"#,
+        );
+        // Base64 text for bytes, and text for the keys of a map that is
+        // keyed by integers, because that is what JSON can hold.
+        assert!(py.contains("blob: str"), "{py}");
+        assert!(py.contains("by_number: dict[str, list[str]]"), "{py}");
+        assert!(py.contains("by_name: dict[str, int]"), "{py}");
+        assert_eq!(
+            py.matches("Integer keys arrive as text").count(),
+            1,
+            "said once, beside the one field it is true of: {py}"
+        );
+    }
+
+    #[test]
+    fn a_literal_bytes_value_is_the_text_it_travels_as() {
+        assert_eq!(literal(&Value::Bytes(vec![1, 2, 3])), "\"AQID\"");
+        assert_eq!(
+            literal(&Value::Map(vec![(Value::Int(1), Value::Str("one".into()))])),
+            "{\"1\": \"one\"}"
         );
     }
 }

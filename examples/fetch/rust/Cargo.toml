@@ -1,0 +1,15 @@
+[package]
+name = "fetch_text"
+version = "0.1.0"
+edition = "2024"
+description = "`fetch::fetch_text`, proved in Rust and reached over standard input and output."
+publish = false
+
+# Its own workspace: a proof is built on its own, and a `cargo build` at the top
+# level should not have to fetch an HTTP client to build unitype.
+[workspace]
+
+[dependencies]
+ureq = "3"
+encoding_rs = "0.8"
+serde_json = "1"
