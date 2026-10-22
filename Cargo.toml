@@ -7,7 +7,11 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/cartercole/unitype"
+repository = "https://github.com/CarterCole/unitype"
+homepage = "https://types.cartercole.net"
+readme = "README.md"
+keywords = ["types", "content-addressing", "schema", "codegen", "interop"]
+categories = ["development-tools", "encoding"]
 
 [workspace.dependencies]
 unitype-core = { path = "crates/unitype-core", version = "0.1.0" }
