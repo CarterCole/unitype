@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>unitype — An H3 for Types</title>
+<meta name="description" content="Every type gets a canonical form, a content address computed from its structure alone, and three words you can say out loud. A function signature is a proposition; an implementation is a proof.">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#04060a">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="canonical" href="https://types.cartercole.net/">
+<meta property="og:title" content="unitype — An H3 for Types">
+<meta property="og:description" content="Content-addressed types with names you can say out loud, and a runtime that treats implementations as proofs of a signature.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://types.cartercole.net/">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+
+<canvas id="rain" aria-hidden="true"></canvas>
+<div class="crt" aria-hidden="true"></div>
+<div class="sweep" aria-hidden="true"></div>
+
+<div class="topbar" role="status">
+  <span class="topbar__live"><i class="dot"></i>LIVE</span>
+  <span class="topbar__host">types.cartercole.net</span>
+  <span class="topbar__spacer"></span>
+  <span class="topbar__clock" id="clock">--:--:-- UTC</span>
+</div>
+
+<main class="wrap">
+
+  <header class="hero">
+    <p class="hero__kicker">// NODE 0x02 &mdash; TYPE IDENTITY</p>
+    <h1 class="glitch" data-text="UNITYPE">UNITYPE</h1>
+    <p class="hero__sub">An H3 for types. Every type gets a canonical form, a content address computed from its structure alone, and three ordinary words you can say out loud.</p>
+    <p class="hero__term"><span class="prompt">&gt;</span> <span id="typed"></span><span class="caret" aria-hidden="true"></span></p>
+    <noscript><p class="hero__term"><span class="prompt">&gt;</span> geo::Point and gfx::Vec2 are proof-mystery-trouble. nobody told it.</p></noscript>
+  </header>
+
+  <section class="section" aria-labelledby="s1">
+    <h2 class="sec" id="s1"><span class="sec__num">01</span><span class="sec__name">NAMES</span><span class="sec__rule"></span></h2>
+    <p class="sec__note">Identity from structure, not from a name anyone chose.</p>
+
+    <p class="prose">H3 gives every hexagon on Earth a canonical ID that anyone can compute without asking anyone. unitype does it for types. Normalization gives each semantic type exactly one serialization, and a <strong>blake3 hash</strong> over those bytes is its identity &mdash; excluding names, prose and annotations, because none of those are what makes a type what it is.</p>
+    <p class="prose">So two systems that have never exchanged a schema can find out they hold the same type by comparing 32 bytes, and two people can find out by comparing a phrase.</p>
+
+    <figure class="term">
+      <figcaption class="term__bar"><span>unitype ls types</span><b>examples/demo</b></figcaption>
+<pre><code><span class="p">$</span> unitype --project examples/demo ls types
+demo::Circle    struct     wet-either-model
+demo::Rect      struct     code-twice-wheat
+demo::Shape     struct     escape-until-deposit
+<span class="hl">geo::Point     struct     proof-mystery-trouble</span>
+geo::Place      struct     zoo-page-aware
+gfx::Marker     struct     run-spawn-replace
+<span class="hl">gfx::Vec2      struct     proof-mystery-trouble</span></code></pre>
+    </figure>
+    <p class="cap"><code>geo::Point</code> and <code>gfx::Vec2</code> get the same three words because they hold the same data &mdash; which nobody told it. Types live in <strong>universes</strong>, and between universes nothing is compatible by accident: data crosses only through an explicit link that carries a witness anyone can read.</p>
+  </section>
+
+  <section class="section" aria-labelledby="s2">
+    <h2 class="sec" id="s2"><span class="sec__num">02</span><span class="sec__name">PROPOSITIONS &amp; PROOFS</span><span class="sec__rule"></span></h2>
+    <p class="sec__note">Which implementation runs is a policy decision, not an architectural one.</p>
+
+    <p class="prose">A function signature is a <strong>proposition</strong>. An implementation of it is a <strong>proof</strong>. There can be many proofs of one proposition &mdash; compiled or interpreted, native or sandboxed &mdash; each declaring its own time and space cost. Both are checked against the signature at the boundary, so a proof that lies about what it proves is caught rather than trusted.</p>
+
+    <div class="grid">
+      <figure class="term">
+        <figcaption class="term__bar"><span>--policy fastest</span><b>demo::sort</b></figcaption>
+<pre><code><span class="p">$</span> unitype run demo::sort \
+    --args '[[5,3,9,1]]' --policy fastest -v
+candidates:
+  sort.rust_merge  here     O(n log n) / O(n)
+  sort.sandboxed   sandbox  O(n log n) / O(n)
+  sort.py_bubble   python   O(n^2)     / O(1)
+<span class="hl">chose sort.rust_merge in here</span>
+
+<span class="ok">[1,3,5,9]</span></code></pre>
+      </figure>
+      <figure class="term">
+        <figcaption class="term__bar"><span>--policy min-memory</span><b>demo::sort</b></figcaption>
+<pre><code><span class="p">$</span> unitype run demo::sort \
+    --args '[[5,3,9,1]]' --policy min-memory -v
+candidates:
+  sort.py_bubble   python   O(n^2)     / O(1)
+  sort.rust_merge  here     O(n log n) / O(n)
+  sort.sandboxed   sandbox  O(n log n) / O(n)
+<span class="hl">chose sort.py_bubble in python</span>
+
+<span class="ok">[1,3,5,9]</span></code></pre>
+      </figure>
+    </div>
+    <p class="cap">Same proposition, same answer. One ran in-process in Rust; the other ran in Python over a pipe.</p>
+
+    <figure class="term">
+      <figcaption class="term__bar"><span>unitype conform</span><b>do the proofs agree?</b></figcaption>
+<pre><code><span class="p">$</span> unitype conform
+demo::sort  3 proofs, 7 cases  <span class="ok">&mdash; all agree</span>
+  <span class="d">not checked here: sort.sandboxed</span>
+demo::reverse&lt;T&gt;  2 proofs, 5 trials  <span class="ok">&mdash; free theorem holds</span></code></pre>
+    </figure>
+    <p class="cap">A generic proposition is a claim about every type. A proof of <code>reverse&lt;T&gt;</code> cannot look at a <code>T</code>, so every <code>T</code> it returns must be one it was given &mdash; and <code>conform</code> checks that from the signature alone, with nobody writing down an expected answer. A proof that sorts when it sees integers is caught.</p>
+  </section>
+
+  <section class="section" aria-labelledby="s3">
+    <h2 class="sec" id="s3"><span class="sec__num">03</span><span class="sec__name">INSTRUMENTS</span><span class="sec__rule"></span></h2>
+    <p class="sec__note">The loop closes: a type can be described, checked, addressed, named, bridged, generated and computed &mdash; in more than one language. 735 tests, including the subtyping, inference and shape laws as property tests.</p>
+    <div class="grid grid--tight">
+
+      <article class="card card--sm">
+        <i class="scan" aria-hidden="true"></i>
+        <header class="card__head"><span class="idx">01</span><h3>symbolic core</h3></header>
+        <p class="desc">Types, values, canonical form, content addressing and word aliases. Pinned golden vectors make canonical drift impossible to do by accident.</p>
+        <footer class="meta"><span class="chip">unitype-core</span></footer>
+      </article>
+
+      <article class="card card--sm">
+        <i class="scan" aria-hidden="true"></i>
+        <header class="card__head"><span class="idx">02</span><h3>checker</h3></header>
+        <p class="desc">Inheritance, subtyping, refinement, generic bounds, and variance inferred from where each parameter occurs. Structural addressing erases names across a whole workspace.</p>
+        <footer class="meta"><span class="chip">unitype-core</span></footer>
+      </article>
+
+      <article class="card card--sm">
+        <i class="scan" aria-hidden="true"></i>
+        <header class="card__head"><span class="idx">03</span><h3>bridges</h3></header>
+        <p class="desc">Derived from two declarations, composed along a path, and run through the expression language. An equivalence loses nothing, so one link runs both ways.</p>
+        <footer class="meta"><span class="chip">unitype-core</span></footer>
+      </article>
+
+      <article class="card card--sm">
+        <i class="scan" aria-hidden="true"></i>
+        <header class="card__head"><span class="idx">04</span><h3>expressions</h3></header>
+        <p class="desc">Total by construction, yet able to fold, case, match and compare. <code>demo::sorted</code> checks a list is in order in all three target languages without anyone implementing it.</p>
+        <footer class="meta"><span class="chip">unitype-core</span></footer>
+      </article>
+
+      <article class="card card--sm">
+        <i class="scan" aria-hidden="true"></i>
+        <header class="card__head"><span class="idx">05</span><h3>runtime</h3></header>
+        <p class="desc">Environments register what they can prove; a policy decides which proof answers a call; a worker keeps an interpreter alive between calls.</p>
+        <footer class="meta"><span class="chip">unitype-runtime</span></footer>
+      </article>
+
+      <article class="card card--sm">
+        <i class="scan" aria-hidden="true"></i>
+        <header class="card__head"><span class="idx">06</span><h3>sandbox</h3></header>
+        <p class="desc">A proof compiled to WebAssembly gets memory, a budget and nothing else &mdash; no files, no sockets, no clock. Somewhere to run a proof you did not write.</p>
+        <footer class="meta"><span class="chip">unitype-runtime</span><span class="chip">--features wasm</span></footer>
+      </article>
+
+      <article class="card card--sm">
+        <i class="scan" aria-hidden="true"></i>
+        <header class="card__head"><span class="idx">07</span><h3>code generation</h3></header>
+        <p class="desc">TypeScript, Python and Rust, checked by running the generated code in all three and comparing it against what unitype says the value is.</p>
+        <footer class="meta"><span class="chip">unitype-codegen</span></footer>
+      </article>
+
+      <article class="card card--sm">
+        <i class="scan" aria-hidden="true"></i>
+        <header class="card__head"><span class="idx">08</span><h3>conformance</h3></header>
+        <p class="desc">The proofs of one proposition checked against each other, plus free theorems for the generic ones. Exit code 4 when they disagree.</p>
+        <footer class="meta"><span class="chip">unitype-cli</span></footer>
+      </article>
+
+      <article class="card card--sm">
+        <i class="scan" aria-hidden="true"></i>
+        <header class="card__head"><span class="idx">09</span><h3>reflection</h3></header>
+        <p class="desc">A built-in universe describes the representation, and is checked against it, so a declaration is a value that validates, addresses and travels like any other.</p>
+        <footer class="meta"><span class="chip">unitype-core</span></footer>
+      </article>
+
+    </div>
+  </section>
+
+  <section class="section" aria-labelledby="s4">
+    <h2 class="sec" id="s4"><span class="sec__num">04</span><span class="sec__name">TRY IT</span><span class="sec__rule"></span></h2>
+    <p class="sec__note">Rust 1.85 or newer.</p>
+
+    <figure class="term">
+      <figcaption class="term__bar"><span>install</span><b>crates.io</b></figcaption>
+<pre><code><span class="p">$</span> cargo install unitype-cli
+<span class="p">$</span> git clone https://github.com/CarterCole/unitype
+<span class="p">$</span> cd unitype
+
+<span class="d"># three universes, eleven types, nine proofs in three environments</span>
+<span class="p">$</span> unitype --project examples/demo check
+
+<span class="d"># what every platform calls an HTTP request</span>
+<span class="p">$</span> unitype --project examples/http words http::request</code></pre>
+    </figure>
+
+    <figure class="term">
+      <figcaption class="term__bar"><span>unitype words http::request</span><b>one call, every platform</b></figcaption>
+<pre><code>http::request(req: http::Request) -&gt; future&lt;http::Response&gt;
+
+  address   ut1:cd212e2df458227e6cc86b268247421129122977094fe54b560f7a24a0d3a9f6
+  words     <span class="hl">essay-border-siren</span>
+
+  Called:
+    python      requests.request          in python
+    rust        reqwest::Client::execute  in rust
+    sh          curl                      in shell
+    typescript  fetch                     in browser
+    typescript  fetch                     in node</code></pre>
+    </figure>
+    <p class="cap"><code>curl</code> is a program, <code>fetch</code> is a global, <code>requests</code> is a package you install &mdash; three different kinds of thing. Underneath they answer the same proposition, and <code>essay-border-siren</code> is what that proposition is called when you have to say it to a person.</p>
+  </section>
+
+  <section class="section" aria-labelledby="s5">
+    <h2 class="sec" id="s5"><span class="sec__num">05</span><span class="sec__name">COMMITMENTS</span><span class="sec__rule"></span></h2>
+    <p class="sec__note">The specification is normative, so this is implementable in any language. The Rust workspace is the reference, not the definition.</p>
+    <ol class="rules">
+      <li><strong>Names are not identity.</strong>Two structs called <code>User</code> in different universes are unrelated until someone links them; two identically-shaped types with different names have the same address.</li>
+      <li><strong>Nothing crosses a universe boundary by accident.</strong>Subtyping stops at the boundary. Links are the explicit permission, and always carry a witness.</li>
+      <li><strong>Costs are declared, not measured.</strong>An implementation states its complexity and the dispatcher believes it; a differential harness checks that all proofs actually agree.</li>
+      <li><strong>A proof that lies is caught.</strong>Arguments and results are checked against the signature at the dispatch boundary, so a wrong shape fails loudly instead of propagating.</li>
+      <li><strong>Word aliases are for people.</strong>Derived, stable, and lengthening on collision like an abbreviated git hash &mdash; but <code>ut1:</code> addresses remain the authority.</li>
+      <li><strong>A type is an ordinary thing to compute with.</strong>A declaration is a value that validates, addresses and travels like any other, and a test keeps that description from drifting.</li>
+    </ol>
+  </section>
+
+  <section class="section" aria-labelledby="s6">
+    <h2 class="sec" id="s6"><span class="sec__num">06</span><span class="sec__name">UPLINK</span><span class="sec__rule"></span></h2>
+    <div class="uplink">
+      <a class="uplink__btn" href="https://github.com/CarterCole/unitype">github.com/CarterCole/unitype</a>
+      <a class="uplink__btn" href="https://github.com/CarterCole/unitype/blob/main/protocol/PROTOCOL.md">protocol/PROTOCOL.md</a>
+      <a class="uplink__btn" href="https://crates.io/crates/unitype-cli">crates.io/crates/unitype-cli</a>
+      <a class="uplink__btn" href="https://cartercole.net">cartercole.net</a>
+    </div>
+  </section>
+
+  <footer class="foot">
+    <p class="foot__tele">
+      <span>ORIGIN: S3 &#183; PRIVATE</span><span class="sep">/</span>
+      <span>EDGE: CLOUDFRONT</span><span class="sep">/</span>
+      <span>TLS: ACM</span><span class="sep">/</span>
+      <span>DNS: ROUTE&nbsp;53</span>
+    </p>
+    <p class="foot__end">NO TRACKERS &#183; NO COOKIES &#183; NO ANALYTICS &#8212; <span id="year">2026</span></p>
+  </footer>
+
+</main>
+
+<script src="/app.js" defer></script>
+</body>
+</html>

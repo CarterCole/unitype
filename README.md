@@ -1,5 +1,7 @@
 # unitype
 
+[types.cartercole.net](https://types.cartercole.net) · [the specification](protocol/PROTOCOL.md)
+
 **An H3 for types.** H3 gives every hexagon on Earth a canonical ID that anyone
 can compute without asking anyone; `interval_clock` does it for every periodic
 interval in time. This project does it for types: every type gets a canonical
@@ -342,6 +344,7 @@ crates/unitype-cli/         the `unitype` command
 examples/demo/              a worked example: shapes, three proofs of sort, a bridge
 examples/http/              one call, and what each platform calls it
 examples/fetch/             one call proved in Python, Node, and Rust, and checked
+site/                       types.cartercole.net, published with ./deploy.sh
 ```
 
 Why Rust: futures are a first-class type constructor here rather than an

@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://types.cartercole.net/sitemap.xml
