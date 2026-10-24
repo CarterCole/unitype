@@ -25,6 +25,11 @@ pub struct Constructors {
     pub variant: fn(&str, &str, Option<&str>) -> String,
     /// Writes a value with no type to guide it.
     pub plain: fn(&Value) -> String,
+    /// Writes a whole value against its type, for a language where the shared
+    /// walk below is not enough: one that names a field after the type that
+    /// declares it, or has to say that a value is present before it is
+    /// allowed where one that may be absent is wanted.
+    pub typed: Option<fn(&CheckedWorkspace, &Value, &Type) -> String>,
 }
 
 /// Writes a value as a literal of `ty`.
@@ -35,6 +40,9 @@ pub fn typed(
     value: &Value,
     ty: &Type,
 ) -> String {
+    if let Some(own) = how.typed {
+        return own(ws, value, ty);
+    }
     let ty = ws.expand_alias(ty);
 
     match (&ty, value) {

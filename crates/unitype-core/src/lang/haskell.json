@@ -1,0 +1,75 @@
+{
+  "language": "haskell",
+  "doc": "Haskell's builtin types, and how the symbolic types are spelled in them.",
+  "scalars": {
+    "never": "Void",
+    "any": "Json",
+    "unit": "()",
+    "bool": "Bool",
+    "i32": "Int32",
+    "i64": "Int64",
+    "f64": "Double",
+    "string": "Text",
+    "bytes": "ByteString"
+  },
+  "constructors": {
+    "apply": "{} {}",
+    "list": "[{}]",
+    "optional": "Maybe {}",
+    "map": "Map {} {}",
+    "future": "IO {}",
+    "tuple": "({})"
+  },
+  "juxtaposed": true,
+  "loose": [
+    "optional",
+    "map",
+    "future",
+    "apply"
+  ],
+  "notes": {
+    "map": "An ordered map, so that generated code serializes the same way twice.",
+    "bytes": "A strict `ByteString`, which travels as base64 text.",
+    "any": "Held as parsed JSON, since Haskell has no dynamic type of its own."
+  },
+  "reserved": [
+    "case", "class", "data", "default", "deriving", "do", "else", "forall",
+    "foreign", "if", "import", "in", "infix", "infixl", "infixr", "instance",
+    "let", "module", "newtype", "of", "then", "type", "where",
+    "Bool", "ByteString", "Double", "Either", "Eq", "IO", "Int32", "Int64",
+    "Json", "Map", "Maybe", "Ord", "Show", "Text", "Void",
+    "True", "False", "Just", "Nothing", "Left", "Right",
+    "JNull", "JBool", "JInt", "JFloat", "JString", "JArray", "JObject"
+  ],
+  "escape": "{}_",
+  "types": [
+    {
+      "k": "alias",
+      "name": "Word64",
+      "doc": "An unsigned 64-bit integer. Travels as text, because half its range is outside i64 and JSON numbers cannot be trusted with the rest.",
+      "target": "string",
+      "meta": { "native": "Word64", "lossy_into": "i64" }
+    },
+    {
+      "k": "alias",
+      "name": "Integer",
+      "doc": "An integer of unbounded size. Travels as text, because values beyond 64 bits do not fit the wire.",
+      "target": "string",
+      "meta": { "native": "Integer", "lossy_into": "i64" }
+    },
+    {
+      "k": "alias",
+      "name": "Float",
+      "doc": "A 32-bit float. Widening to f64 loses nothing; narrowing back does.",
+      "target": "f64",
+      "meta": { "native": "Float" }
+    },
+    {
+      "k": "alias",
+      "name": "Char",
+      "doc": "A single Unicode scalar value, which travels as a one-character string.",
+      "target": "string",
+      "meta": { "native": "Char" }
+    }
+  ]
+}

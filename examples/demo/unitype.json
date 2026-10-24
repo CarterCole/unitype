@@ -6,6 +6,6 @@
   "links": ["links"],
   "gen": {
     "out": "generated",
-    "langs": ["typescript", "python", "rust"]
+    "langs": ["typescript", "python", "rust", "haskell"]
   }
 }

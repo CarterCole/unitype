@@ -6,6 +6,8 @@
 __pycache__/
 node_modules/
 examples/demo/generated/
+examples/demo/obj/
+examples/demo/proofs
 /examples/wasm-guest/target
 examples/fetch/generated/
 /examples/fetch/rust/target
