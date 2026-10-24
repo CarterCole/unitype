@@ -1,0 +1,26 @@
+{
+  "version": "1.0",
+  "signature": "net::parse_v4",
+  "vectors": [
+    { "name": "a plain address", "args": ["1.2.3.4"], "expect": [1, 2, 3, 4] },
+    { "name": "all zeros", "args": ["0.0.0.0"], "expect": [0, 0, 0, 0] },
+    { "name": "all ones", "args": ["255.255.255.255"], "expect": [255, 255, 255, 255] },
+    { "name": "a private one", "args": ["192.168.0.1"], "expect": [192, 168, 0, 1] },
+    { "name": "an octet too large", "args": ["256.1.1.1"], "expect": null },
+    { "name": "three octets", "args": ["1.2.3"], "expect": null },
+    { "name": "five octets", "args": ["1.2.3.4.5"], "expect": null },
+    { "name": "a leading zero, which some platforms have read as octal", "args": ["01.2.3.4"], "expect": null },
+    { "name": "a leading zero at the end", "args": ["1.2.3.04"], "expect": null },
+    { "name": "a space before", "args": [" 1.2.3.4"], "expect": null },
+    { "name": "a space after", "args": ["1.2.3.4 "], "expect": null },
+    { "name": "a letter", "args": ["1.2.3.a"], "expect": null },
+    { "name": "hexadecimal", "args": ["0x1.2.3.4"], "expect": null },
+    { "name": "a negative octet", "args": ["1.2.3.-4"], "expect": null },
+    { "name": "an IPv6 address", "args": ["::ffff:1.2.3.4"], "expect": null },
+    { "name": "a port", "args": ["1.2.3.4:80"], "expect": null },
+    { "name": "a prefix length", "args": ["1.2.3.4/24"], "expect": null },
+    { "name": "commas", "args": ["1,2,3,4"], "expect": null },
+    { "name": "a name", "args": ["localhost"], "expect": null },
+    { "name": "nothing", "args": [""], "expect": null }
+  ]
+}

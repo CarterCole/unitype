@@ -52,6 +52,9 @@ pub fn typed(
 
         (Type::Optional { of }, present) => typed(ws, profile, how, present, of),
 
+        // Bounds change nothing about how a value is written.
+        (Type::Bounded { of, .. }, _) => typed(ws, profile, how, value, of),
+
         (Type::List { of }, Value::List(items)) => {
             let parts: Vec<String> = items
                 .iter()

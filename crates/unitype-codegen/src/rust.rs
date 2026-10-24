@@ -535,7 +535,7 @@ fn emit_fields(
             w.comment("/// ", doc);
         }
         for caveat in profile.caveats(&field.ty) {
-            w.comment("// ", caveat);
+            w.comment("// ", &caveat);
         }
 
         let renamed = profile.name(&field.name) != field.name.as_str();
@@ -1371,6 +1371,21 @@ mod tests {
             .find(|f| f.path.to_string_lossy().ends_with("demo.rs"))
             .expect("a file for the demo universe")
             .contents
+    }
+
+    #[test]
+    fn bounds_narrow_the_rust_type_and_are_said_in_the_doc() {
+        let out = generate(
+            r#"{"universes":[{"name":"demo","types":[
+                {"k":"struct","name":"Addr","fields":[
+                    {"name":"octets","ty":"[i32[0..255]; 4]"},
+                    {"name":"port","ty":"i32[0..65535]"},
+                    {"name":"label","ty":"str[len 1..63]"}]}]}]}"#,
+        );
+        assert!(out.contains("pub octets: [u8; 4],"), "{out}");
+        assert!(out.contains("pub port: u16,"), "{out}");
+        assert!(out.contains("pub label: String,"), "{out}");
+        assert!(out.contains("// between 1 and 63 scalar values"), "{out}");
     }
 
     const SHAPES: &str = r#"{"universes":[{"name":"demo","types":[

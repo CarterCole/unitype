@@ -61,6 +61,12 @@ today.
   variance inferred from where each parameter occurs, and structural
   addressing that erases names across a whole workspace — by key, by
   position, and as a bag of types in any order under any names.
+- **Bounds.** `i32[0..255]`, `[octet; 4]`, `bytes[16]`, `str[len 1..63,
+  size ..253]`: a type with bounds on an integer's value, or on a length — in
+  items, in bytes, or for a string, which every language counts differently,
+  in both. The checker refuses `[256, 1, 1, 1]` as an IPv4 address with no
+  parser involved; the wire form is the plain value; Rust spells them `u8`,
+  `u16`, and `[u8; 4]`.
 - **Bridges.** Derived from two declarations, composed along a path, and run
   through the same expression language a person writes a proof in. An
   equivalence — the same data renamed and reordered — loses nothing, so one
@@ -106,9 +112,9 @@ today.
 - **Reflection.** A built-in universe describes the representation, and is
   checked against it, so it cannot drift.
 
-779 tests, including the subtyping, inference and shape laws as property
+797 tests, including the subtyping, inference and shape laws as property
 tests, and pinned golden vectors that make canonical drift impossible to do by
-accident. 790 with the sandbox turned on.
+accident. 808 with the sandbox turned on.
 
 ```bash
 cargo test
@@ -210,6 +216,31 @@ The case that earns its place is a page sent as Latin-1. Its bytes only read as
 `café` if the declared charset is honoured, and the shortest way to fetch text
 in Node — `response.text()` — does not honour it. A proof written that way
 returns `caf�`, and `conform` says so and exits 4.
+
+`examples/net` says what an address *is* before saying what it looks like.
+`net::IpV4` is `[octet; 4]`, an `octet` being `i32[0..255]`, so the checker
+refuses `[256, 1, 1, 1]` with no parser involved, and generated Rust spells it
+`[u8; 4]`. The text is two propositions, `parse_v4(text: str) -> IpV4?` and
+`format_v4(ip: IpV4) -> str`, and two more for IPv6, each proved with Python's
+`ipaddress`, with Rust's `std::net`, and in Node, which has no parser and so
+gets one written for it. Sixty-six cases hold the three to one answer, and the
+propositions say the things platforms decide differently: a leading zero is
+refused, a zone is not part of an address, an IPv4-mapped address is written
+with dots. `ls types` gives `net::hextet` and `net::port` the same three words,
+since both are `i32[0..65535]` and nobody had to say so.
+
+```bash
+cargo run -p unitype-cli -- --project examples/net gen
+cargo build --release --manifest-path examples/net/rust/Cargo.toml
+cargo run -p unitype-cli -- --project examples/net conform
+```
+
+```
+net::format_v4  3 proofs, 4 cases  — all agree
+net::format_v6  3 proofs, 12 cases  — all agree
+net::parse_v4  3 proofs, 20 cases  — all agree
+net::parse_v6  3 proofs, 30 cases  — all agree
+```
 
 A proof can be written in Haskell too, and nothing needs installing beyond GHC.
 `gen` writes a module for each universe and, beside them, the two every proof

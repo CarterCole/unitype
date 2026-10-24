@@ -1,0 +1,10 @@
+{
+  "version": "1.0",
+  "signature": "net::format_v4",
+  "vectors": [
+    { "name": "a plain address", "args": [[1, 2, 3, 4]], "expect": "1.2.3.4" },
+    { "name": "all zeros", "args": [[0, 0, 0, 0]], "expect": "0.0.0.0" },
+    { "name": "all ones", "args": [[255, 255, 255, 255]], "expect": "255.255.255.255" },
+    { "name": "a private one", "args": [[192, 168, 0, 1]], "expect": "192.168.0.1" }
+  ]
+}

@@ -53,6 +53,9 @@ fn join(a: &Type, b: &Type) -> Type {
         }
         (Type::Unit, other) | (other, Type::Unit) => other.clone().optional(),
 
+        // Bounds are declared, never inferred, so a join forgets them.
+        (Type::Bounded { of, .. }, other) | (other, Type::Bounded { of, .. }) => join(of, other),
+
         (Type::List { of: x }, Type::List { of: y }) => join(x, y).list(),
         (Type::Future { of: x }, Type::Future { of: y }) => join(x, y).future(),
         (Type::Map { key: kx, value: vx }, Type::Map { key: ky, value: vy }) => {

@@ -1,0 +1,13 @@
+[package]
+name = "net"
+version = "0.1.0"
+edition = "2024"
+description = "The `net` propositions, proved with `std::net` and reached over standard input and output."
+publish = false
+
+# Its own workspace: a proof is built on its own, and a `cargo build` at the top
+# level should not have to build the examples to build unitype.
+[workspace]
+
+[dependencies]
+serde_json = "1"

@@ -431,6 +431,53 @@
       "doc": "An occurrence of a generic parameter."
     },
     {
+      "k": "struct",
+      "name": "Bounds",
+      "fields": [
+        {
+          "name": "min",
+          "ty": "i64?"
+        },
+        {
+          "name": "max",
+          "ty": "i64?"
+        }
+      ],
+      "doc": "A range something must lie in, both ends inclusive and either end open."
+    },
+    {
+      "k": "struct",
+      "name": "TypeBounded",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "bounded"
+            }
+          }
+        },
+        {
+          "name": "of",
+          "ty": "Type"
+        },
+        {
+          "name": "value",
+          "ty": "Bounds?"
+        },
+        {
+          "name": "len",
+          "ty": "Bounds?"
+        },
+        {
+          "name": "size",
+          "ty": "Bounds?"
+        }
+      ],
+      "doc": "A type with bounds on its values or its length: an integer's value; the length of a list, a map, or bytes; a string's length in scalar values and its size in UTF-8 bytes."
+    },
+    {
       "k": "alias",
       "name": "Type",
       "target": {
@@ -455,7 +502,8 @@
           "TypeUnion",
           "TypeFunction",
           "TypeReference",
-          "TypeParam"
+          "TypeParam",
+          "TypeBounded"
         ]
       },
       "doc": "A type, as one of the shapes it can take. This is the same union the wire form is."

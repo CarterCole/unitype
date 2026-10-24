@@ -13,7 +13,8 @@ use std::path::PathBuf;
 
 use unitype_core::canon::{decl_hash, full_alias, local_hash, sig_hash};
 use unitype_core::ir::{
-    AliasDef, Field, FunctionSig, NamedParam, StructDef, Type, TypeDef, TypeParamDecl, TypeRef,
+    AliasDef, Bounds, Field, FunctionSig, NamedParam, StructDef, Type, TypeDef, TypeParamDecl,
+    TypeRef,
 };
 use unitype_core::{Ident, Metadata};
 
@@ -85,6 +86,33 @@ fn vectors() -> BTreeMap<String, String> {
     add(
         "type/ref-qualified",
         local_hash(&Type::Ref(TypeRef::qualified(id("geo"), id("Point")))),
+    );
+
+    // Bounds, which ride on the type they bound.
+    add(
+        "type/bounded-i32-0-255",
+        local_hash(&Type::I32.valued(Bounds::between(0, 255))),
+    );
+    add(
+        "type/bounded-list-of-octets-exactly-4",
+        local_hash(
+            &Type::I32
+                .valued(Bounds::between(0, 255))
+                .list()
+                .counted(Bounds::exactly(4)),
+        ),
+    );
+    add(
+        "type/bounded-string-len-and-size",
+        local_hash(
+            &Type::String
+                .counted(Bounds::between(1, 63))
+                .sized(Bounds::at_most(253)),
+        ),
+    );
+    add(
+        "type/bounded-bytes-16",
+        local_hash(&Type::Bytes.counted(Bounds::exactly(16))),
     );
 
     // A self-recursive declaration: the case a Merkle encoding has to get right.

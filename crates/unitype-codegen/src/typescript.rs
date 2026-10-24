@@ -272,7 +272,7 @@ fn emit_fields(
             jsdoc(w, doc);
         }
         for caveat in profile.caveats(&field.ty) {
-            w.comment("// ", caveat);
+            w.comment("// ", &caveat);
         }
         // A field that may be absent is optional *and* nullable, because the
         // wire has one way of being absent and TypeScript has two. What may be

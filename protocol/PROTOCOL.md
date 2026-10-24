@@ -49,9 +49,11 @@ Type ::= never | any | unit | bool | i32 | i64 | f64 | string | bytes
        | future(Type)
        | ref(universe, name, Type*)
        | param(name)
+       | bounded(Type, value: Bounds?, len: Bounds?, size: Bounds?)
 
 LiteralValue ::= bool(b) | int(i) | str(s)
 Field        ::= (name, Type, doc?)
+Bounds       ::= (min?, max?)
 ```
 
 Notes on the choices, each of which affects what is representable:
@@ -82,11 +84,25 @@ Notes on the choices, each of which affects what is representable:
 - `future(T)` is a first-class constructor, not a calling convention.
   `future(future(T))` is **not** collapsed: it is a distinct type in languages
   that distinguish it, and flattening is a backend's business (§7).
+- `bounded(T, …)` is `T` with bounds on what a value may be, both ends
+  inclusive and either end open: an integer's `value`; the `len` of a list, a
+  map, or bytes, counting items, entries, or bytes; a string's `len` in Unicode
+  scalar values and its `size` in UTF-8 bytes, which differ, and which each
+  language's own `length` counts differently. Its values are `T`'s values
+  within the bounds, and so is its wire form: `i32[0..255]` is written as the
+  integer it is. Bounds go on nothing else — a tuple's arity is its length —
+  and are given once, so `bounded(bounded(T))` is an error, as is a count below
+  zero or a range whose ends are the wrong way round. This is how an unsigned
+  byte is said: `i32[0..255]`, which every target holds and Rust spells `u8`.
+  A `bounded` is a subtype of its `T`; narrower bounds are a subtype of wider
+  ones; a literal fits when its value, or its counts, do; and an `i64` bounded
+  within ±2^53 may be used where `f64` is expected, which the unbounded one may
+  not.
 
 A `map` key type must be `string`, `i32`, `i64`, a non-boolean literal, or a
 union of those, so that a map is representable as an object in every target.
 
-**Variance.** `optional`, `list`, `future`, both halves of a `map`, `tuple`
+**Variance.** `optional`, `list`, `future`, `bounded`, both halves of a `map`, `tuple`
 items, `record` fields, `union` members, and a function's result are
 covariant; a function's parameters are contravariant. A declared generic's
 arguments vary the way the declaration uses them. Nothing declares this: each
@@ -131,7 +147,7 @@ never written as `null` or `[]`.
 ```
 
 Kind tokens for types: `never any unit bool i32 i64 f64 string bytes literal
-optional list map tuple record union function future ref param`.
+optional list map tuple record union function future ref param bounded`.
 For declarations: `struct interface enum alias`.
 For expressions (§6): `lit var field make_record make_list make_tuple
 make_variant call let if map_through prim fold case match`.
@@ -161,6 +177,9 @@ canonical output.
 | `"geo::Point"` | a reference to another universe |
 | `"T?"` | `optional(T)` |
 | `"[T]"` | `list(T)` |
+| `"i32[0..255]"`, `"i64[1..]"`, `"i32[..9]"`, `"i32[5]"` | a bounded integer, both ends inclusive |
+| `"[T; 4]"`, `"[T; 1..8]"`, `"bytes[16]"`, `"map<K, V>[..10]"` | a bounded length |
+| `"str[len 1..63]"`, `"str[size ..253]"`, `"str[len 1..63, size ..253]"` | a string bounded in scalar values, in UTF-8 bytes, or both |
 
 Expansion is directed by the schema, so a string is expanded only where a type
 belongs. Under `{"k":"map"}` the `value` member is a type and is expanded; under
@@ -211,6 +230,10 @@ Applied bottom-up to a fixed point:
 12. Universes, declarations, signatures, and links sort by name. Registry order
     is not semantic.
 
+**Bounds**
+13. A bound with neither end is dropped, and a `bounded` left with no bounds
+    is the type it bounded.
+
 Normalization is idempotent, and an implementation SHOULD test that it is.
 
 ---
@@ -256,6 +279,9 @@ generated code reads and writes. A field that may be absent and is — an
 optional, `null`, or `any` holding nothing — is left out rather than written as
 `null`, since absence has one representation. Under `any`, and for a field the
 type does not declare, there is no type to say, and the §4 encoding is written.
+
+A value of a `bounded` type is written, and read, as a value of the type it
+bounds. The bounds are checked, never written.
 
 A property name is text, which is why §1 limits a map's keys to strings and
 integers: every target can turn an integer into its digits and back. Reading a
@@ -605,6 +631,10 @@ correct, so nothing has to agree on a length prefix.
 ← {"ok": true, "value": [1, 2, 3]}
 ```
 
+An answer that is absent — a proposition returning `T?` answering nothing — is
+`"value": null`. A response with no `value` at all is a protocol failure, not
+an answer.
+
 A failure the child recognizes as its own:
 
 ```json
@@ -727,7 +757,8 @@ each other, by running them on the same inputs:
 Arguments and the expected answer are read against the signature's types by §5's
 rules. A vector with no `expect` still checks something: the proofs are held to
 each other, which finds a disagreement without anybody having worked out the
-right answer first.
+right answer first. `"expect": null` is not that: it expects absence, which a
+proposition returning `T?` may answer.
 
 Comparison is between **values, not their text**. Two encoders that write a
 number differently, or an object with its keys in another order, agree. An
@@ -750,6 +781,14 @@ integer spelled as a TypeScript `number` is exact only to 2^53, that a Python
 
 A profile is data, so a language this specification never mentions is added by
 writing one.
+
+A `bounded` type is spelled as the type it bounds, except where the profile
+names something narrower that holds exactly what the bounds allow: a list of
+`integers`, each a range and a spelling, so that `i32[0..255]` is `u8` where
+there is such a word; and an `array` constructor for a list of one exact
+length, up to the profile's `array_limit`. The bounds are checked at the
+boundary (§7) whatever is spelled, so a spelling only has to be no wider than
+the type it stands in for.
 
 A generic declaration or signature is generated with its parameters, and a
 reference with arguments is spelled through the profile's `apply` constructor
@@ -922,3 +961,9 @@ what it describes. Adding a variant without adding it here has to fail.
   `unitype sig {keyed,positional,bag} v1`, and the `equivalent` link (§8),
   which may join two generic signatures and pair their generic parameters.
   Every existing domain and address is unchanged.
+- **Bounds** — §1.1 adds `bounded`: a type with bounds on an integer's value,
+  on the length of a list, a map, or bytes, and on a string's length in scalar
+  values and its size in UTF-8 bytes. §3 drops a bound that says nothing. Every
+  existing type encodes as it did, so no address or domain moves; a bounded
+  type is a new encoding with an address of its own. §7.4 lets a case expect
+  `null`.

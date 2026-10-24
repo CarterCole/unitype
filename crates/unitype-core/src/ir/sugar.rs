@@ -15,6 +15,9 @@
 //! | `"[i64]"`    | a list                         |
 //! | `"map<str, i64>"` | a map                     |
 //! | `"future<T>"` | a future                      |
+//! | `"i32[0..255]"` | an integer within bounds, both ends inclusive |
+//! | `"[T; 4]"`, `"bytes[16]"` | a list or bytes of so many; `..8`, `1..` for one end |
+//! | `"str[len 1..63, size ..253]"` | a string bounded in scalar values, in UTF-8 bytes, or both |
 //!
 //! Expansion happens as a pass over the parsed JSON before it is read into the
 //! IR, directed by the schema so that a string is only ever expanded where a
@@ -28,7 +31,9 @@ use serde_json::{Map, Value as Json};
 #[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
 pub enum SugarError {
     /// A string in type position was not recognizable as a type.
-    #[error("`{0}` is not a type: expected a primitive, a name, `T?`, or `[T]`")]
+    #[error(
+        "`{0}` is not a type: expected a primitive, a name, `T?`, `[T]`, or bounds like `i32[0..255]`"
+    )]
     NotAType(String),
     /// Brackets or a `?` were left dangling.
     #[error("`{0}` is malformed: {1}")]
@@ -231,7 +236,7 @@ pub fn desugar_type(slot: &mut Json) -> Result<(), SugarError> {
         .unwrap_or("")
         .to_string();
     match kind.as_str() {
-        "optional" | "list" | "future" => type_slot(obj, "of")?,
+        "optional" | "list" | "future" | "bounded" => type_slot(obj, "of")?,
         "map" => {
             type_slot(obj, "key")?;
             type_slot(obj, "value")?;
@@ -304,16 +309,132 @@ fn angled<'a>(t: &'a str, name: &str) -> Option<&'a str> {
 /// `map<str, map<str, i64>>` has two commas and only the first one separates
 /// this map's key from its value.
 fn split_once_at_depth_zero(t: &str) -> Option<(&str, &str)> {
+    split_once_at_depth_zero_on(t, ',')
+}
+
+/// Splits at the first `sep` that is not inside brackets of some kind.
+fn split_once_at_depth_zero_on(t: &str, sep: char) -> Option<(&str, &str)> {
     let mut depth = 0usize;
     for (at, c) in t.char_indices() {
         match c {
             '<' | '[' | '(' | '{' => depth += 1,
             '>' | ']' | ')' | '}' => depth = depth.saturating_sub(1),
-            ',' if depth == 0 => return Some((&t[..at], &t[at + 1..])),
+            c if c == sep && depth == 0 => return Some((&t[..at], &t[at + c.len_utf8()..])),
             _ => {}
         }
     }
     None
+}
+
+/// Splits `base[spec]` into the type and the bounds written after it, when
+/// that is what this is. A list, which begins with `[`, is not.
+fn split_bounds_suffix(t: &str) -> Option<(&str, &str)> {
+    if !t.ends_with(']') || t.starts_with('[') {
+        return None;
+    }
+    let mut depth = 0usize;
+    for (at, c) in t.char_indices().rev() {
+        match c {
+            ']' => depth += 1,
+            '[' => {
+                depth -= 1;
+                if depth == 0 {
+                    return (at > 0).then(|| (&t[..at], &t[at + 1..t.len() - 1]));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// `n`, `a..b`, `a..`, or `..b`, both ends inclusive, as a bounds object.
+fn parse_bounds(s: &str, spec: &str) -> Result<Json, SugarError> {
+    let spec = spec.trim();
+    let end = |text: &str, which: &'static str| -> Result<Option<i64>, SugarError> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Ok(None);
+        }
+        text.parse::<i64>()
+            .map(Some)
+            .map_err(|_| SugarError::Malformed(s.to_string(), which))
+    };
+    let (min, max) = match spec.split_once("..") {
+        Some((lo, hi)) => (
+            end(lo, "a bound must be an integer")?,
+            end(hi, "a bound must be an integer")?,
+        ),
+        None => {
+            let n = end(spec, "bounds are `n`, `a..b`, `a..`, or `..b`")?;
+            (n, n)
+        }
+    };
+    if min.is_none() && max.is_none() {
+        return Err(SugarError::Malformed(s.to_string(), "`..` bounds nothing"));
+    }
+    let mut obj = Map::new();
+    if let Some(min) = min {
+        obj.insert("min".into(), Json::from(min));
+    }
+    if let Some(max) = max {
+        obj.insert("max".into(), Json::from(max));
+    }
+    Ok(Json::Object(obj))
+}
+
+/// Puts bounds on an already-expanded type, under the slot the type takes them
+/// in: an integer's `value`, a container's `len`, a string's `len` or `size`.
+fn bounds_on(s: &str, base: Json, spec: &str) -> Result<Json, SugarError> {
+    let kind = base.get("k").and_then(Json::as_str).unwrap_or("");
+    match kind {
+        "i32" | "i64" => Ok(bounded(base, "value", parse_bounds(s, spec)?)),
+        "bytes" | "list" | "map" => Ok(bounded(base, "len", parse_bounds(s, spec)?)),
+        "string" => {
+            let mut out = base;
+            for part in spec.split(',') {
+                let Some((word, rest)) = part.trim().split_once(char::is_whitespace) else {
+                    return Err(SugarError::Malformed(
+                        s.to_string(),
+                        "a string has two lengths: say `len` for scalar values or `size` for bytes",
+                    ));
+                };
+                match word {
+                    "len" | "size" => out = bounded(out, word, parse_bounds(s, rest)?),
+                    _ => {
+                        return Err(SugarError::Malformed(
+                            s.to_string(),
+                            "a string's bounds are `len` or `size`",
+                        ));
+                    }
+                }
+            }
+            Ok(out)
+        }
+        "bounded" => Err(SugarError::Malformed(
+            s.to_string(),
+            "bounds are given once",
+        )),
+        _ => Err(SugarError::Malformed(
+            s.to_string(),
+            "only an integer, a string, bytes, a list, or a map takes bounds",
+        )),
+    }
+}
+
+/// `base` with `bounds` under `slot`, joining a `bounded` that is already there.
+fn bounded(base: Json, slot: &str, bounds: Json) -> Json {
+    let mut obj = match base {
+        Json::Object(obj) if obj.get("k").and_then(Json::as_str) == Some("bounded") => obj,
+        other => {
+            let mut obj = Map::new();
+            obj.insert("k".into(), Json::String("bounded".into()));
+            obj.insert("of".into(), other);
+            obj
+        }
+    };
+    obj.insert(slot.to_string(), bounds);
+    Json::Object(obj)
 }
 
 /// Expands one shorthand string into the canonical object form.
@@ -333,14 +454,30 @@ pub fn parse_type_sugar(s: &str) -> Result<Json, SugarError> {
         return Ok(Json::Object(obj));
     }
 
+    // `[T]`, and `[T; 4]` for a list of so many: exactly, `..8` at most, `1..`
+    // at least, `1..8` between.
     if let Some(inner) = t.strip_prefix('[') {
         let inner = inner
             .strip_suffix(']')
             .ok_or(SugarError::Malformed(s.to_string(), "unclosed `[`"))?;
+        let (item, len) = match split_once_at_depth_zero_on(inner, ';') {
+            Some((item, len)) => (item, Some(len)),
+            None => (inner, None),
+        };
         let mut obj = Map::new();
         obj.insert("k".into(), Json::String("list".into()));
-        obj.insert("of".into(), parse_type_sugar(inner)?);
-        return Ok(Json::Object(obj));
+        obj.insert("of".into(), parse_type_sugar(item)?);
+        let list = Json::Object(obj);
+        return match len {
+            Some(len) => Ok(bounded(list, "len", parse_bounds(s, len)?)),
+            None => Ok(list),
+        };
+    }
+
+    // `i32[0..255]`, `bytes[16]`, `map<str, i64>[..10]`, and a string's two
+    // lengths, each under its own word: `str[len 1..63, size ..253]`.
+    if let Some((base, spec)) = split_bounds_suffix(t) {
+        return bounds_on(s, parse_type_sugar(base)?, spec);
     }
 
     // `map<K, V>` and `future<T>`, which are what a type prints as. Reading
@@ -395,11 +532,60 @@ pub fn parse_type_sugar(s: &str) -> Result<Json, SugarError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::Type;
+    use crate::ir::{Bounds, Type};
 
     fn sugar(s: &str) -> Type {
         let json = parse_type_sugar(s).expect("expands");
         serde_json::from_value(json).expect("reads as a type")
+    }
+
+    #[test]
+    fn bounds_expand_and_read_back_the_way_they_print() {
+        let octet = Type::I32.valued(Bounds::between(0, 255));
+        assert_eq!(sugar("i32[0..255]"), octet);
+        assert_eq!(
+            sugar("[i32[0..255]; 4]"),
+            octet.list().counted(Bounds::exactly(4))
+        );
+        assert_eq!(
+            sugar("str[len 1..63, size ..253]"),
+            Type::String
+                .counted(Bounds::between(1, 63))
+                .sized(Bounds::at_most(253))
+        );
+        for spelled in [
+            "i32[0..255]",
+            "i64[..100]",
+            "i32[5..]",
+            "i32[5]",
+            "[i64; 4]",
+            "[str; 1..8]",
+            "[[i32; 4]; 2]",
+            "bytes[16]",
+            "map<str, i64>[..10]",
+            "str[len 1..63]",
+            "str[size ..253]",
+            "str[len 1..63, size ..253]",
+            "i32[0..255]?",
+            "[i32[0..255]; 4]?",
+        ] {
+            assert_eq!(sugar(spelled).to_string(), spelled);
+        }
+    }
+
+    #[test]
+    fn bounds_that_make_no_sense_are_refused_with_a_reason() {
+        for (spelled, why) in [
+            ("str[1..3]", "two lengths"),
+            ("Point[4]", "only an integer"),
+            ("i32[..]", "bounds nothing"),
+            ("i32[a..b]", "must be an integer"),
+            ("i32[0..5][1]", "given once"),
+            ("str[width 3]", "`len` or `size`"),
+        ] {
+            let err = parse_type_sugar(spelled).expect_err(spelled).to_string();
+            assert!(err.contains(why), "{spelled}: {err}");
+        }
     }
 
     #[test]

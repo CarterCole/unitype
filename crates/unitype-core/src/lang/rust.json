@@ -18,11 +18,19 @@
     "optional": "Option<{}>",
     "map": "BTreeMap<{}, {}>",
     "future": "impl Future<Output = {}>",
-    "tuple": "({})"
+    "tuple": "({})",
+    "array": "[{}; {}]"
   },
+  "array_limit": 32,
+  "integers": [
+    { "min": 0, "max": 255, "spelling": "u8" },
+    { "min": 0, "max": 65535, "spelling": "u16" },
+    { "min": 0, "max": 4294967295, "spelling": "u32" }
+  ],
   "notes": {
     "map": "An ordered map, so that generated code serializes the same way twice.",
     "bytes": "Base64 text on the wire, so this is a wrapper that reads and writes it, not a bare `Vec<u8>`, which serde writes as an array of numbers.",
+    "array": "An exact length is an array, up to the 32 elements serde's array support stops at; past that it is a `Vec` whose length the boundary checks.",
     "any": "Held as parsed JSON, since Rust has no dynamic type of its own."
   },
   "reserved": [
