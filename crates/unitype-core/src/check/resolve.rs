@@ -203,7 +203,75 @@ fn check_type(
             }
             check_type(ws, ret, scope, &path.then(PathSeg::Ret), diags);
         }
+        Type::Bounded {
+            of,
+            value,
+            len,
+            size,
+        } => {
+            check_bounded(of, value, len, size, path, diags);
+            check_type(ws, of, scope, &path.then(PathSeg::Elem), diags);
+        }
         leaf => debug_assert!(leaf.is_leaf(), "unhandled type node {}", leaf.kind_name()),
+    }
+}
+
+/// Bounds go on the kinds of type that have something to bound, and only the
+/// bounds that kind has: an integer's value; the length of a list, a map, or
+/// bytes; a string's length in scalar values and its size in bytes. A count
+/// cannot go below zero, and a range whose ends are the wrong way round admits
+/// nothing.
+fn check_bounded(
+    of: &Type,
+    value: &Option<crate::ir::Bounds>,
+    len: &Option<crate::ir::Bounds>,
+    size: &Option<crate::ir::Bounds>,
+    path: &TypePath,
+    diags: &mut Diagnostics,
+) {
+    let mut bad = |what: String| diags.error(CheckErrorKind::BadBounds(what), path.clone());
+    let (takes_value, takes_len, takes_size) = match of {
+        Type::I32 | Type::I64 => (true, false, false),
+        Type::List { .. } | Type::Map { .. } | Type::Bytes => (false, true, false),
+        Type::String => (false, true, true),
+        Type::Bounded { .. } => {
+            bad("bounds are given once".into());
+            return;
+        }
+        other => {
+            bad(format!(
+                "`{}` takes no bounds; only an integer, a string, bytes, a list, or a map does",
+                describe(other)
+            ));
+            return;
+        }
+    };
+    for (slot, bounds, allowed, counts) in [
+        ("value", value, takes_value, false),
+        ("len", len, takes_len, true),
+        ("size", size, takes_size, true),
+    ] {
+        let Some(bounds) = bounds else {
+            continue;
+        };
+        if !allowed {
+            bad(format!("`{}` has no `{slot}` to bound", describe(of)));
+            continue;
+        }
+        let ends = || [bounds.min, bounds.max].into_iter().flatten();
+        if bounds.is_empty() {
+            bad(format!("`{slot}` bounds of {bounds} admit nothing"));
+        }
+        if counts && ends().any(|n| n < 0) {
+            bad(format!(
+                "`{slot}` bounds of {bounds} go below zero, which a count cannot"
+            ));
+        }
+        if matches!(of, Type::I32) && ends().any(|n| i32::try_from(n).is_err()) {
+            bad(format!(
+                "`value` bounds of {bounds} reach outside a 32-bit integer"
+            ));
+        }
     }
 }
 
@@ -294,6 +362,41 @@ mod tests {
             .err()
             .map(|d| d.errors.iter().map(ToString::to_string).collect())
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn bounds_go_only_where_something_can_be_bounded() {
+        let msgs = errors(
+            r#"{"universes":[{"name":"demo","types":[
+                {"k":"struct","name":"S","fields":[
+                    {"name":"a","ty":{"k":"bounded","of":"i32","len":{"max":4}}},
+                    {"name":"b","ty":"[i64; -1]"},
+                    {"name":"c","ty":"i32[5..1]"},
+                    {"name":"d","ty":"i32[0..5000000000]"},
+                    {"name":"e","ty":{"k":"bounded","of":"S","value":{"min":0}}},
+                    {"name":"f","ty":{"k":"bounded","value":{"max":3},
+                        "of":{"k":"bounded","of":"i32","value":{"min":0}}}}]}]}]}"#,
+        );
+        let said = msgs.join("\n");
+        for why in [
+            "has no `len` to bound",
+            "below zero",
+            "admit nothing",
+            "outside a 32-bit integer",
+            "takes no bounds",
+            "given once",
+        ] {
+            assert!(said.contains(why), "{why}:\n{said}");
+        }
+
+        let fine = errors(
+            r#"{"universes":[{"name":"demo","types":[
+                {"k":"struct","name":"Addr","fields":[
+                    {"name":"octets","ty":"[i32[0..255]; 4]"},
+                    {"name":"host","ty":"str[len 1..253, size ..253]"},
+                    {"name":"tags","ty":"map<str, i64>[..10]"}]}]}]}"#,
+        );
+        assert!(fine.is_empty(), "{fine:?}");
     }
 
     #[test]

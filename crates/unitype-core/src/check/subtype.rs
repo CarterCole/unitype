@@ -37,13 +37,30 @@ use crate::check::error::describe;
 use crate::check::subst::{bind, substitute, substitute_ref};
 use crate::check::{CheckedWorkspace, Variance};
 use crate::ident::QualifiedName;
-use crate::ir::{Field, LiteralValue, Type, TypeDef, TypeRef, Variant, fits_f64_exactly};
+use crate::ir::{Bounds, Field, LiteralValue, Type, TypeDef, TypeRef, Variant, fits_f64_exactly};
 
 /// How deep an alias may expand before the checker gives up.
 ///
 /// Alias cycles are reported during resolution, so reaching this limit means
 /// something pathological rather than merely circular.
 const MAX_ALIAS_DEPTH: usize = 64;
+
+/// Whether bounds on one side fit within bounds on the other.
+///
+/// No bounds on the wanted side admit anything; no bounds on the side offered
+/// fit only that.
+fn within(have: &Option<Bounds>, want: &Option<Bounds>) -> bool {
+    match (have, want) {
+        (_, None) => true,
+        (None, Some(_)) => false,
+        (Some(have), Some(want)) => have.within(want),
+    }
+}
+
+/// A count as a bound sees it.
+fn count(n: usize) -> i64 {
+    i64::try_from(n).unwrap_or(i64::MAX)
+}
 
 /// Why one type could not be used where another was expected.
 ///
@@ -187,8 +204,37 @@ impl CheckedWorkspace {
             return match (value, b) {
                 (LiteralValue::Int(i), Type::I32) => i32::try_from(*i).is_ok(),
                 (LiteralValue::Int(i), Type::F64) => fits_f64_exactly(*i),
+                // A specific value fits a bounded type when it fits the type
+                // and lies within the bounds.
+                (
+                    LiteralValue::Int(i),
+                    Type::Bounded {
+                        of, value: bounds, ..
+                    },
+                ) => self.sub(a, of, seen) && bounds.is_none_or(|bounds| bounds.contains(*i)),
+                (LiteralValue::Str(s), Type::Bounded { of, len, size, .. }) => {
+                    self.sub(a, of, seen)
+                        && len.is_none_or(|len| len.contains(count(s.chars().count())))
+                        && size.is_none_or(|size| size.contains(count(s.len())))
+                }
                 _ => false,
             };
+        }
+
+        // A bounded type goes wherever its type goes. And a 64-bit integer
+        // bounded within what a float holds exactly goes where a float does,
+        // which the unbounded one never can.
+        if let Type::Bounded { of, value, .. } = a {
+            if !matches!(b, Type::Bounded { .. }) {
+                if self.sub(of, b, seen) {
+                    return true;
+                }
+                return matches!((of.as_ref(), b), (Type::I64, Type::F64))
+                    && value.is_some_and(|v| {
+                        matches!((v.min, v.max), (Some(lo), Some(hi))
+                            if fits_f64_exactly(lo) && fits_f64_exactly(hi))
+                    });
+            }
         }
 
         // The widenings between primitives, and only the ones that lose
@@ -242,6 +288,23 @@ impl CheckedWorkspace {
                 Some(have) => self.record_sub(&have, y, seen),
                 None => false,
             },
+
+            // Narrower bounds on a type that fits. An unbounded type never
+            // fits a bounded one, which is the `_` below.
+            (
+                Type::Bounded {
+                    of: x,
+                    value: vx,
+                    len: lx,
+                    size: sx,
+                },
+                Type::Bounded {
+                    of: y,
+                    value: vy,
+                    len: ly,
+                    size: sy,
+                },
+            ) => self.sub(x, y, seen) && within(vx, vy) && within(lx, ly) && within(sx, sy),
 
             // A generic parameter stands only for itself. Its bounds are
             // checked where arguments are supplied, not here, because this
@@ -345,6 +408,50 @@ mod tests {
     use crate::Workspace;
     use crate::check::check_workspace;
     use crate::ir::Type;
+
+    #[test]
+    fn bounds_narrow_a_type_and_never_widen_one() {
+        let ws = check_workspace(Workspace::from_json(WS).expect("reads")).expect("checks");
+        let sub = |a: &Type, b: &Type| ws.is_subtype(a, b);
+        let lit = |i: i64| Type::Literal {
+            value: LiteralValue::Int(i),
+        };
+        let octet = Type::I32.valued(Bounds::between(0, 255));
+        let wide = Type::I32.valued(Bounds::between(0, 1000));
+
+        assert!(sub(&octet, &wide) && !sub(&wide, &octet));
+        assert!(
+            sub(&octet, &Type::I32) && !sub(&Type::I32, &octet),
+            "a plain integer may be anything"
+        );
+        assert!(
+            sub(&octet, &Type::I64) && sub(&octet, &Type::F64),
+            "widening keeps the bounds"
+        );
+        assert!(sub(&lit(7), &octet) && !sub(&lit(300), &octet));
+        assert!(
+            sub(&Type::I64.valued(Bounds::between(0, 1 << 40)), &Type::F64),
+            "a bounded i64 can be exact as a float"
+        );
+        assert!(!sub(&Type::I64, &Type::F64));
+        assert!(!sub(&Type::I64.valued(Bounds::at_least(0)), &Type::F64));
+
+        let four = octet.clone().list().counted(Bounds::exactly(4));
+        assert!(sub(&four, &octet.clone().list()) && sub(&four, &Type::I64.list()));
+        assert!(sub(&four, &Type::I32.list().counted(Bounds::between(2, 8))));
+        assert!(!sub(&octet.clone().list(), &four));
+
+        let short = Type::String.counted(Bounds::at_most(3));
+        assert!(sub(&Type::lit_str("ab"), &short) && !sub(&Type::lit_str("abcd"), &short));
+        assert!(sub(&Type::lit_str("éé"), &short), "two scalar values");
+        assert!(
+            !sub(
+                &Type::lit_str("éé"),
+                &Type::String.sized(Bounds::at_most(3))
+            ),
+            "four bytes"
+        );
+    }
 
     const WS: &str = r#"{"universes":[
         {"name":"demo","types":[

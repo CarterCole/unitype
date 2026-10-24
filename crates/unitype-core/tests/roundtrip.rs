@@ -9,8 +9,14 @@
 use proptest::prelude::*;
 
 use unitype_core::canon::{canonical_string, local_hash, normalize_type, normalize_workspace};
-use unitype_core::ir::{Field, LiteralValue, Type};
+use unitype_core::ir::{Bounds, Field, LiteralValue, Type};
 use unitype_core::{Ident, Workspace};
+
+/// Bounds with either end open, and sometimes the wrong way round.
+fn arb_bounds() -> impl Strategy<Value = Bounds> {
+    (prop::option::of(-4i64..8), prop::option::of(-4i64..8))
+        .prop_map(|(min, max)| Bounds { min, max })
+}
 
 /// Types drawn from across the IR, shallow enough to stay fast.
 fn arb_type() -> impl Strategy<Value = Type> {
@@ -39,6 +45,11 @@ fn arb_type() -> impl Strategy<Value = Type> {
             inner.clone().prop_map(Type::optional),
             inner.clone().prop_map(Type::list),
             inner.clone().prop_map(Type::future),
+            (prop_oneof![Just(Type::I32), Just(Type::I64)], arb_bounds())
+                .prop_map(|(t, bounds)| t.valued(bounds)),
+            (inner.clone(), arb_bounds()).prop_map(|(t, bounds)| t.list().counted(bounds)),
+            (arb_bounds(), arb_bounds())
+                .prop_map(|(len, size)| Type::String.counted(len).sized(size)),
             inner.clone().prop_map(|t| t.map_from(Type::String)),
             prop::collection::vec(inner.clone(), 0..4).prop_map(|items| Type::Tuple { items }),
             prop::collection::vec(inner.clone(), 0..4).prop_map(|members| Type::Union { members }),

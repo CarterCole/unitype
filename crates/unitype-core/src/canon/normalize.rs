@@ -30,6 +30,8 @@
 //!   order is declared and drives generated code.
 //! - `Future<Future<T>>` is left alone. It is a distinct type in Rust, and
 //!   flattening belongs to the backends whose languages flatten it.
+//! - A bound with neither end is dropped, and a `bounded` left with no bounds
+//!   is the type it bounded.
 
 use std::collections::VecDeque;
 
@@ -37,8 +39,8 @@ use crate::canon::encode::canonical_bytes;
 use crate::ident::Ident;
 use crate::ir::expr::{Expr, FieldInit};
 use crate::ir::{
-    AliasDef, EnumDef, Field, FunctionSig, InterfaceDef, LiteralValue, StructDef, Type, TypeDef,
-    TypeParamDecl, TypeRef, Universe, Workspace,
+    AliasDef, Bounds, EnumDef, Field, FunctionSig, InterfaceDef, LiteralValue, StructDef, Type,
+    TypeDef, TypeParamDecl, TypeRef, Universe, Workspace,
 };
 
 /// Reduces a type to its canonical form.
@@ -50,7 +52,34 @@ pub fn normalize_type(t: &Type) -> Type {
         Type::Optional { of } => normalize_optional(*of),
         Type::Tuple { items } => normalize_tuple(items),
         Type::Record { fields } => normalize_record(fields),
+        Type::Bounded {
+            of,
+            value,
+            len,
+            size,
+        } => normalize_bounded(*of, value, len, size),
         other => other,
+    }
+}
+
+/// Drops a bound with neither end, which bounds nothing, and the node itself
+/// once nothing is left for it to say.
+fn normalize_bounded(
+    of: Type,
+    value: Option<Bounds>,
+    len: Option<Bounds>,
+    size: Option<Bounds>,
+) -> Type {
+    let kept = |bounds: Option<Bounds>| bounds.filter(|b| !b.is_open());
+    let (value, len, size) = (kept(value), kept(len), kept(size));
+    if value.is_none() && len.is_none() && size.is_none() {
+        return of;
+    }
+    Type::Bounded {
+        of: Box::new(of),
+        value,
+        len,
+        size,
     }
 }
 
@@ -382,6 +411,29 @@ mod tests {
         Type::Literal {
             value: LiteralValue::Int(i),
         }
+    }
+
+    #[test]
+    fn bounds_that_say_nothing_are_dropped() {
+        let open = Bounds {
+            min: None,
+            max: None,
+        };
+        assert_eq!(normalize_type(&Type::I32.valued(open)), Type::I32);
+
+        let t = Type::String.counted(open).sized(Bounds::at_most(3));
+        assert_eq!(
+            normalize_type(&t),
+            Type::String.sized(Bounds::at_most(3)),
+            "the bound that says something stays"
+        );
+        assert_eq!(normalize_type(&normalize_type(&t)), normalize_type(&t));
+
+        let kept = Type::I32
+            .valued(Bounds::between(0, 255))
+            .list()
+            .counted(Bounds::exactly(4));
+        assert_eq!(normalize_type(&kept), kept);
     }
 
     fn lit_bool(b: bool) -> Type {

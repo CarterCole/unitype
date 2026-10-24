@@ -116,6 +116,8 @@ impl CheckedWorkspace {
             (Type::Optional { of }, present) if !matches!(present, Value::Null) => {
                 self.typed(present, of)?
             }
+            // Bounds change nothing about how a value is written.
+            (Type::Bounded { of, .. }, _) => self.typed(value, of)?,
             (Type::List { of }, Value::List(items)) => Json::Array(
                 items
                     .iter()
@@ -230,6 +232,7 @@ impl CheckedWorkspace {
             (Type::Optional { of }, present) if !matches!(present, Value::Null) => {
                 self.canonical(present, of)
             }
+            (Type::Bounded { of, .. }, _) => self.canonical(value, of),
             (Type::List { of }, Value::List(items)) => {
                 Value::List(items.iter().map(|i| self.canonical(i, of)).collect())
             }
@@ -364,6 +367,10 @@ impl CheckedWorkspace {
 
             (Type::Optional { .. }, Json::Null) => Ok(Value::Null),
             (Type::Optional { of }, present) => self.interpret(present, of),
+
+            // Read as the type it bounds; the check that follows holds it to
+            // the bounds.
+            (Type::Bounded { of, .. }, _) => self.interpret(json, of),
 
             // A whole number where a float belongs really is that float.
             (Type::F64, Json::Number(n)) => match n.as_i64() {
@@ -524,8 +531,35 @@ mod tests {
     use super::*;
     use crate::Workspace;
     use crate::check::check_workspace;
-    use crate::ir::TypeRef;
+    use crate::ir::{Bounds, TypeRef};
     use crate::{Ident, QualifiedName};
+
+    #[test]
+    fn bounds_change_what_is_accepted_and_nothing_about_how_it_is_written() {
+        let ws = ws();
+        let octets = Type::I32
+            .valued(Bounds::between(0, 255))
+            .list()
+            .counted(Bounds::exactly(4));
+
+        let ip = ws.read_json("[1, 2, 3, 4]", &octets).expect("four octets");
+        assert_eq!(ws.write_json(&ip, &octets).expect("writes"), "[1,2,3,4]");
+
+        let err = ws
+            .read_json("[1, 2, 3, 400]", &octets)
+            .expect_err("an octet too large")
+            .to_string();
+        assert!(err.contains("400 is not within 0..255"), "{err}");
+
+        let err = ws
+            .read_json("\"1.2.3.4\"", &octets)
+            .expect_err("text is not a list")
+            .to_string();
+        assert!(
+            !err.contains("within"),
+            "the shape is wrong before the bounds come into it: {err}"
+        );
+    }
 
     const WS: &str = r#"{"universes":[{"name":"demo","types":[
         {"k":"struct","name":"Shape","fields":[{"name":"id","ty":"str"}]},

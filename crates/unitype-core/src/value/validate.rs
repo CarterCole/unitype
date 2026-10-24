@@ -117,6 +117,46 @@ impl CheckedWorkspace {
         }
     }
 
+    /// Whether a value of the type lies within the bounds put on it: an
+    /// integer's value, a count of items, entries, or bytes, and for a string
+    /// both its scalar values and its UTF-8 bytes.
+    #[allow(clippy::too_many_arguments)]
+    fn check_bounds(
+        &self,
+        value: &Value,
+        ty: &Type,
+        bounds: &Option<crate::ir::Bounds>,
+        len: &Option<crate::ir::Bounds>,
+        size: &Option<crate::ir::Bounds>,
+        path: &ValuePath,
+        errors: &mut Vec<ValueError>,
+    ) {
+        let mut check = |bounds: &Option<crate::ir::Bounds>, n: i64, what: &str| {
+            if let Some(bounds) = bounds {
+                if !bounds.contains(n) {
+                    errors.push(ValueError::saying(
+                        path,
+                        ty,
+                        value,
+                        format!("{what} {n} is not within {bounds}"),
+                    ));
+                }
+            }
+        };
+        let count = |n: usize| i64::try_from(n).unwrap_or(i64::MAX);
+        match value {
+            Value::Int(i) => check(bounds, *i, "the value"),
+            Value::Str(s) => {
+                check(len, count(s.chars().count()), "a length of");
+                check(size, count(s.len()), "a size in bytes of");
+            }
+            Value::List(items) => check(len, count(items.len()), "a length of"),
+            Value::Map(entries) => check(len, count(entries.len()), "an entry count of"),
+            Value::Bytes(bytes) => check(len, count(bytes.len()), "a length of"),
+            _ => {}
+        }
+    }
+
     fn check_value(
         &self,
         value: &Value,
@@ -131,6 +171,23 @@ impl CheckedWorkspace {
 
         match (ty, value) {
             (Type::Any, _) => {}
+
+            // Within the bounds, once it is a value of the type at all.
+            (
+                Type::Bounded {
+                    of,
+                    value: bounds,
+                    len,
+                    size,
+                },
+                _,
+            ) => {
+                let before = errors.len();
+                self.check_value(value, of, path, errors);
+                if errors.len() == before {
+                    self.check_bounds(value, ty, bounds, len, size, path, errors);
+                }
+            }
             (Type::Unit, Value::Null) => {}
             (Type::Bool, Value::Bool(_)) => {}
             (Type::I64, Value::Int(_)) => {}
@@ -408,8 +465,48 @@ fn describe_key(k: &Value) -> String {
 mod tests {
     use super::*;
     use crate::check::check_workspace;
-    use crate::ir::TypeRef;
+    use crate::ir::{Bounds, TypeRef};
     use crate::{Ident, Workspace};
+
+    #[test]
+    fn a_value_is_held_within_its_bounds() {
+        let ws = ws();
+        let octets = Type::I32
+            .valued(Bounds::between(0, 255))
+            .list()
+            .counted(Bounds::exactly(4));
+        let ints = |xs: &[i64]| Value::List(xs.iter().map(|&i| Value::Int(i)).collect());
+        let said = |v: &Value, t: &Type| {
+            ws.validate(v, t)
+                .expect_err("outside the bounds")
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        assert!(ws.validate(&ints(&[1, 2, 3, 4]), &octets).is_ok());
+        assert!(said(&ints(&[256, 1, 1, 1]), &octets).contains("256 is not within 0..255"));
+        assert!(said(&ints(&[1, 2, 3]), &octets).contains("a length of 3 is not within 4"));
+
+        let label = Type::String
+            .counted(Bounds::at_most(2))
+            .sized(Bounds::at_most(3));
+        assert!(
+            ws.validate(&Value::Str("é".into()), &label).is_ok(),
+            "one scalar value, two bytes"
+        );
+        let two = said(&Value::Str("éé".into()), &label);
+        assert!(
+            two.contains("a size in bytes of 4 is not within ..3"),
+            "{two}"
+        );
+        assert!(!two.contains("a length of"), "two scalar values fit: {two}");
+
+        let sixteen = Type::Bytes.counted(Bounds::exactly(16));
+        assert!(ws.validate(&Value::Bytes(vec![0; 16]), &sixteen).is_ok());
+        assert!(ws.validate(&Value::Bytes(vec![0; 15]), &sixteen).is_err());
+    }
 
     const WS: &str = r#"{"universes":[{"name":"demo","types":[
         {"k":"struct","name":"Shape","fields":[{"name":"id","ty":"str"}]},

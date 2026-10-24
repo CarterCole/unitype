@@ -346,7 +346,8 @@ impl CheckedWorkspace {
                 body,
             } => {
                 let subject = self.type_of(list, env, path, diags)?;
-                let Type::List { of: element } = self.expand_alias(&subject) else {
+                let Type::List { of: element } = self.expand_alias(&subject).unbounded().clone()
+                else {
                     diags.error(
                         CheckErrorKind::CannotEliminate {
                             found: describe(&subject),
@@ -597,7 +598,7 @@ impl CheckedWorkspace {
                     refuse("a boolean")
                 }
             }
-            PrimOp::Len => match self.expand_alias(&types[0]) {
+            PrimOp::Len => match self.expand_alias(&types[0]).unbounded() {
                 Type::List { .. } => Some(Type::I64),
                 _ => refuse("a list"),
             },

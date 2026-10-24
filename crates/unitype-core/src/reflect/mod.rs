@@ -139,6 +139,9 @@ mod tests {
             Type::Param {
                 name: Ident::new("T").unwrap(),
             },
+            Type::String
+                .counted(crate::ir::Bounds::between(1, 63))
+                .sized(crate::ir::Bounds::at_most(253)),
         ];
 
         for shape in &every_shape {
@@ -146,7 +149,7 @@ mod tests {
         }
         assert_eq!(
             every_shape.len(),
-            22,
+            23,
             "one of every shape, plus the three kinds of literal"
         );
     }

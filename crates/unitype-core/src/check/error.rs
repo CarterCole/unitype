@@ -139,6 +139,9 @@ pub enum CheckErrorKind {
     /// A map key type could not be represented as an object key.
     #[error("`{0}` cannot be a map key: use a string, an integer, or a literal")]
     BadMapKey(String),
+    /// Bounds were put where they cannot go, or bound nothing a value could be.
+    #[error("{0}")]
+    BadBounds(String),
     /// Aliases expanded into each other forever.
     #[error("alias cycle: {}", .0.join(" -> "))]
     AliasCycle(Vec<String>),

@@ -277,7 +277,7 @@ fn emit_fields(
             );
         }
         for caveat in profile.caveats(&f.ty) {
-            w.comment("# ", caveat);
+            w.comment("# ", &caveat);
         }
         if let Some(doc) = &f.doc {
             w.comment("# ", doc);
@@ -542,6 +542,7 @@ fn integer_keys(ws: &CheckedWorkspace, key: &Type) -> bool {
         Type::Union { members } => {
             !members.is_empty() && members.iter().all(|m| integer_keys(ws, m))
         }
+        Type::Bounded { of, .. } => integer_keys(ws, &of),
         _ => false,
     }
 }

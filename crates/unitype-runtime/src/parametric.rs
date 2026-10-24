@@ -606,6 +606,7 @@ impl<'a> Shape<'a> {
     /// Whether every `T` position in a result can be found from its type.
     fn readable(&self, ty: &Type) -> Result<(), Unfillable> {
         match ty {
+            Type::Bounded { of, .. } => self.readable(of),
             Type::Union { .. } if self.mentions_param(ty) => Err(Unfillable::of(
                 ty,
                 "puts a parameter under an untagged union, where a value does not \
@@ -672,6 +673,7 @@ impl<'a> Shape<'a> {
                 present => self.map_params(present, of, f)?,
             },
             Type::Future { of } => self.map_params(value, of, f)?,
+            Type::Bounded { of, .. } => self.map_params(value, of, f)?,
             Type::List { of } => {
                 let Value::List(items) = value else {
                     return Err(mismatch());
@@ -804,6 +806,31 @@ impl Filler<'_, '_> {
                     .map(|_| self.fill(of))
                     .collect::<Result<_, _>>()?,
             ),
+            // Within the bounds: an integer brought into its range, a list or
+            // bytes cut or grown to a length the bounds allow.
+            Type::Bounded { of, value, len, .. } => {
+                let within = |n: i64, bounds: &Option<unitype_core::Bounds>| match bounds {
+                    Some(b) => n.max(b.min.unwrap_or(n)).min(b.max.unwrap_or(n)),
+                    None => n,
+                };
+                match (self.fill(of)?, of.as_ref()) {
+                    (Value::Int(i), _) => Value::Int(within(i, value)),
+                    (Value::List(mut items), Type::List { of: item }) => {
+                        let want = within(items.len() as i64, len).max(0) as usize;
+                        items.truncate(want);
+                        while items.len() < want {
+                            items.push(self.fill(item)?);
+                        }
+                        Value::List(items)
+                    }
+                    (Value::Bytes(mut bytes), _) => {
+                        let want = within(bytes.len() as i64, len).max(0) as usize;
+                        bytes.resize(want, k as u8);
+                        Value::Bytes(bytes)
+                    }
+                    (other, _) => other,
+                }
+            }
             Type::Map { key, value } => {
                 // Keys have to be distinct, which only strings and integers
                 // can manage in quantity.

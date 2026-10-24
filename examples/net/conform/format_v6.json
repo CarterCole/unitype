@@ -1,0 +1,18 @@
+{
+  "version": "1.0",
+  "signature": "net::format_v6",
+  "vectors": [
+    { "name": "unspecified", "args": [[0, 0, 0, 0, 0, 0, 0, 0]], "expect": "::" },
+    { "name": "loopback", "args": [[0, 0, 0, 0, 0, 0, 0, 1]], "expect": "::1" },
+    { "name": "a trailing run", "args": [[1, 0, 0, 0, 0, 0, 0, 0]], "expect": "1::" },
+    { "name": "the documentation prefix", "args": [[8193, 3512, 0, 0, 0, 0, 0, 1]], "expect": "2001:db8::1" },
+    { "name": "lowercase, always", "args": [[43981, 61185, 0, 0, 0, 0, 0, 1]], "expect": "abcd:ef01::1" },
+    { "name": "two runs as long: the first is compressed", "args": [[8193, 3512, 0, 0, 1, 0, 0, 1]], "expect": "2001:db8::1:0:0:1" },
+    { "name": "a longer run later wins", "args": [[8193, 3512, 0, 1, 0, 0, 0, 1]], "expect": "2001:db8:0:1::1" },
+    { "name": "a lone zero group is not compressed", "args": [[8193, 3512, 0, 1, 1, 1, 1, 1]], "expect": "2001:db8:0:1:1:1:1:1" },
+    { "name": "nothing to compress", "args": [[1, 2, 3, 4, 5, 6, 7, 8]], "expect": "1:2:3:4:5:6:7:8" },
+    { "name": "an IPv4-mapped address, as a dotted quad", "args": [[0, 0, 0, 0, 0, 65535, 258, 772]], "expect": "::ffff:1.2.3.4" },
+    { "name": "the deprecated IPv4-compatible form stays hexadecimal", "args": [[0, 0, 0, 0, 0, 0, 258, 772]], "expect": "::102:304" },
+    { "name": "link-local", "args": [[65152, 0, 0, 0, 0, 0, 0, 1]], "expect": "fe80::1" }
+  ]
+}

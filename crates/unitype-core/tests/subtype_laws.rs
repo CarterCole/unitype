@@ -10,7 +10,7 @@ use proptest::prelude::*;
 
 use unitype_core::canon::normalize_type;
 use unitype_core::check::{CheckedWorkspace, check_workspace};
-use unitype_core::ir::{Field, StructDef, Type, TypeDef, TypeParamDecl, TypeRef};
+use unitype_core::ir::{Bounds, Field, StructDef, Type, TypeDef, TypeParamDecl, TypeRef};
 use unitype_core::{Ident, Workspace};
 
 const WS: &str = r#"{"universes":[
@@ -61,6 +61,12 @@ fn applied(name: &str, arg: Type) -> Type {
 /// The generics above, one for each way an argument can vary.
 const GENERICS: [&str; 4] = ["Keep", "Sink", "Cell", "Tag"];
 
+/// Small bounds, with either end open, so that ranges nest and overlap often.
+fn arb_bounds() -> impl Strategy<Value = Bounds> {
+    (prop::option::of(0i64..4), prop::option::of(2i64..6))
+        .prop_map(|(min, max)| Bounds { min, max })
+}
+
 /// Types drawn from the workspace above plus the primitives, so that generated
 /// types actually resolve.
 fn arb_type() -> impl Strategy<Value = Type> {
@@ -91,6 +97,10 @@ fn arb_type() -> impl Strategy<Value = Type> {
             inner.clone().prop_map(Type::optional),
             inner.clone().prop_map(Type::list),
             inner.clone().prop_map(Type::future),
+            (prop_oneof![Just(Type::I32), Just(Type::I64)], arb_bounds())
+                .prop_map(|(t, bounds)| t.valued(bounds)),
+            (inner.clone(), arb_bounds()).prop_map(|(t, bounds)| t.list().counted(bounds)),
+            arb_bounds().prop_map(|bounds| Type::String.sized(bounds)),
             prop::collection::vec(inner.clone(), 2..4).prop_map(|items| Type::Tuple { items }),
             prop::collection::vec(inner.clone(), 1..4).prop_map(|members| Type::Union { members }),
             (prop::collection::vec(inner.clone(), 0..2), inner.clone()).prop_map(

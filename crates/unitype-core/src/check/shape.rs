@@ -519,6 +519,15 @@ enum ShapeNode {
     Future {
         of: Box<ShapeNode>,
     },
+    Bounded {
+        of: Box<ShapeNode>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        value: Option<crate::ir::Bounds>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        len: Option<crate::ir::Bounds>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        size: Option<crate::ir::Bounds>,
+    },
     /// A generic parameter of the declaration, by position.
     Param {
         i: usize,
@@ -571,9 +580,10 @@ struct Part {
 impl ShapeNode {
     fn children(&self) -> Vec<&ShapeNode> {
         match self {
-            ShapeNode::Optional { of } | ShapeNode::List { of } | ShapeNode::Future { of } => {
-                vec![of.as_ref()]
-            }
+            ShapeNode::Optional { of }
+            | ShapeNode::List { of }
+            | ShapeNode::Future { of }
+            | ShapeNode::Bounded { of, .. } => vec![of.as_ref()],
             ShapeNode::Map { key, value } => vec![key.as_ref(), value.as_ref()],
             ShapeNode::Tuple { items }
             | ShapeNode::Union { members: items }
@@ -603,9 +613,10 @@ impl ShapeNode {
 
     fn children_mut(&mut self) -> Vec<&mut ShapeNode> {
         match self {
-            ShapeNode::Optional { of } | ShapeNode::List { of } | ShapeNode::Future { of } => {
-                vec![of.as_mut()]
-            }
+            ShapeNode::Optional { of }
+            | ShapeNode::List { of }
+            | ShapeNode::Future { of }
+            | ShapeNode::Bounded { of, .. } => vec![of.as_mut()],
             ShapeNode::Map { key, value } => vec![key.as_mut(), value.as_mut()],
             ShapeNode::Tuple { items }
             | ShapeNode::Union { members: items }
@@ -766,6 +777,17 @@ impl Lowering<'_> {
             Type::Optional { of } => ShapeNode::Optional { of: one(of) },
             Type::List { of } => ShapeNode::List { of: one(of) },
             Type::Future { of } => ShapeNode::Future { of: one(of) },
+            Type::Bounded {
+                of,
+                value,
+                len,
+                size,
+            } => ShapeNode::Bounded {
+                of: one(of),
+                value: *value,
+                len: *len,
+                size: *size,
+            },
             Type::Map { key, value } => ShapeNode::Map {
                 key: one(key),
                 value: one(value),

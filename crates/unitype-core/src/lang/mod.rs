@@ -25,7 +25,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::ident::Ident;
-use crate::ir::{Functor, Type, TypeDef, Universe};
+use crate::ir::{Bounds, Functor, Type, TypeDef, Universe};
 
 /// The languages this build ships profiles for.
 pub const LANGUAGES: &[&str] = &["rust", "typescript", "python", "haskell"];
@@ -73,6 +73,27 @@ pub struct LanguageProfile {
     /// The language's own builtin types, as declarations.
     #[serde(default)]
     pub types: Vec<TypeDef>,
+    /// Narrower integer spellings, for a bounded integer whose bounds fit one.
+    ///
+    /// `i32[0..255]` is a `u8` where there is such a thing. Tried in order, so
+    /// list them narrowest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub integers: Vec<IntegerSpelling>,
+    /// The longest list of an exact length the `array` constructor may spell,
+    /// where the language has one and it stops working past some length.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub array_limit: Option<i64>,
+}
+
+/// A spelling for integers within a range.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct IntegerSpelling {
+    /// The least integer the spelling holds.
+    pub min: i64,
+    /// The greatest.
+    pub max: i64,
+    /// What it is called.
+    pub spelling: String,
 }
 
 fn default_escape() -> String {
@@ -181,6 +202,7 @@ impl LanguageProfile {
                 let inner: Vec<String> = items.iter().map(|t| self.spelling(t).text).collect();
                 self.wrap("tuple", &[Spelling::tight(inner.join(", "))])
             }
+            Type::Bounded { of, value, len, .. } => self.spell_bounded(of, *value, *len),
             Type::Ref(r) if r.args.is_empty() || !self.constructors.contains_key("apply") => {
                 Spelling::tight(self.name(&r.name))
             }
@@ -214,6 +236,44 @@ impl LanguageProfile {
                 Spelling::tight(self.scalar("any"))
             }
             leaf => Spelling::tight(self.scalar(leaf.kind_name())),
+        }
+    }
+
+    /// How a bounded type is written: as its type, except where the language
+    /// has a narrower word for exactly that — `u8` for `i32[0..255]`, `[T; 4]`
+    /// for a list of exactly four. The bounds themselves are checked at the
+    /// boundary whatever is written, so the word only has to be no wider than
+    /// the type it stands in for.
+    fn spell_bounded(&self, of: &Type, value: Option<Bounds>, len: Option<Bounds>) -> Spelling {
+        match (of, value, len) {
+            (
+                Type::I32 | Type::I64,
+                Some(Bounds {
+                    min: Some(lo),
+                    max: Some(hi),
+                }),
+                _,
+            ) => match self.integers.iter().find(|i| i.min <= lo && hi <= i.max) {
+                Some(narrow) => Spelling::tight(narrow.spelling.clone()),
+                None => self.spelling(of),
+            },
+            (
+                Type::List { of: item },
+                _,
+                Some(Bounds {
+                    min: Some(lo),
+                    max: Some(hi),
+                }),
+            ) if lo == hi
+                && self.constructors.contains_key("array")
+                && self.array_limit.is_none_or(|limit| hi <= limit) =>
+            {
+                self.wrap(
+                    "array",
+                    &[self.spelling(item), Spelling::tight(lo.to_string())],
+                )
+            }
+            _ => self.spelling(of),
         }
     }
 
@@ -293,14 +353,17 @@ impl LanguageProfile {
     ///
     /// Returns the caveats gathered from the type and everything inside it, so
     /// that a `[i64]` in TypeScript reports what a bare `i64` would.
-    pub fn caveats(&self, ty: &Type) -> Vec<&str> {
+    ///
+    /// Bounds are reported too, since the generated type is wider than the
+    /// declared one and a reader should know by how much.
+    pub fn caveats(&self, ty: &Type) -> Vec<String> {
         let mut out = Vec::new();
         self.gather(ty, &mut out);
         out.dedup();
         out
     }
 
-    fn gather<'a>(&'a self, ty: &Type, out: &mut Vec<&'a str>) {
+    fn gather(&self, ty: &Type, out: &mut Vec<String>) {
         let kind = match Functor::of(ty) {
             Some(Functor::List) => "list",
             Some(Functor::Optional) => "optional",
@@ -308,12 +371,64 @@ impl LanguageProfile {
             None => ty.kind_name(),
         };
         if let Some(note) = self.notes.get(kind) {
-            out.push(note.as_str());
+            out.push(note.clone());
+        }
+        if let Type::Bounded {
+            of,
+            value,
+            len,
+            size,
+        } = ty
+        {
+            out.push(describe_bounds(of, value, len, size));
         }
         for child in ty.children() {
             self.gather(child, out);
         }
     }
+}
+
+/// What a type's bounds ask for, in a sentence: "between 0 and 255", "exactly
+/// 4 items", "at most 63 scalar values and at most 253 bytes".
+fn describe_bounds(
+    of: &Type,
+    value: &Option<Bounds>,
+    len: &Option<Bounds>,
+    size: &Option<Bounds>,
+) -> String {
+    let counted = match of {
+        Type::List { .. } => "items",
+        Type::Map { .. } => "entries",
+        Type::Bytes => "bytes",
+        Type::String => "scalar values",
+        _ => "",
+    };
+    let range = |bounds: &Bounds, unit: &str| {
+        let unit = if unit.is_empty() {
+            String::new()
+        } else {
+            format!(" {unit}")
+        };
+        match (bounds.min, bounds.max) {
+            (Some(a), Some(z)) if a == z => format!("exactly {a}{unit}"),
+            (Some(a), Some(z)) => format!("between {a} and {z}{unit}"),
+            (Some(a), None) => format!("at least {a}{unit}"),
+            (None, Some(z)) => format!("at most {z}{unit}"),
+            (None, None) => String::new(),
+        }
+    };
+    let mut parts = Vec::new();
+    if let Some(bounds) = value {
+        parts.push(range(bounds, ""));
+    }
+    if let Some(bounds) = len {
+        parts.push(range(bounds, counted));
+    }
+    if let Some(bounds) = size {
+        parts.push(range(bounds, "bytes"));
+    }
+    parts.retain(|p| !p.is_empty());
+    parts.join(" and ")
 }
 
 /// A spelling, and whether it needs bracketing where something follows it.
@@ -352,6 +467,73 @@ mod tests {
 
     fn id(s: &str) -> Ident {
         Ident::new(s).unwrap()
+    }
+
+    #[test]
+    fn a_bounded_integer_gets_the_narrowest_word_a_language_has_for_it() {
+        let octet = Type::I32.valued(Bounds::between(0, 255));
+        assert_eq!(rust().spell(&octet), "u8");
+        assert_eq!(
+            rust().spell(&Type::I32.valued(Bounds::between(0, 65535))),
+            "u16"
+        );
+        assert_eq!(
+            rust().spell(&Type::I64.valued(Bounds::between(0, 4294967295))),
+            "u32"
+        );
+        assert_eq!(
+            rust().spell(&Type::I32.valued(Bounds::between(-1, 5))),
+            "i32",
+            "a negative end is no unsigned type"
+        );
+        assert_eq!(
+            rust().spell(&Type::I32.valued(Bounds::at_most(5))),
+            "i32",
+            "an open end fits nothing narrower"
+        );
+        assert_eq!(ts().spell(&octet), "number");
+        assert_eq!(py().spell(&octet), "int");
+    }
+
+    #[test]
+    fn a_list_of_an_exact_length_is_an_array_where_the_language_has_one() {
+        let four = Type::I32
+            .valued(Bounds::between(0, 255))
+            .list()
+            .counted(Bounds::exactly(4));
+        assert_eq!(rust().spell(&four), "[u8; 4]");
+        assert_eq!(
+            rust().spell(&Type::String.list().counted(Bounds::exactly(40))),
+            "Vec<String>",
+            "past what serde's arrays reach"
+        );
+        assert_eq!(
+            rust().spell(&Type::String.list().counted(Bounds::between(1, 8))),
+            "Vec<String>"
+        );
+        assert_eq!(ts().spell(&four), "number[]");
+        assert_eq!(py().spell(&four), "list[int]");
+    }
+
+    #[test]
+    fn caveats_say_what_the_bounds_ask_for() {
+        let addr = Type::I32
+            .valued(Bounds::between(0, 255))
+            .list()
+            .counted(Bounds::exactly(4));
+        let said = ts().caveats(&addr);
+        assert!(said.iter().any(|c| c == "exactly 4 items"), "{said:?}");
+        assert!(said.iter().any(|c| c == "between 0 and 255"), "{said:?}");
+
+        let label = Type::String
+            .counted(Bounds::between(1, 63))
+            .sized(Bounds::at_most(253));
+        let said = rust().caveats(&label);
+        assert!(
+            said.iter()
+                .any(|c| c == "between 1 and 63 scalar values and at most 253 bytes"),
+            "{said:?}"
+        );
     }
 
     #[test]

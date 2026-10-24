@@ -40,8 +40,13 @@ pub struct Vector {
     ///
     /// Left out, the proofs are compared against each other instead. That is
     /// worth doing on its own: it finds a disagreement without anyone having to
-    /// work out the right answer first.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// work out the right answer first. Written as `null`, absence is the
+    /// answer expected, which a proposition returning `T?` may give.
+    #[serde(
+        default,
+        deserialize_with = "present_expect",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub expect: Option<serde_json::Value>,
 }
 
@@ -66,6 +71,17 @@ pub struct Suite {
 
 fn default_version() -> String {
     SUITE_VERSION.to_string()
+}
+
+/// Keeps an `expect` that is written as `null`.
+///
+/// Serde would read a `null` here as the member being left out, which means
+/// something else — that there is no answer to hold the proofs to, only each
+/// other — so a `null` that is present is kept as the value it is.
+fn present_expect<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<serde_json::Value>, D::Error> {
+    serde_json::Value::deserialize(d).map(Some)
 }
 
 /// What became of one proof on one case.
@@ -578,15 +594,21 @@ mod tests {
             r#"{"signature":"demo::sort",
                 "vectors":[
                     {"name":"backwards","args":[[3,1,2]],"expect":[1,2,3]},
-                    {"name":"empty","args":[[]]}]}"#,
+                    {"name":"empty","args":[[]]},
+                    {"name":"nothing","args":[[]],"expect":null}]}"#,
         )
         .expect("reads");
 
         assert_eq!(suite.signature.to_string(), "demo::sort");
-        assert_eq!(suite.vectors.len(), 2);
+        assert_eq!(suite.vectors.len(), 3);
         assert!(
             suite.vectors[1].expect.is_none(),
             "a case may leave the answer to the proofs"
+        );
+        assert_eq!(
+            suite.vectors[2].expect,
+            Some(serde_json::Value::Null),
+            "and a case may expect absence, which is an answer"
         );
     }
 

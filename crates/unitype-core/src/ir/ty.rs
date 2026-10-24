@@ -112,6 +112,98 @@ impl Field {
     }
 }
 
+/// A range something must lie in, both ends inclusive and either end open.
+///
+/// One shape, used wherever a type bounds something: the value of an integer,
+/// the number of items in a list, the bytes in a string. Written `0..255` as
+/// shorthand, `4` when both ends are the same, `..8` and `1..` when one is
+/// open.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct Bounds {
+    /// The least allowed, or no lower bound.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<i64>,
+    /// The greatest allowed, or no upper bound.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<i64>,
+}
+
+impl Bounds {
+    /// Between `min` and `max`, inclusive.
+    pub fn between(min: i64, max: i64) -> Self {
+        Self {
+            min: Some(min),
+            max: Some(max),
+        }
+    }
+
+    /// Exactly `n`.
+    pub fn exactly(n: i64) -> Self {
+        Self::between(n, n)
+    }
+
+    /// No more than `n`.
+    pub fn at_most(n: i64) -> Self {
+        Self {
+            min: None,
+            max: Some(n),
+        }
+    }
+
+    /// No fewer than `n`.
+    pub fn at_least(n: i64) -> Self {
+        Self {
+            min: Some(n),
+            max: None,
+        }
+    }
+
+    /// True when neither end is given, which bounds nothing.
+    pub fn is_open(&self) -> bool {
+        self.min.is_none() && self.max.is_none()
+    }
+
+    /// True when the two ends are given the wrong way round, admitting nothing.
+    pub fn is_empty(&self) -> bool {
+        matches!((self.min, self.max), (Some(a), Some(b)) if a > b)
+    }
+
+    /// Whether `n` lies within.
+    pub fn contains(&self, n: i64) -> bool {
+        self.min.is_none_or(|a| a <= n) && self.max.is_none_or(|b| n <= b)
+    }
+
+    /// Whether everything within `self` is within `outer`.
+    ///
+    /// An open end of `self` fits only an open end of `outer`: there is no
+    /// finite bound that admits every integer.
+    pub fn within(&self, outer: &Bounds) -> bool {
+        let low = match (outer.min, self.min) {
+            (None, _) => true,
+            (Some(_), None) => false,
+            (Some(o), Some(s)) => o <= s,
+        };
+        let high = match (outer.max, self.max) {
+            (None, _) => true,
+            (Some(_), None) => false,
+            (Some(o), Some(s)) => s <= o,
+        };
+        low && high
+    }
+}
+
+impl fmt::Display for Bounds {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match (self.min, self.max) {
+            (Some(a), Some(b)) if a == b => write!(f, "{a}"),
+            (Some(a), Some(b)) => write!(f, "{a}..{b}"),
+            (Some(a), None) => write!(f, "{a}.."),
+            (None, Some(b)) => write!(f, "..{b}"),
+            (None, None) => f.write_str(".."),
+        }
+    }
+}
+
 /// A type.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "k", rename_all = "snake_case")]
@@ -199,6 +291,27 @@ pub enum Type {
         /// The parameter's name.
         name: Ident,
     },
+    /// A type with bounds on its values or its length.
+    ///
+    /// The values are the inner type's values that lie within the bounds, and
+    /// so is the wire form: `i32[0..255]` is written as the integer it is. What
+    /// may be bounded depends on the type. An integer's `value`; the `len` of a
+    /// list, a map, or bytes, counting items, entries, or bytes; and a string's
+    /// `len` in Unicode scalar values and `size` in UTF-8 bytes, which differ,
+    /// and which each language's own `length` counts differently.
+    Bounded {
+        /// The type being bounded.
+        of: Box<Type>,
+        /// Where an integer's value must lie.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<Bounds>,
+        /// How many items, entries, bytes, or scalar values there must be.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        len: Option<Bounds>,
+        /// How many bytes a string must take in UTF-8.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        size: Option<Bounds>,
+    },
 }
 
 impl fmt::Display for Type {
@@ -252,6 +365,39 @@ impl fmt::Display for Type {
 
             Type::Ref(r) => write!(f, "{r}"),
             Type::Param { name } => write!(f, "{name}"),
+
+            // The bounds go where the thing they bound is said: a list's length
+            // inside its brackets, an integer's range after it, and a string's
+            // two lengths each under its own word.
+            Type::Bounded {
+                of,
+                value,
+                len,
+                size,
+            } => match of.as_ref() {
+                Type::List { of: item } => match len {
+                    Some(len) => write!(f, "[{item}; {len}]"),
+                    None => write!(f, "[{item}]"),
+                },
+                Type::String => {
+                    let mut parts = Vec::new();
+                    if let Some(len) = len {
+                        parts.push(format!("len {len}"));
+                    }
+                    if let Some(size) = size {
+                        parts.push(format!("size {size}"));
+                    }
+                    if parts.is_empty() {
+                        write!(f, "{of}")
+                    } else {
+                        write!(f, "{of}[{}]", parts.join(", "))
+                    }
+                }
+                inner => match value.as_ref().or(len.as_ref()) {
+                    Some(bounds) => write!(f, "{inner}[{bounds}]"),
+                    None => write!(f, "{inner}"),
+                },
+            },
         }
     }
 }
@@ -321,6 +467,57 @@ impl Type {
         }
     }
 
+    /// `self` with its value bounded: `i32[0..255]`.
+    ///
+    /// On a type that is already bounded, this sets the value bounds and keeps
+    /// the rest, so bounds of different kinds build up one node.
+    pub fn valued(self, bounds: Bounds) -> Type {
+        self.bounded(|value, _, _| *value = Some(bounds))
+    }
+
+    /// `self` with its length bounded: `[T; 4]`, `bytes[16]`, `str[len 1..63]`.
+    pub fn counted(self, bounds: Bounds) -> Type {
+        self.bounded(|_, len, _| *len = Some(bounds))
+    }
+
+    /// `self` with its size in UTF-8 bytes bounded: `str[size ..253]`.
+    pub fn sized(self, bounds: Bounds) -> Type {
+        self.bounded(|_, _, size| *size = Some(bounds))
+    }
+
+    fn bounded(
+        self,
+        set: impl FnOnce(&mut Option<Bounds>, &mut Option<Bounds>, &mut Option<Bounds>),
+    ) -> Type {
+        let (of, mut value, mut len, mut size) = match self {
+            Type::Bounded {
+                of,
+                value,
+                len,
+                size,
+            } => (of, value, len, size),
+            other => (Box::new(other), None, None, None),
+        };
+        set(&mut value, &mut len, &mut size);
+        Type::Bounded {
+            of,
+            value,
+            len,
+            size,
+        }
+    }
+
+    /// The type with any bounds taken off: what a bounded type is a type *of*.
+    ///
+    /// Anything that asks what kind of thing a type is — an integer, a list —
+    /// asks this first, since the bounds do not change the answer.
+    pub fn unbounded(&self) -> &Type {
+        match self {
+            Type::Bounded { of, .. } => of,
+            other => other,
+        }
+    }
+
     /// The discriminator token used in the wire form, for diagnostics.
     pub fn kind_name(&self) -> &'static str {
         match self {
@@ -344,6 +541,7 @@ impl Type {
             Type::Future { .. } => "future",
             Type::Ref(_) => "ref",
             Type::Param { .. } => "param",
+            Type::Bounded { .. } => "bounded",
         }
     }
 
@@ -374,6 +572,8 @@ impl Type {
             Type::String | Type::I32 | Type::I64 => true,
             Type::Literal { value } => !matches!(value, LiteralValue::Bool(_)),
             Type::Union { members } => members.iter().all(Type::is_valid_map_key),
+            // A bounded key is still text or a number on the wire.
+            Type::Bounded { of, .. } => of.is_valid_map_key(),
             _ => false,
         }
     }
@@ -382,7 +582,10 @@ impl Type {
     pub fn children(&self) -> Vec<&Type> {
         match self {
             t if t.is_leaf() => Vec::new(),
-            Type::Optional { of } | Type::List { of } | Type::Future { of } => vec![of.as_ref()],
+            Type::Optional { of }
+            | Type::List { of }
+            | Type::Future { of }
+            | Type::Bounded { of, .. } => vec![of.as_ref()],
             Type::Map { key, value } => vec![key.as_ref(), value.as_ref()],
             Type::Tuple { items } | Type::Union { members: items } => items.iter().collect(),
             Type::Record { fields } => fields.iter().map(|f| &f.ty).collect(),
@@ -409,6 +612,14 @@ impl Type {
             },
             Type::Future { .. } => Type::Future {
                 of: Box::new(children.remove(0)),
+            },
+            Type::Bounded {
+                value, len, size, ..
+            } => Type::Bounded {
+                of: Box::new(children.remove(0)),
+                value: *value,
+                len: *len,
+                size: *size,
             },
             Type::Map { .. } => {
                 let value = children.pop().expect("map has two children");
@@ -462,6 +673,80 @@ mod tests {
         };
         let j = serde_json::to_string(&t).unwrap();
         assert_eq!(serde_json::from_str::<Type>(&j).unwrap(), t);
+    }
+
+    #[test]
+    fn bounds_print_the_way_they_are_said() {
+        assert_eq!(Bounds::between(0, 255).to_string(), "0..255");
+        assert_eq!(Bounds::exactly(4).to_string(), "4");
+        assert_eq!(Bounds::at_most(8).to_string(), "..8");
+        assert_eq!(Bounds::at_least(1).to_string(), "1..");
+    }
+
+    #[test]
+    fn bounds_nest_only_when_every_end_fits() {
+        let octet = Bounds::between(0, 255);
+        assert!(Bounds::between(1, 10).within(&octet));
+        assert!(!Bounds::between(-1, 10).within(&octet));
+        assert!(
+            !Bounds::at_most(10).within(&octet),
+            "an open end fits only an open end"
+        );
+        assert!(Bounds::at_most(10).within(&Bounds::at_most(255)));
+        assert!(octet.contains(0) && octet.contains(255) && !octet.contains(256));
+        assert!(Bounds::between(5, 1).is_empty());
+    }
+
+    #[test]
+    fn a_bounded_type_prints_its_bounds_where_they_belong() {
+        let octet = Type::I32.valued(Bounds::between(0, 255));
+        assert_eq!(octet.to_string(), "i32[0..255]");
+        assert_eq!(
+            octet.clone().list().counted(Bounds::exactly(4)).to_string(),
+            "[i32[0..255]; 4]"
+        );
+        assert_eq!(
+            Type::Bytes.counted(Bounds::exactly(16)).to_string(),
+            "bytes[16]"
+        );
+        assert_eq!(
+            Type::String
+                .counted(Bounds::between(1, 63))
+                .sized(Bounds::at_most(253))
+                .to_string(),
+            "str[len 1..63, size ..253]"
+        );
+        assert_eq!(
+            Type::I64
+                .map_from(Type::String)
+                .counted(Bounds::at_most(10))
+                .to_string(),
+            "map<str, i64>[..10]"
+        );
+        assert_eq!(octet.optional().to_string(), "i32[0..255]?");
+    }
+
+    #[test]
+    fn bounds_build_up_one_node_and_serialize_beside_the_type() {
+        let t = Type::String
+            .counted(Bounds::at_least(1))
+            .sized(Bounds::at_most(253));
+        assert!(matches!(
+            &t,
+            Type::Bounded {
+                value: None,
+                len: Some(_),
+                size: Some(_),
+                ..
+            }
+        ));
+        let j = serde_json::to_string(&t).unwrap();
+        assert_eq!(
+            j,
+            r#"{"k":"bounded","of":{"k":"string"},"len":{"min":1},"size":{"max":253}}"#
+        );
+        assert_eq!(serde_json::from_str::<Type>(&j).unwrap(), t);
+        assert_eq!(t.unbounded(), &Type::String);
     }
 
     #[test]

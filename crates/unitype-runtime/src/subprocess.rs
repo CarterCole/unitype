@@ -68,11 +68,23 @@ pub struct Response {
     /// Whether it worked.
     pub ok: bool,
     /// What it produced.
-    #[serde(default)]
+    ///
+    /// `null` is an answer — a proposition returning `T?` answering nothing —
+    /// and is kept apart from the member being left out, which is no answer
+    /// at all.
+    #[serde(default, deserialize_with = "present_value")]
     pub value: Option<serde_json::Value>,
     /// What went wrong.
     #[serde(default)]
     pub error: Option<ResponseError>,
+}
+
+/// Keeps a `value` that is written as `null`, which serde would otherwise read
+/// as the member being absent.
+fn present_value<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<serde_json::Value>, D::Error> {
+    serde_json::Value::deserialize(d).map(Some)
 }
 
 /// A failure the child reported for itself.
@@ -332,6 +344,24 @@ mod tests {
             "bubble_sort",
             ImplProfile::new(BigO::ON2, BigO::O1),
         )
+    }
+
+    #[test]
+    fn an_absent_answer_is_an_answer_and_no_answer_is_not() {
+        let ws = ws();
+        let maybe = Type::I64.optional();
+        let absent = read_answer(
+            &ws,
+            &implementation(),
+            r#"{"ok":true,"value":null}"#,
+            &maybe,
+        )
+        .expect("null is what a proposition returning `T?` answers");
+        assert_eq!(absent, Value::Null);
+
+        let none = read_answer(&ws, &implementation(), r#"{"ok":true}"#, &maybe)
+            .expect_err("no value at all is a broken exchange");
+        assert!(none.to_string().contains("sent nothing back"), "{none}");
     }
 
     /// Generous on purpose: these tests are about the exchange, not about how

@@ -43,8 +43,8 @@ pub mod value;
 pub use canon::{TypeId, canonical_string, decl_hash, full_alias, local_hash, sig_hash};
 pub use ident::{Ident, IdentError, QualifiedName};
 pub use ir::{
-    Expr, Field, FunctionSig, LiteralValue, LoadError, SCHEMA_VERSION, Type, TypeDef, TypeRef,
-    Universe, Workspace,
+    Bounds, Expr, Field, FunctionSig, LiteralValue, LoadError, SCHEMA_VERSION, Type, TypeDef,
+    TypeRef, Universe, Workspace,
 };
 pub use lang::{LANGUAGES, LanguageProfile};
 pub use link::{Link, LinkKind};

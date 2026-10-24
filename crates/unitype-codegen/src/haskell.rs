@@ -990,7 +990,7 @@ fn emit_struct(
             for (i, field) in fields.iter().enumerate() {
                 let open = if i == 0 { "{" } else { "," };
                 for caveat in profile.caveats(&field.ty) {
-                    w.comment("-- ", caveat);
+                    w.comment("-- ", &caveat);
                 }
                 w.write(format_args!(
                     "{open} {} :: {}",
@@ -1974,7 +1974,10 @@ impl Body<'_> {
         };
         let produced = self.resolver().resolve(produced);
         let wanted = self.resolver().resolve(wanted);
-        match (&produced, &wanted) {
+        // Bounds do not change what a value is, so a bounded `i32` widens like
+        // any other; and a bounded type never wraps an optional, so looking
+        // through them loses nothing the arms below ask about.
+        match (produced.unbounded(), wanted.unbounded()) {
             // Already one, or the `null` that is the absence of one.
             (Type::Optional { .. } | Type::Unit | Type::Never, Type::Optional { .. }) => text,
             (_, Type::Optional { of }) => {
@@ -2189,6 +2192,8 @@ fn typed(ws: &CheckedWorkspace, profile: &LanguageProfile, value: &Value, ty: &T
     let ty = resolver.resolve(ty);
     match (&ty, value) {
         (Type::Ref(r), _) => named_literal(ws, profile, r, value),
+        // Bounds change nothing about how a value is written.
+        (Type::Bounded { of, .. }, _) => typed(ws, profile, value, of),
         (Type::Optional { .. }, Value::Null) => "Nothing".into(),
         (Type::Optional { of }, present) => {
             format!("(Just {})", typed(ws, profile, present, of))

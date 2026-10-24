@@ -1637,3 +1637,192 @@ main = unitypeMain [("reverse", proves sorted)]
         "the proof that held is not blamed: {said}"
     );
 }
+
+/// A copy of the net example with its harnesses generated.
+fn net_project(name: &str) -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
+    let _ = std::fs::remove_dir_all(&dir);
+    copy_tree(
+        &PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/net"),
+        &dir,
+    );
+    let generated = in_project(&dir, &["gen"]);
+    assert!(
+        generated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&generated.stderr)
+    );
+    dir
+}
+
+/// Builds the net example's Rust proof where its manifest expects it, in a
+/// target directory that outlives the test so it is compiled once.
+fn build_net_proof(dir: &std::path::Path) -> bool {
+    let target = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("net_rust_target");
+    let output = Command::new(env!("CARGO"))
+        .args([
+            "build",
+            "--release",
+            "--quiet",
+            "--offline",
+            "--manifest-path",
+        ])
+        .arg(dir.join("rust/Cargo.toml"))
+        .env("CARGO_TARGET_DIR", &target)
+        .output()
+        .expect("runs cargo");
+    if !output.status.success() {
+        let said = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !said.contains("error[") && !said.contains("could not compile"),
+            "the Rust proof did not build:\n{said}"
+        );
+        eprintln!(
+            "the Rust proof's dependencies are not available offline; leaving it out\n{said}"
+        );
+        return false;
+    }
+    let placed = dir.join("rust/target/release");
+    std::fs::create_dir_all(&placed).expect("makes a directory");
+    std::fs::copy(target.join("release/net"), placed.join("net"))
+        .expect("puts the binary where the manifest looks");
+    true
+}
+
+#[test]
+fn three_languages_read_and_write_the_same_addresses() {
+    if !have_python() || !have_node_that_reads_typescript() {
+        eprintln!("needs python3 and Node 24 or later; skipping");
+        return;
+    }
+    let dir = net_project("net_agree");
+    let rust = build_net_proof(&dir);
+
+    let output = in_project(&dir, &["--json", "conform"]);
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).expect("valid JSON");
+    assert!(output.status.success(), "{report}");
+    let suites = report["suites"].as_array().expect("suites");
+    assert_eq!(suites.len(), 4, "{report}");
+
+    let mut platforms = vec!["ipaddress", "node"];
+    if rust {
+        platforms.push("std");
+    }
+    for suite in suites {
+        assert_eq!(suite["agreed"], true, "{suite}");
+        for case in suite["cases"].as_array().expect("cases") {
+            for (proof, answer) in case["answers"].as_object().expect("answers") {
+                let answer = answer.as_str().unwrap_or("missing");
+                let counted = platforms.iter().any(|p| proof.ends_with(p));
+                assert!(
+                    !counted || !(answer.starts_with("skipped") || answer.starts_with("failed")),
+                    "{proof} did not answer `{}`: {answer}",
+                    case["name"]
+                );
+            }
+        }
+    }
+
+    // Absence is an answer: the text that is not an address comes back as
+    // `null` from every platform, and is held to the `null` the case expects.
+    let parses = suites
+        .iter()
+        .find(|s| s["signature"] == "net::parse_v4")
+        .expect("the IPv4 parser");
+    let octal = parses["cases"]
+        .as_array()
+        .expect("cases")
+        .iter()
+        .find(|c| {
+            c["name"]
+                .as_str()
+                .is_some_and(|n| n.contains("leading zero, which"))
+        })
+        .expect("the leading-zero case");
+    assert_eq!(octal["answers"]["parse_v4.ipaddress"], "null", "{octal}");
+
+    // And the one spelling the RFC allows for an IPv4-mapped address, which
+    // Python's own printer does not use.
+    let formats = suites
+        .iter()
+        .find(|s| s["signature"] == "net::format_v6")
+        .expect("the IPv6 printer");
+    let mapped = formats["cases"]
+        .as_array()
+        .expect("cases")
+        .iter()
+        .find(|c| {
+            c["name"]
+                .as_str()
+                .is_some_and(|n| n.contains("IPv4-mapped"))
+        })
+        .expect("the mapped case");
+    assert_eq!(
+        mapped["answers"]["format_v6.ipaddress"], "\"::ffff:1.2.3.4\"",
+        "{mapped}"
+    );
+}
+
+#[test]
+fn a_parser_that_reads_a_leading_zero_is_caught() {
+    if !have_python() || !have_node_that_reads_typescript() {
+        eprintln!("needs python3 and Node 24 or later; skipping");
+        return;
+    }
+    let dir = net_project("net_lax");
+
+    // The shortest way to do this in Node, and wrong: `Number("01")` is 1, and
+    // `Number(" 1")` is too.
+    std::fs::write(
+        dir.join("proofs/lax.ts"),
+        r#"import { unitypeMain } from "../generated/typescript/unitype_harness.ts";
+unitypeMain({
+  lax: (text: string) => {
+    const parts = text.split(".");
+    if (parts.length !== 4) return null;
+    const octets = parts.map(Number);
+    return octets.every((o) => Number.isInteger(o) && o >= 0 && o <= 255) ? octets : null;
+  },
+});
+"#,
+    )
+    .expect("writes the lax proof");
+    let manifest_path = dir.join("impls/net.json");
+    let mut manifest: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&manifest_path).expect("reads"))
+            .expect("valid JSON");
+    manifest["environments"]
+        .as_array_mut()
+        .expect("environments")
+        .push(serde_json::json!({
+            "id": "node_lax", "language": "typescript",
+            "reach": {"k": "subprocess", "command": "node", "args": ["../proofs/lax.ts"]}
+        }));
+    manifest["implementations"]
+        .as_array_mut()
+        .expect("implementations")
+        .push(serde_json::json!({
+            "id": "parse_v4.lax", "proves": "net::parse_v4",
+            "environment": "node_lax", "entry": "lax",
+            "cost": {"time": "o1", "space": "o1"}
+        }));
+    std::fs::write(&manifest_path, manifest.to_string()).expect("writes the manifest");
+
+    let output = in_project(&dir, &["conform", "--sig", "net::parse_v4"]);
+    assert_eq!(
+        output.status.code(),
+        Some(4),
+        "a build should be able to tell this apart from a crash"
+    );
+    let said = String::from_utf8_lossy(&output.stdout);
+    assert!(said.contains("a leading zero, which"), "{said}");
+    assert!(said.contains("x parse_v4.lax"), "{said}");
+    assert!(
+        !said.contains("x parse_v4.ipaddress") && !said.contains("x parse_v4.node"),
+        "the proofs that refuse a leading zero are not blamed: {said}"
+    );
+    assert!(
+        !said.contains("  a plain address\n"),
+        "on a plain address every parser agrees, so that case is not where it is wrong: {said}"
+    );
+}

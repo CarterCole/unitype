@@ -11,3 +11,5 @@ examples/demo/proofs
 /examples/wasm-guest/target
 examples/fetch/generated/
 /examples/fetch/rust/target
+examples/net/generated/
+/examples/net/rust/target

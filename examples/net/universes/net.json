@@ -1,0 +1,116 @@
+{
+  "name": "net",
+  "doc": "Addresses on a network, as the data they are.\n\nAn IPv4 address is four octets, an IPv6 address eight hextets, a port a number under 65536, a domain a list of labels. Every platform holds each of these as a type of its own and writes it as text, and every platform's parser and printer settle the corners a little differently: leading zeros, uppercase hex, where `::` goes, whether an IPv4-mapped address is written with dots. Saying the type once, as bounded numbers, puts validity in the type — `[256, 1, 1, 1]` is refused by the checker, with no parser involved — and leaves the text as what it is: two propositions, parsing and printing, proved on each platform and held to one answer.",
+  "types": [
+    {
+      "k": "alias",
+      "name": "octet",
+      "doc": "One byte of an IPv4 address. Rust spells this `u8`.",
+      "target": "i32[0..255]"
+    },
+    {
+      "k": "alias",
+      "name": "hextet",
+      "doc": "One sixteen-bit group of an IPv6 address. Rust spells this `u16`.",
+      "target": "i32[0..65535]"
+    },
+    {
+      "k": "alias",
+      "name": "port",
+      "doc": "A TCP or UDP port.",
+      "target": "i32[0..65535]"
+    },
+    {
+      "k": "alias",
+      "name": "IpV4",
+      "doc": "An IPv4 address: four octets, in network order, so `[1, 2, 3, 4]` is 1.2.3.4. Rust spells this `[u8; 4]`, which is what `Ipv4Addr::from` takes and `octets()` gives back.",
+      "target": "[octet; 4]"
+    },
+    {
+      "k": "alias",
+      "name": "IpV6",
+      "doc": "An IPv6 address: eight hextets, in network order, so `::1` is seven zeros and a one. Rust spells this `[u16; 8]`, which is what `Ipv6Addr::from` takes and `segments()` gives back.",
+      "target": "[hextet; 8]"
+    },
+    {
+      "k": "enum",
+      "name": "IpAddr",
+      "doc": "Either kind of address, tagged, since four numbers and eight numbers are both lists and a value would not otherwise say which it is.",
+      "variants": [
+        { "name": "v4", "payload": "IpV4" },
+        { "name": "v6", "payload": "IpV6" }
+      ]
+    },
+    {
+      "k": "alias",
+      "name": "label",
+      "doc": "One label of a domain name: one to sixty-three bytes. A label on the wire is ASCII — punycode for anything else — so its scalar values and its bytes are the same count, and both are bounded so that neither reading of `length` lets a long one through.",
+      "target": "str[len 1..63, size ..63]"
+    },
+    {
+      "k": "struct",
+      "name": "Domain",
+      "doc": "A domain name as its labels, lowercase: `example.com` is `[\"example\", \"com\"]`. A whole name is at most 253 bytes, which no bound on a list of labels can say; a proof of a parser is where that would be held.",
+      "fields": [
+        { "name": "labels", "ty": "[label; 1..127]" }
+      ]
+    },
+    {
+      "k": "enum",
+      "name": "Host",
+      "doc": "What a URL's host is: a name to resolve, or an address to connect to.",
+      "variants": [
+        { "name": "name", "payload": "Domain" },
+        { "name": "ip", "payload": "IpAddr" }
+      ]
+    },
+    {
+      "k": "alias",
+      "name": "Scheme",
+      "doc": "The two schemes a website answers to.",
+      "target": {
+        "k": "union",
+        "members": [
+          { "k": "literal", "value": { "str": "http" } },
+          { "k": "literal", "value": { "str": "https" } }
+        ]
+      }
+    },
+    {
+      "k": "struct",
+      "name": "Origin",
+      "doc": "Where a website is: a scheme, a host, and a port when it is not the scheme's own.",
+      "fields": [
+        { "name": "scheme", "ty": "Scheme" },
+        { "name": "host", "ty": "Host" },
+        { "name": "port", "ty": "port?" }
+      ]
+    }
+  ],
+  "functions": [
+    {
+      "name": "parse_v4",
+      "doc": "The address a dotted quad spells, or nothing if the text is not one.\n\nFour decimal numbers from 0 to 255 joined by dots, and nothing else: no leading zeros, because `01.2.3.4` has been read as octal by some platforms and as decimal by others, and an address that two platforms read differently is not an address; no spaces, no port, no prefix length, no hexadecimal.",
+      "params": [{ "name": "text", "ty": "str" }],
+      "ret": "IpV4?"
+    },
+    {
+      "name": "format_v4",
+      "doc": "An address as a dotted quad, which has only one spelling.",
+      "params": [{ "name": "ip", "ty": "IpV4" }],
+      "ret": "str"
+    },
+    {
+      "name": "parse_v6",
+      "doc": "The address IPv6 text spells, or nothing if it is not one.\n\nThe text of RFC 4291: up to eight groups of one to four hexadecimal digits in either case, one `::` standing for a run of one or more zero groups, and the last two groups allowed to be a dotted quad. Nothing else: no zone (`fe80::1%eth0`), no brackets, no port, no prefix length. Every platform's parser accepts all of the former; they part ways on the latter, which is why it is said here.",
+      "params": [{ "name": "text", "ty": "str" }],
+      "ret": "IpV6?"
+    },
+    {
+      "name": "format_v6",
+      "doc": "An address as RFC 5952 says to write it, which is the one spelling every reader agrees on: lowercase hexadecimal, no leading zeros in a group, `::` for the longest run of two or more zero groups and for the first such run when two are as long, a lone zero group left as `0`, and an IPv4-mapped address (`::ffff:0:0/96`) with its last four bytes as a dotted quad — which the RFC recommends, and which not every platform's printer does.",
+      "params": [{ "name": "ip", "ty": "IpV6" }],
+      "ret": "str"
+    }
+  ]
+}

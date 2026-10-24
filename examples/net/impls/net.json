@@ -1,0 +1,122 @@
+{
+  "version": "1.0",
+  "doc": "Four propositions about addresses, each proved three times: with Python's `ipaddress`, with Rust's `std::net`, and in Node, which has nothing that parses an address and so gets one written for it. Each proof is a process that reads one request per line and answers it. Paths are relative to this file.",
+  "environments": [
+    {
+      "id": "python",
+      "language": "python",
+      "doc": "CPython, standard library only.",
+      "reach": { "k": "subprocess", "command": "python3", "args": ["../proofs/net.py"], "persistent": true, "timeout_ms": 15000 }
+    },
+    {
+      "id": "node",
+      "language": "typescript",
+      "doc": "Node 24 or later, which runs TypeScript by dropping the types.",
+      "reach": { "k": "subprocess", "command": "node", "args": ["../proofs/net.ts"], "persistent": true, "timeout_ms": 15000 }
+    },
+    {
+      "id": "rust",
+      "language": "rust",
+      "doc": "A binary built from ../rust with `cargo build --release`. Until it is built, this environment is simply not there.",
+      "reach": { "k": "subprocess", "command": "../rust/target/release/net", "persistent": true, "timeout_ms": 15000 }
+    }
+  ],
+  "implementations": [
+    {
+      "id": "parse_v4.ipaddress",
+      "proves": "net::parse_v4",
+      "environment": "python",
+      "entry": "ipaddress.IPv4Address",
+      "cost": { "time": "o1", "space": "o1" },
+      "notes": "Where this is called `ipaddress.IPv4Address`: the constructor is the parser, and raises on anything that is not an address. Leading zeros have been refused since 3.9.5."
+    },
+    {
+      "id": "format_v4.ipaddress",
+      "proves": "net::format_v4",
+      "environment": "python",
+      "entry": "str(ipaddress.IPv4Address)",
+      "cost": { "time": "o1", "space": "o1" },
+      "notes": "Where this is called `str()` of an `IPv4Address` built from the four bytes."
+    },
+    {
+      "id": "parse_v6.ipaddress",
+      "proves": "net::parse_v6",
+      "environment": "python",
+      "entry": "ipaddress.IPv6Address",
+      "cost": { "time": "o1", "space": "o1" },
+      "notes": "Where this is called `ipaddress.IPv6Address`. It has accepted a zone since 3.9, which the proposition does not, so the proof refuses one first."
+    },
+    {
+      "id": "format_v6.ipaddress",
+      "proves": "net::format_v6",
+      "environment": "python",
+      "entry": "str(ipaddress.IPv6Address)",
+      "cost": { "time": "o1", "space": "o1" },
+      "notes": "Where this is called `str()` of an `IPv6Address`, which compresses as RFC 5952 says but writes an IPv4-mapped address in hexadecimal; the proof writes that case as the dotted quad the RFC recommends."
+    },
+    {
+      "id": "parse_v4.node",
+      "proves": "net::parse_v4",
+      "environment": "node",
+      "entry": "parseIPv4",
+      "cost": { "time": "o1", "space": "o1" },
+      "notes": "Node has `net.isIPv4`, which says yes or no and never which address, so the parser is written out: a strict dotted quad with no leading zeros."
+    },
+    {
+      "id": "format_v4.node",
+      "proves": "net::format_v4",
+      "environment": "node",
+      "entry": "formatIPv4",
+      "cost": { "time": "o1", "space": "o1" },
+      "notes": "Four numbers joined by dots; there is nothing to call."
+    },
+    {
+      "id": "parse_v6.node",
+      "proves": "net::parse_v6",
+      "environment": "node",
+      "entry": "parseIPv6",
+      "cost": { "time": "o1", "space": "o1" },
+      "notes": "Written out, as for IPv4: `::` expanded, a trailing dotted quad allowed, and no zone."
+    },
+    {
+      "id": "format_v6.node",
+      "proves": "net::format_v6",
+      "environment": "node",
+      "entry": "formatIPv6",
+      "cost": { "time": "o1", "space": "o1" },
+      "notes": "RFC 5952, written out: the longest run of zeros, the first on a tie, and the dotted quad for an IPv4-mapped address."
+    },
+    {
+      "id": "parse_v4.std",
+      "proves": "net::parse_v4",
+      "environment": "rust",
+      "entry": "Ipv4Addr::from_str",
+      "cost": { "time": "o1", "space": "o1" },
+      "notes": "Where this is called `Ipv4Addr::from_str`, with `octets()` for the four bytes. Strict: leading zeros are refused."
+    },
+    {
+      "id": "format_v4.std",
+      "proves": "net::format_v4",
+      "environment": "rust",
+      "entry": "Ipv4Addr::to_string",
+      "cost": { "time": "o1", "space": "o1" },
+      "notes": "Where this is called `Ipv4Addr::from([u8; 4])`, then `to_string()`."
+    },
+    {
+      "id": "parse_v6.std",
+      "proves": "net::parse_v6",
+      "environment": "rust",
+      "entry": "Ipv6Addr::from_str",
+      "cost": { "time": "o1", "space": "o1" },
+      "notes": "Where this is called `Ipv6Addr::from_str`, with `segments()` for the eight hextets. Refuses a zone, as the proposition does."
+    },
+    {
+      "id": "format_v6.std",
+      "proves": "net::format_v6",
+      "environment": "rust",
+      "entry": "Ipv6Addr::to_string",
+      "cost": { "time": "o1", "space": "o1" },
+      "notes": "Where this is called `Ipv6Addr::from([u16; 8])`, then `to_string()`, whose `Display` is RFC 5952 including the dotted quad for an IPv4-mapped address."
+    }
+  ]
+}

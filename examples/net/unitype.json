@@ -1,0 +1,11 @@
+{
+  "unitype": "1.0",
+  "name": "net",
+  "universes": ["universes"],
+  "impls": ["impls"],
+  "conform": ["conform"],
+  "gen": {
+    "out": "generated",
+    "langs": ["python", "typescript", "rust"]
+  }
+}
