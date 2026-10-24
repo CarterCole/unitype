@@ -25,6 +25,17 @@ pub struct Constructors {
     pub variant: fn(&str, &str, Option<&str>) -> String,
     /// Writes a value with no type to guide it.
     pub plain: fn(&Value) -> String,
+    /// Brackets parts that are already written as this language's tuple.
+    pub tuple: fn(&[String]) -> String,
+}
+
+/// A tuple in the languages that write one with parentheses, which need a
+/// trailing comma to tell a one-element tuple from a parenthesised value.
+pub(crate) fn parenthesised(parts: &[String]) -> String {
+    match parts {
+        [only] => format!("({only},)"),
+        _ => format!("({})", parts.join(", ")),
+    }
 }
 
 /// Writes a value as a literal of `ty`.
@@ -58,12 +69,7 @@ pub fn typed(
                 .zip(items)
                 .map(|(t, i)| typed(ws, profile, how, i, t))
                 .collect();
-            (how.plain)(&Value::Tuple(
-                // Rebuilt so the untyped writer supplies this language's
-                // bracketing, with the parts already written.
-                parts.iter().map(|p| Value::Str(p.clone())).collect(),
-            ))
-            .replace('"', "")
+            (how.tuple)(&parts)
         }
 
         // Whichever alternative it actually is decides how it is written, which
@@ -182,7 +188,10 @@ mod tests {
             {"name":"note","ty":"str?"}]},
         {"k":"enum","name":"Colour","variants":[
             {"name":"Red"},{"name":"Custom","payload":"str"}]},
-        {"k":"struct","name":"Bag","fields":[{"name":"items","ty":"[Circle]"}]}]}]}"#;
+        {"k":"struct","name":"Bag","fields":[{"name":"items","ty":"[Circle]"}]},
+        {"k":"struct","name":"Pairs","fields":[
+            {"name":"named","ty":{"k":"tuple","items":["i64","str"]}},
+            {"name":"point","ty":{"k":"tuple","items":["i64","i64"]}}]}]}]}"#;
 
     fn ws() -> CheckedWorkspace {
         check_workspace(Workspace::from_json(WS).expect("reads")).expect("checks")
@@ -273,6 +282,50 @@ mod tests {
         let written = write("python", json, &named("Bag"));
         assert!(written.contains("items=[Circle("), "{written}");
         assert_eq!(written.matches("Circle(").count(), 2, "{written}");
+    }
+
+    #[test]
+    fn a_tuple_with_a_string_in_it_keeps_the_quotes_around_the_string() {
+        let json = r#"{"named":[1,"a"],"point":[1,2]}"#;
+        assert_eq!(
+            write("python", json, &named("Pairs")),
+            r#"Pairs(named=(1, "a"), point=(1, 2))"#
+        );
+        assert_eq!(
+            write("typescript", json, &named("Pairs")),
+            r#"{ named: [1, "a"], point: [1, 2] }"#
+        );
+        assert_eq!(
+            write("rust", json, &named("Pairs")),
+            r#"Pairs { named: (1, "a".to_string()), point: (1, 2) }"#
+        );
+    }
+
+    #[test]
+    fn a_tuple_of_numbers_is_not_rewritten_as_strings() {
+        let json = r#"{"named":[7,"x"],"point":[3,4]}"#;
+        let rust = write("rust", json, &named("Pairs"));
+        assert!(rust.contains("point: (3, 4)"), "{rust}");
+        assert!(!rust.contains("3.to_string()"), "{rust}");
+    }
+
+    #[test]
+    fn a_one_element_tuple_keeps_its_trailing_comma_where_it_needs_one() {
+        // A schema cannot declare one — canonical form collapses a one-element
+        // tuple to its element — so the type and value are built by hand.
+        let ty = Type::Tuple {
+            items: vec![Type::String],
+        };
+        let value = Value::Tuple(vec![Value::Str("only".into())]);
+        let ws = ws();
+        let write = |lang: &str| {
+            let profile = profile(lang).expect("ships");
+            let how = crate::constructors(lang).expect("has constructors");
+            typed(&ws, &profile, &how, &value, &ty)
+        };
+        assert_eq!(write("python"), r#"("only",)"#);
+        assert_eq!(write("rust"), r#"("only".to_string(),)"#);
+        assert_eq!(write("typescript"), r#"["only"]"#);
     }
 
     #[test]

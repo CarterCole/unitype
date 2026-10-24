@@ -136,6 +136,7 @@ pub fn constructors(language: &str) -> Option<literal::Constructors> {
                 None => format!("{{ $tag: {tag:?} }}"),
             },
             plain: typescript::literal,
+            tuple: |parts| format!("[{}]", parts.join(", ")),
         }),
         "python" | "py" => Some(literal::Constructors {
             record: |name, fields| {
@@ -152,6 +153,7 @@ pub fn constructors(language: &str) -> Option<literal::Constructors> {
                 None => format!("{{\"$tag\": {tag:?}}}"),
             },
             plain: python::literal,
+            tuple: literal::parenthesised,
         }),
         "rust" | "rs" => Some(literal::Constructors {
             record: |name, fields| {
@@ -166,6 +168,7 @@ pub fn constructors(language: &str) -> Option<literal::Constructors> {
                 None => format!("{name}::{tag}"),
             },
             plain: rust::literal,
+            tuple: literal::parenthesised,
         }),
         _ => None,
     }
