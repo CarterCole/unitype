@@ -19,6 +19,7 @@ fn canonical_language(lang: &str) -> &str {
         "ts" => "typescript",
         "py" => "python",
         "rs" => "rust",
+        "hs" => "haskell",
         other => other,
     }
 }
@@ -56,7 +57,7 @@ pub fn run(
         let how = unitype_codegen::constructors(lang).ok_or_else(|| {
             Failure::usage(format!(
                 "`{lang}` is not a language this writes. \
-                 Try json, typescript, python, or rust."
+                 Try json, typescript, python, rust, or haskell."
             ))
         })?;
         unitype_codegen::literal::typed(&project.workspace, &profile, &how, &value, &ty)

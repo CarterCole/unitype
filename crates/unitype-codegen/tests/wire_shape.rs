@@ -9,9 +9,10 @@
 //! what unitype itself says the value is. If a backend drifts, the languages
 //! stop agreeing here rather than somewhere expensive.
 //!
-//! All three are run: Python by the interpreter, TypeScript by a Node that
-//! reads it directly, Rust by building a small crate around the module. A file
-//! that only looks right is not evidence of anything.
+//! All four are run: Python by the interpreter, TypeScript by a Node that
+//! reads it directly, Rust by building a small crate around the module, Haskell
+//! by compiling it with GHC. A file that only looks right is not evidence of
+//! anything.
 //!
 //! Where an interpreter is missing, its half is skipped and said so. The point
 //! of generating for a language is that the language is not this program's
@@ -20,7 +21,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use unitype_codegen::{Backend, GenOptions, python, rust, typescript};
+use unitype_codegen::{Backend, GenOptions, haskell, python, rust, typescript};
 use unitype_core::check::{CheckedWorkspace, check_workspace};
 use unitype_core::ir::{Type, TypeRef};
 use unitype_core::{Ident, Workspace};
@@ -676,6 +677,7 @@ fn every_backend_names_the_same_fields() {
         Box::new(typescript::TypeScript) as Box<dyn Backend>,
         Box::new(python::Python),
         Box::new(rust::Rust),
+        Box::new(haskell::Haskell),
     ] {
         let files = backend
             .generate(&ws, &GenOptions::default())
@@ -1221,4 +1223,409 @@ fn main() {
         "and what is read is the bytes"
     );
     assert_eq!(produced["blobs"], serde_json::json!([0, 1, 2]));
+}
+
+/// Compiles a Haskell program that sits beside the generated modules, and says
+/// where the executable is.
+///
+/// Only the packages that come with GHC are used, so there is nothing to fetch.
+/// It is built before it is run, so that a driver that fails when it runs is
+/// not taken for a module that would not compile.
+fn build_haskell(root: &Path, main: &str) -> PathBuf {
+    let built = Command::new("ghc")
+        .args(["-v0", "-O0", "-outputdir", "obj", "-o", "check", main])
+        .current_dir(root)
+        .output()
+        .expect("runs ghc");
+    assert!(
+        built.status.success(),
+        "the generated Haskell did not build:\n{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+    root.join("check")
+}
+
+/// The driver's output, run with some arguments.
+fn run_haskell(program: &Path, args: &[&str]) -> serde_json::Value {
+    let output = Command::new(program)
+        .args(args)
+        .output()
+        .expect("runs the program");
+    assert!(
+        output.status.success(),
+        "the generated Haskell failed when it ran:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("valid JSON")
+}
+
+#[test]
+fn the_generated_haskell_compiles_and_produces_the_shape_it_promised() {
+    if !have("ghc") {
+        eprintln!("no ghc on this machine; skipping");
+        return;
+    }
+
+    let dir = scratch("haskell_wire");
+    let root = emit(&haskell::Haskell, &dir);
+    std::fs::write(
+        root.join("Check.hs"),
+        r#"{-# LANGUAGE OverloadedStrings #-}
+module Main (main) where
+
+import qualified Data.Map.Strict as Map
+import Data.Text (Text)
+import qualified Data.Text as T
+import qualified Data.Text.IO as TIO
+import System.Environment (getArgs)
+import UnitypeSupport
+import Demo
+
+decode :: FromJson a => Text -> IO a
+decode text = either fail pure (parseJson text >>= fromJson)
+
+-- Read the way it arrives, written the way it leaves: what comes out is
+-- whatever the generated types believe the shape to be.
+main :: IO ()
+main = do
+  [arrived, looseArrived] <- map T.pack <$> getArgs
+  circle <- decode arrived :: IO Circle
+  loose <- decode looseArrived :: IO Loose
+  let noted = circle {circleNote = Just "hi"}
+      red = fromJson (JString "red") :: Either String Colour
+      green = fromJson (JString "green") :: Either String Colour
+      forms = JObject $ Map.fromList
+        [ ("total", toJson (total [1, 2, 3, 4]))
+        , ("ordered", toJson (ordered [1, 2, 2, 5]))
+        , ("unordered", toJson (ordered [3, 1]))
+        , ("note", toJson (note_or circle))
+        , ("small", toJson (measure SizeSmall))
+        , ("large", toJson (measure (SizeLarge 21)))
+        , ("two_tags", toJson (two_tags circle))
+        , ("mark", toJson (mark 5))
+        , ("last", toJson (last_of [1, 2, 3]))
+        , ("last_empty", toJson (last_of []))
+        , ("radius", toJson (radius_of circle))
+        , ("positive", toJson (positive 3))
+        , ("not_positive", toJson (positive (-1)))
+        , ("fallback", toJson (note_or_else circle (Just "x")))
+        , ("no_fallback", toJson (note_or_else circle Nothing))
+        , ("noted", toJson (note_or_else noted Nothing))
+        , ("small_hint", toJson (hint SizeSmall))
+        , ("large_hint", toJson (hint (SizeLarge 21)))
+        , ("noted_as", toJson (noted_as noted "hi"))
+        , ("not_noted_as", toJson (noted_as circle "hi"))
+        , ("with_gap", toJson (with_gap 5))
+        , ("pin", toJson (pin_at 5))
+        , ("loose", toJson (loose_at 5))
+        , ("gaps", toJson gaps)
+        , ("pair", toJson pair)
+        , ("bound_pair", toJson (bound_pair 5))
+        , ("settled_small", toJson (settled [1, 2, 3]))
+        , ("settled_large", toJson (settled [4]))
+        ]
+      out = JObject $ Map.fromList
+        [ ("circle", toJson circle)
+        , ("loose", toJson loose)
+        , ("label", toJson (label_of circle))
+        , ("red", JString (either (const "refused") (const "red") red))
+        , ("green", JBool (either (const False) (const True) green))
+        , ("forms", forms)
+        ]
+  either fail TIO.putStrLn (renderJson out)
+"#,
+    )
+    .expect("writes the driver");
+
+    let program = build_haskell(&root, "Check.hs");
+    let produced = run_haskell(&program, &[&expected_json(), &loose_json()]);
+
+    assert_eq!(
+        normalize(&produced["circle"].to_string()),
+        normalize(&expected_json()),
+        "the generated record read and wrote a different shape than unitype \
+         says the value has"
+    );
+    assert_eq!(
+        normalize(&produced["loose"].to_string()),
+        normalize(&loose_json()),
+        "fields that may be absent have to read when they are not there, and \
+         be left out again when they are written"
+    );
+    assert_eq!(
+        normalize(&produced["label"].to_string()),
+        normalize(LABEL),
+        "the body, as Haskell, answered differently"
+    );
+    assert_eq!(
+        normalize(&produced["forms"].to_string()),
+        normalize(FORMS),
+        "the bodies, as Haskell, answered differently"
+    );
+    assert_eq!(produced["red"], "red", "a name travels as the string it is");
+    assert_eq!(
+        produced["green"], false,
+        "a string the union does not admit should be refused"
+    );
+}
+
+#[test]
+fn generated_haskell_generics_compile_and_hold_what_unitype_says() {
+    if !have("ghc") {
+        eprintln!("no ghc on this machine; skipping");
+        return;
+    }
+    let dir = scratch("haskell_generic");
+    let root = emit_from(&generic_workspace(), &haskell::Haskell, &dir);
+    std::fs::write(
+        root.join("Check.hs"),
+        r#"{-# LANGUAGE OverloadedStrings #-}
+module Main (main) where
+
+import Data.Int (Int64)
+import qualified Data.Map.Strict as Map
+import Data.Text (Text)
+import qualified Data.Text as T
+import qualified Data.Text.IO as TIO
+import System.Environment (getArgs)
+import UnitypeSupport
+import Generic
+
+main :: IO ()
+main = do
+  [arrived] <- map T.pack <$> getArgs
+  uses <- either fail pure (parseJson arrived >>= fromJson) :: IO Uses
+  let out = JObject $ Map.fromList
+        [ ("uses", toJson uses)
+        , ("konst", toJson (konst (3 :: Int64) ("a" :: Text)))
+        , ("unbox", toJson (unbox (Box [4 :: Int64])))
+        ]
+  either fail TIO.putStrLn (renderJson out)
+"#,
+    )
+    .expect("writes the driver");
+
+    let program = build_haskell(&root, "Check.hs");
+    let produced = run_haskell(&program, &[&uses_json()]);
+    agrees("Haskell", &produced.to_string());
+}
+
+#[test]
+fn generated_haskell_holds_maps_keyed_by_integers_and_bytes_the_way_unitype_writes_them() {
+    if !have("ghc") {
+        eprintln!("no ghc on this machine; skipping");
+        return;
+    }
+    let dir = scratch("haskell_carried");
+    let root = emit_from(&carried_workspace(), &haskell::Haskell, &dir);
+    std::fs::write(
+        root.join("Check.hs"),
+        r#"{-# LANGUAGE OverloadedStrings #-}
+module Main (main) where
+
+import qualified Data.ByteString as BS
+import qualified Data.Map.Strict as Map
+import Data.Text (Text)
+import qualified Data.Text as T
+import qualified Data.Text.IO as TIO
+import Data.Word (Word8)
+import System.Environment (getArgs)
+import UnitypeSupport
+import Carried
+
+main :: IO ()
+main = do
+  [arrived] <- map T.pack <$> getArgs
+  doc <- either fail pure (parseJson arrived >>= fromJson) :: IO Doc
+  -- Every length from nothing up, so that each amount of padding is written.
+  let lengths = [toJson (BS.pack (map (\i -> i * 37 + 250) [0 .. n])) | n <- [0 .. 7 :: Word8], n > 0]
+                  ++ [toJson (BS.empty)]
+      -- Text that is not base64 as unitype writes it, or not text at all.
+      refused =
+        [ either (const True) (const False) (fromJson j :: Either String BS.ByteString)
+        | j <- map JString ["A", "A===", "A!==", "=AAA", "AA=A"] ++ [JArray [JInt 1, JInt 2]]
+        ]
+      out = JObject $ Map.fromList
+        [ ("doc", toJson doc)
+        , ("lengths", JArray lengths)
+        , ("refused", JArray (map JBool refused))
+        , ("blob", JArray (map (JInt . toInteger) (BS.unpack (docBlob doc))))
+        , ("blobs", JArray (map (JInt . toInteger . BS.length) (docBlobs doc)))
+        ]
+  either fail TIO.putStrLn (renderJson out)
+"#,
+    )
+    .expect("writes the driver");
+
+    let program = build_haskell(&root, "Check.hs");
+    let produced = run_haskell(&program, &[&DOC.replace('\n', "")]);
+    holds_the_doc("Haskell", &produced["doc"]);
+
+    // Its base64 is its own, so it is checked against someone else's. The
+    // empty one comes last, because the driver builds the others from `[0 .. n]`.
+    use base64::Engine as _;
+    let mut want: Vec<String> = (1..=7u8)
+        .map(|n| {
+            let bytes: Vec<u8> = (0..=n)
+                .map(|i| i.wrapping_mul(37).wrapping_add(250))
+                .collect();
+            base64::engine::general_purpose::STANDARD.encode(bytes)
+        })
+        .collect();
+    want.push(String::new());
+    assert_eq!(
+        produced["lengths"],
+        serde_json::json!(want),
+        "the bytes were written some other way than standard, padded base64"
+    );
+    assert_eq!(
+        produced["refused"],
+        serde_json::json!([true, true, true, true, true, true]),
+        "text that is not base64 should be refused"
+    );
+    assert_eq!(
+        produced["blob"],
+        serde_json::json!([1, 2, 3]),
+        "and what is read is the bytes"
+    );
+    assert_eq!(produced["blobs"], serde_json::json!([0, 1, 2]));
+
+    let source = std::fs::read_to_string(root.join("Carried.hs")).expect("reads the module");
+    for expected in [
+        "docBy_number :: Map Int64 Text",
+        "docBlob :: ByteString",
+        "docBlobs :: [ByteString]",
+        "docLabels :: Map Int64 ByteString",
+    ] {
+        assert!(
+            source.contains(expected),
+            "missing `{expected}` in:\n{source}"
+        );
+    }
+}
+
+#[test]
+fn a_value_cast_as_haskell_compiles_and_means_the_value_it_was_cast_from() {
+    if !have("ghc") {
+        eprintln!("no ghc on this machine; skipping");
+        return;
+    }
+
+    // Both universes in one workspace, so that one program can hold a literal
+    // of each.
+    let mut universes = Vec::new();
+    for text in [UNIVERSE, CARRIED_UNIVERSE] {
+        let parsed: serde_json::Value = serde_json::from_str(text).expect("valid JSON");
+        universes.extend(parsed["universes"].as_array().cloned().expect("universes"));
+    }
+    let ws = check_workspace(
+        Workspace::from_json(&serde_json::json!({ "universes": universes }).to_string())
+            .expect("reads"),
+    )
+    .expect("checks");
+
+    // A circle with the optional there, an inherited optional that is, a struct
+    // with an `any` holding a record, an enum with and without a payload, a
+    // union of names, and a document of maps and bytes.
+    let cases: [(&str, &str, &str); 7] = [
+        (
+            "demo::Circle",
+            "Circle",
+            r#"{"id":"c-1","kind":"circle","radius":2.5,"centre":[1.5,-0.5],
+                "tags":["round","say \"hi\" é"],"note":"hi"}"#,
+        ),
+        ("demo::Pin", "Pin", r#"{"at":-5,"before":3,"label":"x"}"#),
+        (
+            "demo::Loose",
+            "Loose",
+            r#"{"at":5,"when":7,"extra":{"a":[1,2.5,null,"s"]},"nothing":null}"#,
+        ),
+        ("demo::Size", "Size", r#"{"$tag":"large","value":21}"#),
+        ("demo::Size", "Size", r#"{"$tag":"small"}"#),
+        ("demo::Colour", "Colour", r#""blue""#),
+        (
+            "carried::Doc",
+            "Doc",
+            r#"{"by_number":{"1":"one","20":"twenty"},"by_name":{"a":1},"blob":"AQID",
+                "blobs":["","AQ=="],"maybe":"AAEC","labels":{"7":"/w=="}}"#,
+        ),
+    ];
+
+    let how = unitype_codegen::constructors("haskell").expect("has constructors");
+    let profile = unitype_core::lang::profile("haskell").expect("ships");
+    let mut items = Vec::new();
+    let mut expected = Vec::new();
+    for (qualified, short, data) in cases {
+        let name: unitype_core::QualifiedName = qualified.parse().expect("a name");
+        let ty = Type::Ref(TypeRef::qualified(name.universe.clone(), name.name.clone()));
+        let value = ws.read_json(data, &ty).expect("a real value");
+        let literal = unitype_codegen::literal::typed(&ws, &profile, &how, &value, &ty);
+        items.push(format!("toJson ({literal} :: {short})"));
+        expected.push(ws.write_json(&value, &ty).expect("writes"));
+    }
+
+    let dir = scratch("haskell_cast");
+    let root = dir.join("haskell");
+    std::fs::create_dir_all(&root).expect("makes the directory");
+    for file in haskell::Haskell
+        .generate(&ws, &GenOptions::default())
+        .expect("generates")
+    {
+        std::fs::write(
+            root.join(file.path.file_name().expect("a name")),
+            file.contents,
+        )
+        .expect("writes");
+    }
+    std::fs::write(
+        root.join("Check.hs"),
+        format!(
+            r#"{{-# LANGUAGE OverloadedStrings #-}}
+module Main (main) where
+
+import qualified Data.ByteString as BS
+import qualified Data.Map.Strict as Map
+import qualified Data.Text.IO as TIO
+import Carried (Doc (..))
+import Demo (Circle (..), Colour (..), Loose (..), Pin (..), Size (..))
+import UnitypeSupport
+
+main :: IO ()
+main = mapM_ (either fail TIO.putStrLn . renderJson)
+  [ {}
+  ]
+"#,
+            items.join("\n  , ")
+        ),
+    )
+    .expect("writes the driver");
+
+    let built = Command::new("ghc")
+        .args(["-v0", "-O0", "-outputdir", "obj", "-o", "check", "Check.hs"])
+        .current_dir(&root)
+        .output()
+        .expect("runs ghc");
+    assert!(
+        built.status.success(),
+        "a literal written for Haskell did not compile:\n{}\n{}",
+        String::from_utf8_lossy(&built.stderr),
+        std::fs::read_to_string(root.join("Check.hs")).unwrap_or_default()
+    );
+    let output = Command::new(root.join("check")).output().expect("runs");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let written = String::from_utf8(output.stdout).expect("text");
+    let produced: Vec<&str> = written.lines().collect();
+    assert_eq!(produced.len(), expected.len(), "{written}");
+    for ((got, want), (qualified, _, _)) in produced.iter().zip(&expected).zip(cases) {
+        assert_eq!(
+            normalize(got),
+            normalize(want),
+            "the literal written for {qualified} means some other value"
+        );
+    }
 }

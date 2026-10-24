@@ -68,7 +68,7 @@ today.
 - **The expression language.** Total by construction, and now able to say
   something: a `fold` carries a value through a list, `case` and `match` take
   an optional and an enum apart, and a closed set of operations compares,
-  adds, and counts. `demo::sorted` checks that a list is in order in all three
+  adds, and counts. `demo::sorted` checks that a list is in order in all four
   target languages without anyone implementing it.
 - **Reading.** Text becomes a value *against* a type, which is what lets an
   object become a map and `"Red"` become a variant.
@@ -81,15 +81,19 @@ today.
   has somewhere to run where it can only answer. Behind `--features wasm`,
   because the engine is a large thing to build for a capability not every
   workspace wants.
-- **Code generation.** TypeScript, Python, and Rust — checked by running the
-  generated code in all three and comparing what it produces against what
-  unitype says the value is. The Python and Node harnesses are each reached
-  through the dispatcher as a proof. Generic declarations and signatures keep
-  their parameters and bounds in all three; generic Python is written in the
-  type parameter syntax of 3.12, and everything else still reads on 3.10. A
-  value written against its type takes the shape each language's own JSON
-  gives it — a tuple is an array, a map an object, bytes base64 text — so what
-  unitype writes, and what a proof is sent, is what the generated code reads.
+- **Code generation.** TypeScript, Python, Rust, and Haskell — checked by
+  running the generated code in all four and comparing what it produces against
+  what unitype says the value is. The Python, Node and Haskell harnesses are
+  each reached through the dispatcher as a proof. Generic declarations and
+  signatures keep their parameters and bounds in all four; generic Python is
+  written in the type parameter syntax of 3.12, and everything else still reads
+  on 3.10. A value written against its type takes the shape each language's own
+  JSON gives it — a tuple is an array, a map an object, bytes base64 text — so
+  what unitype writes, and what a proof is sent, is what the generated code
+  reads. Haskell needs nothing but what comes with GHC: its instances are
+  written against a small JSON module generated beside the universes, so
+  nothing is fetched, and a field is named after the type that holds it
+  (`circleRadius`) because a Haskell module has one space for them all.
 - **The `unitype` command**, over all of it.
 - **Conformance.** The proofs of one proposition checked against each other,
   since `sort` and `reverse` have the same type and only running both tells them
@@ -102,9 +106,9 @@ today.
 - **Reflection.** A built-in universe describes the representation, and is
   checked against it, so it cannot drift.
 
-735 tests, including the subtyping, inference and shape laws as property
+779 tests, including the subtyping, inference and shape laws as property
 tests, and pinned golden vectors that make canonical drift impossible to do by
-accident. 746 with the sandbox turned on.
+accident. 790 with the sandbox turned on.
 
 ```bash
 cargo test
@@ -146,6 +150,8 @@ cargo run -p unitype-cli -- --project examples/demo bridge \
 
 # The same value, written the way each language would have written it.
 cargo run -p unitype-cli -- --project examples/demo cast --lang rust \
+    --type demo::Circle --data '{"id":"c-1","kind":"circle","radius":2.5}'
+cargo run -p unitype-cli -- --project examples/demo cast --lang haskell \
     --type demo::Circle --data '{"id":"c-1","kind":"circle","radius":2.5}'
 
 # Do the two proofs of sort actually agree? And do the two proofs of
@@ -204,6 +210,34 @@ The case that earns its place is a page sent as Latin-1. Its bytes only read as
 `café` if the declared charset is honoured, and the shortest way to fetch text
 in Node — `response.text()` — does not honour it. A proof written that way
 returns `caf�`, and `conform` says so and exits 4.
+
+A proof can be written in Haskell too, and nothing needs installing beyond GHC.
+`gen` writes a module for each universe and, beside them, the two every proof
+shares: `UnitypeSupport.hs`, which reads and writes the wire form, and
+`UnitypeHarness.hs`, which answers a request. A proof is an ordinary function of
+any number of arguments over the generated types — in `IO` if it has to wait —
+and `proves` is all it takes to be reachable:
+
+```haskell
+import Data.Int (Int64)
+import Data.List (sort)
+import UnitypeHarness (proves, unitypeMain)
+
+main :: IO ()
+main = unitypeMain [("sort", proves (sort :: [Int64] -> [Int64]))]
+```
+
+```bash
+cargo run -p unitype-cli -- --project examples/demo gen --lang haskell
+cd examples/demo && ghc -O -igenerated/haskell -outputdir obj -o proofs Proofs.hs
+```
+
+Then point an environment at the program, with a path relative to the manifest
+(`"reach": {"k": "subprocess", "command": "../proofs"}`), and register it as a
+proof of `demo::sort`. It is held to the signature like any other, and `conform`
+checks it against the Rust and Python ones. A proof of a generic proposition
+takes its elements as `Json`. Nothing in Haskell stops it looking inside one, so
+the free theorem is checked rather than assumed.
 
 ## What it looks like
 
@@ -339,7 +373,7 @@ choice a policy decision rather than an architectural one.
 protocol/PROTOCOL.md        the spec (normative), so this is implementable elsewhere
 crates/unitype-core/        symbolic IR, canonical form, addressing, checker
 crates/unitype-runtime/     implementation registry, executors, policy dispatch
-crates/unitype-codegen/     TypeScript, Python, and Rust backends
+crates/unitype-codegen/     TypeScript, Python, Rust, and Haskell backends
 crates/unitype-cli/         the `unitype` command
 examples/demo/              a worked example: shapes, three proofs of sort, a bridge
 examples/http/              one call, and what each platform calls it

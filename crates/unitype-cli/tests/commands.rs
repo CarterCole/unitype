@@ -6,7 +6,7 @@
 //! script what happened. That is what this checks, by running the binary
 //! against the example project.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 fn demo() -> PathBuf {
@@ -41,6 +41,15 @@ fn json(args: &[&str]) -> serde_json::Value {
     let mut with_json = vec!["--json"];
     with_json.extend_from_slice(args);
     serde_json::from_str(&stdout(&with_json)).expect("valid JSON")
+}
+
+fn have_ghc() -> bool {
+    Command::new("ghc")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
 }
 
 fn have_python() -> bool {
@@ -201,6 +210,16 @@ fn a_value_comes_out_as_something_each_language_would_have_written() {
         written("typescript")
     );
     assert!(written("json").starts_with("{\""), "{}", written("json"));
+
+    // Haskell names a field after the type that holds it, and `hs` is
+    // `haskell` for short.
+    let haskell = written("haskell");
+    assert!(
+        haskell.starts_with("(Circle { circleId = \"c-1\""),
+        "{haskell}"
+    );
+    assert!(haskell.contains("circleRadius = 2.5"), "{haskell}");
+    assert_eq!(haskell, written("hs"));
 }
 
 #[test]
@@ -1276,4 +1295,345 @@ if __name__ == "__main__":
         let said: serde_json::Value = serde_json::from_slice(&output.stdout).expect("JSON");
         assert_eq!(said["value"], answer, "{sig}");
     }
+}
+
+#[test]
+fn a_haskell_proof_is_handed_a_tuple_a_map_and_bytes_the_way_haskell_reads_them() {
+    // The same arguments and answers as the Python proof above, through the
+    // harness `gen` writes, and a program compiled from it.
+    if !have_ghc() {
+        eprintln!("no ghc on this machine; skipping");
+        return;
+    }
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("typed_arguments_haskell");
+    let _ = std::fs::remove_dir_all(&dir);
+    let write = |at: PathBuf, text: &str| {
+        std::fs::create_dir_all(at.parent().expect("a parent")).expect("makes a directory");
+        std::fs::write(at, text).expect("writes");
+    };
+    write(
+        dir.join("unitype.json"),
+        r#"{"name":"typed","universes":["universes"],"impls":["impls"]}"#,
+    );
+    write(
+        dir.join("universes/t.json"),
+        r#"{"name":"t","functions":[
+            {"name":"swap","params":[{"name":"p","ty":{"k":"tuple","items":["i64","str"]}}],
+             "ret":{"k":"tuple","items":["str","i64"]}},
+            {"name":"total","params":[{"name":"m","ty":"map<str, i64>"}],"ret":"i64"},
+            {"name":"size","params":[{"name":"b","ty":"bytes"}],"ret":"i64"},
+            {"name":"numbers","params":[{"name":"m","ty":"map<i64, str>"}],"ret":"[i64]"},
+            {"name":"numbered","params":[{"name":"n","ty":"i64"}],"ret":"map<i64, bytes>"},
+            {"name":"echo","params":[{"name":"b","ty":"bytes"}],"ret":"bytes"}]}"#,
+    );
+    let generated = in_project(
+        &dir,
+        &[
+            "gen",
+            "--lang",
+            "haskell",
+            "--out",
+            &dir.join("gen").to_string_lossy(),
+        ],
+    );
+    assert!(
+        generated.status.success(),
+        "{}",
+        String::from_utf8_lossy(&generated.stderr)
+    );
+    // The harness goes beside the proofs, and the module the types are in
+    // is written too.
+    for module in ["UnitypeHarness.hs", "UnitypeSupport.hs", "T.hs"] {
+        std::fs::create_dir_all(dir.join("hs")).expect("makes a directory");
+        std::fs::copy(
+            dir.join("gen/haskell").join(module),
+            dir.join("hs").join(module),
+        )
+        .unwrap_or_else(|e| panic!("could not copy {module}: {e}"));
+    }
+
+    // Written against the types the generated signatures give: a pair to take
+    // apart, maps to read, and bytes that are already bytes.
+    write(
+        dir.join("hs/Proofs.hs"),
+        r#"{-# LANGUAGE OverloadedStrings #-}
+module Main (main) where
+
+import Data.ByteString (ByteString)
+import qualified Data.ByteString as BS
+import Data.Int (Int64)
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
+import Data.Text (Text)
+import UnitypeHarness (proves, unitypeMain)
+
+swap :: (Int64, Text) -> (Text, Int64)
+swap (n, s) = (s, n)
+
+total :: Map Text Int64 -> Int64
+total = sum . Map.elems
+
+size :: ByteString -> Int64
+size = fromIntegral . BS.length
+
+-- Property names are text, so the keys were the digits of the integers.
+numbers :: Map Int64 Text -> [Int64]
+numbers = Map.keys
+
+numbered :: Int64 -> Map Int64 ByteString
+numbered n = Map.singleton n (BS.pack [fromIntegral n])
+
+echo :: ByteString -> ByteString
+echo = id
+
+main :: IO ()
+main = unitypeMain
+  [ ("swap", proves swap), ("total", proves total), ("size", proves size)
+  , ("numbers", proves numbers), ("numbered", proves numbered), ("echo", proves echo)
+  ]
+"#,
+    );
+    let built = Command::new("ghc")
+        .args([
+            "-v0",
+            "-O0",
+            "-outputdir",
+            "obj",
+            "-o",
+            "proofs",
+            "Proofs.hs",
+        ])
+        .current_dir(dir.join("hs"))
+        .output()
+        .expect("runs ghc");
+    assert!(
+        built.status.success(),
+        "the proofs did not build:\n{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    let program = dir.join("hs/proofs");
+    let entry = |id: &str, sig: &str, name: &str, time: &str| {
+        format!(
+            r#"{{"id":"{id}","proves":"t::{sig}","environment":"haskell","entry":"{name}",
+                "cost":{{"time":"{time}","space":"o1"}}}}"#
+        )
+    };
+    write(
+        dir.join("impls/hs.json"),
+        &format!(
+            r#"{{"version":"1.0","environments":[{{"id":"haskell","language":"haskell",
+                "reach":{{"k":"subprocess","command":{:?}}}}}],
+              "implementations":[{}]}}"#,
+            program.to_string_lossy(),
+            [
+                entry("swap.hs", "swap", "swap", "o1"),
+                entry("total.hs", "total", "total", "o_n"),
+                entry("size.hs", "size", "size", "o1"),
+                entry("numbers.hs", "numbers", "numbers", "o_n"),
+                entry("numbered.hs", "numbered", "numbered", "o1"),
+                entry("echo.hs", "echo", "echo", "o1"),
+            ]
+            .join(",")
+        ),
+    );
+
+    for (sig, args, answer) in [
+        ("t::swap", r#"[[1, "a"]]"#, serde_json::json!(["a", 1])),
+        ("t::total", r#"[{"a": 1, "b": 2}]"#, serde_json::json!(3)),
+        ("t::size", r#"["AQID"]"#, serde_json::json!(3)),
+        (
+            "t::numbers",
+            r#"[{"20": "b", "1": "a"}]"#,
+            serde_json::json!([1, 20]),
+        ),
+        ("t::numbered", "[7]", serde_json::json!({"7": "Bw=="})),
+        ("t::echo", r#"["AAEC"]"#, serde_json::json!("AAEC")),
+    ] {
+        let output = in_project(&dir, &["--json", "run", sig, "--args", args]);
+        assert!(
+            output.status.success(),
+            "{sig}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let said: serde_json::Value = serde_json::from_slice(&output.stdout).expect("JSON");
+        assert_eq!(said["value"], answer, "{sig}");
+        assert_eq!(
+            said["implementation"],
+            sig.replace("t::", "") + ".hs",
+            "{sig}"
+        );
+    }
+}
+
+#[test]
+fn a_haskell_proof_of_a_generic_proposition_is_held_to_its_theorem() {
+    // Parametricity is what the free theorem is about, and Haskell is where it
+    // comes from. A proof that never looks at an element holds; one that sorts
+    // when it happens to see integers does not, and is named.
+    if !have_ghc() {
+        eprintln!("no ghc on this machine; skipping");
+        return;
+    }
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("haskell_free_theorem");
+    let _ = std::fs::remove_dir_all(&dir);
+    let write = |at: PathBuf, text: &str| {
+        std::fs::create_dir_all(at.parent().expect("a parent")).expect("makes a directory");
+        std::fs::write(at, text).expect("writes");
+    };
+    write(
+        dir.join("unitype.json"),
+        r#"{"name":"free","universes":["universes"],"impls":["impls"]}"#,
+    );
+    write(
+        dir.join("universes/free.json"),
+        r#"{"name":"free","functions":[
+            {"name":"reverse","params_decl":[{"name":"T"}],
+             "params":[{"name":"xs","ty":{"k":"list","of":{"k":"param","name":"T"}}}],
+             "ret":{"k":"list","of":{"k":"param","name":"T"}}}]}"#,
+    );
+    let generated = in_project(
+        &dir,
+        &[
+            "gen",
+            "--lang",
+            "haskell",
+            "--out",
+            &dir.join("gen").to_string_lossy(),
+        ],
+    );
+    assert!(generated.status.success());
+    for module in ["UnitypeHarness.hs", "UnitypeSupport.hs"] {
+        std::fs::create_dir_all(dir.join("hs")).expect("makes a directory");
+        std::fs::copy(
+            dir.join("gen/haskell").join(module),
+            dir.join("hs").join(module),
+        )
+        .unwrap_or_else(|e| panic!("could not copy {module}: {e}"));
+    }
+
+    // A proof of `reverse<T>` is handed whatever `T` is as parsed JSON, which is
+    // as much as it can be told.
+    let build = |name: &str, source: &str| {
+        write(dir.join("hs").join(format!("{name}.hs")), source);
+        let built = Command::new("ghc")
+            .args([
+                "-v0",
+                "-O0",
+                "-outputdir",
+                &format!("obj_{name}"),
+                "-o",
+                name,
+            ])
+            .arg(format!("{name}.hs"))
+            .current_dir(dir.join("hs"))
+            .output()
+            .expect("runs ghc");
+        assert!(
+            built.status.success(),
+            "{name} did not build:\n{}",
+            String::from_utf8_lossy(&built.stderr)
+        );
+        dir.join("hs").join(name)
+    };
+    let lawful = build(
+        "lawful",
+        r#"module Main (main) where
+
+import UnitypeHarness (proves, unitypeMain)
+import UnitypeSupport (Json)
+
+flipped :: [Json] -> [Json]
+flipped = reverse
+
+main :: IO ()
+main = unitypeMain [("reverse", proves flipped)]
+"#,
+    );
+    let cheat = build(
+        "cheat",
+        r#"module Main (main) where
+
+import Data.List (sortOn)
+import UnitypeHarness (proves, unitypeMain)
+import UnitypeSupport (Json (..))
+
+sorted :: [Json] -> [Json]
+sorted xs
+  | all isInt xs = sortOn key xs
+  | otherwise = reverse xs
+  where
+    isInt (JInt _) = True
+    isInt _ = False
+    key (JInt n) = n
+    key _ = 0
+
+main :: IO ()
+main = unitypeMain [("reverse", proves sorted)]
+"#,
+    );
+
+    let manifest = |programs: &[(&str, &Path)]| {
+        let environments: Vec<String> = programs
+            .iter()
+            .map(|(id, program)| {
+                format!(
+                    r#"{{"id":"{id}","language":"haskell","reach":{{"k":"subprocess","command":{:?}}}}}"#,
+                    program.to_string_lossy()
+                )
+            })
+            .collect();
+        let implementations: Vec<String> = programs
+            .iter()
+            .map(|(id, _)| {
+                format!(
+                    r#"{{"id":"reverse.{id}","proves":"free::reverse","environment":"{id}",
+                        "entry":"reverse","cost":{{"time":"o_n","space":"o_n"}}}}"#
+                )
+            })
+            .collect();
+        format!(
+            r#"{{"version":"1.0","environments":[{}],"implementations":[{}]}}"#,
+            environments.join(","),
+            implementations.join(",")
+        )
+    };
+
+    write(dir.join("impls/hs.json"), &manifest(&[("lawful", &lawful)]));
+    let held = in_project(&dir, &["--json", "conform"]);
+    assert!(
+        held.status.success(),
+        "{}{}",
+        String::from_utf8_lossy(&held.stdout),
+        String::from_utf8_lossy(&held.stderr)
+    );
+    let report: serde_json::Value = serde_json::from_slice(&held.stdout).expect("JSON");
+    let theorem = &report["theorems"].as_array().expect("a list")[0];
+    for trial in theorem["trials"].as_array().expect("a list") {
+        assert_eq!(
+            trial["verdicts"]["reverse.lawful"], "held",
+            "ran, rather than being skipped into holding: {trial}"
+        );
+    }
+
+    write(
+        dir.join("impls/hs.json"),
+        &manifest(&[("lawful", &lawful), ("cheat", &cheat)]),
+    );
+    let broken = in_project(&dir, &["conform"]);
+    assert_eq!(
+        broken.status.code(),
+        Some(4),
+        "the same exit as a disagreement"
+    );
+    let said = String::from_utf8_lossy(&broken.stdout);
+    assert!(said.contains("reverse.cheat"), "{said}");
+    assert!(
+        said.contains("naturality"),
+        "the law it broke is named: {said}"
+    );
+    assert!(
+        !said.contains("x reverse.lawful"),
+        "the proof that held is not blamed: {said}"
+    );
 }

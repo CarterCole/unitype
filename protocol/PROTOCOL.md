@@ -753,7 +753,10 @@ writing one.
 
 A generic declaration or signature is generated with its parameters, and a
 reference with arguments is spelled through the profile's `apply` constructor
-(`{}<{}>`, `{}[{}]`): the declaration's name, then its arguments. A bound is
+(`{}<{}>`, `{}[{}]`): the declaration's name, then its arguments. A profile may
+say its arguments are `juxtaposed` (`{} {}`), written after the name and
+separated by spaces, with any that is itself an application bracketed, as
+`Box (Maybe Int64)` needs. A bound is
 written as the language writes one where it can. How a backend says what its
 language cannot — Rust refusing a parameter nothing uses, Python having no way
 to require two bounds at once — is the backend's to decide and to say, and

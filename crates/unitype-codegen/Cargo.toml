@@ -1,6 +1,6 @@
 [package]
 name = "unitype-codegen"
-description = "TypeScript, Python, and Rust code generation backends for unitype"
+description = "TypeScript, Python, Rust, and Haskell code generation backends for unitype"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

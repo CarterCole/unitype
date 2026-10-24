@@ -23,6 +23,7 @@
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod haskell;
 pub mod literal;
 pub mod python;
 pub mod rust;
@@ -111,6 +112,7 @@ pub fn backend(language: &str) -> Option<Box<dyn Backend>> {
         "typescript" | "ts" => Some(Box::new(typescript::TypeScript)),
         "python" | "py" => Some(Box::new(python::Python)),
         "rust" | "rs" => Some(Box::new(rust::Rust)),
+        "haskell" | "hs" => Some(Box::new(haskell::Haskell)),
         _ => None,
     }
 }
@@ -137,6 +139,7 @@ pub fn constructors(language: &str) -> Option<literal::Constructors> {
             },
             plain: typescript::literal,
             tuple: |parts| format!("[{}]", parts.join(", ")),
+            typed: None,
         }),
         "python" | "py" => Some(literal::Constructors {
             record: |name, fields| {
@@ -154,6 +157,7 @@ pub fn constructors(language: &str) -> Option<literal::Constructors> {
             },
             plain: python::literal,
             tuple: literal::parenthesised,
+            typed: None,
         }),
         "rust" | "rs" => Some(literal::Constructors {
             record: |name, fields| {
@@ -169,6 +173,18 @@ pub fn constructors(language: &str) -> Option<literal::Constructors> {
             },
             plain: rust::literal,
             tuple: literal::parenthesised,
+            typed: None,
+        }),
+        "haskell" | "hs" => Some(literal::Constructors {
+            record: haskell::record,
+            variant: haskell::variant,
+            plain: haskell::literal,
+            // Haskell has no one-element tuple, so there is no `(a,)` to write.
+            // Unreached in practice: `typed` below writes tuples itself.
+            tuple: |parts| format!("({})", parts.join(", ")),
+            // Fields are named after the type that declares them, and a value
+            // that is there has to be said to be, so the walk is its own.
+            typed: Some(haskell::typed_literal),
         }),
         _ => None,
     }
@@ -176,7 +192,7 @@ pub fn constructors(language: &str) -> Option<literal::Constructors> {
 
 /// Every backend this build ships.
 pub fn backends() -> Vec<Box<dyn Backend>> {
-    ["typescript", "python", "rust"]
+    ["typescript", "python", "rust", "haskell"]
         .into_iter()
         .filter_map(backend)
         .collect()

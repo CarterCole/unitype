@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use unitype_codegen::{Backend, GenOptions, python, typescript};
+use unitype_codegen::{Backend, GenOptions, haskell, python, typescript};
 use unitype_core::check::{CheckedWorkspace, check_workspace};
 use unitype_core::value::Value;
 use unitype_core::{BigO, ImplProfile, QualifiedName, Workspace};
@@ -324,5 +324,225 @@ async fn the_generated_node_harness_serves_a_worker_without_changing() {
         dispatcher.workers().running().await,
         1,
         "two calls, one interpreter"
+    );
+}
+
+fn have_ghc() -> bool {
+    std::process::Command::new("ghc")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
+/// Compiles a Haskell proof that sits beside the generated modules.
+///
+/// Built once and run as a program, which is how a Haskell proof is meant to
+/// be reached: starting `runghc` for every call would read the sources again
+/// each time.
+fn compile_haskell(dir: &Path) {
+    let built = std::process::Command::new("ghc")
+        .args(["-v0", "-O0", "-outputdir", "obj", "-o", "proof", "Proof.hs"])
+        .current_dir(dir)
+        .output()
+        .expect("runs ghc");
+    assert!(
+        built.status.success(),
+        "the proof did not build:\n{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+}
+
+/// Writes the generated Haskell out, plus a program that uses its harness.
+fn generated_haskell_module(name: &str) -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("makes a directory");
+
+    for file in haskell::Haskell
+        .generate(&workspace(), &GenOptions::default())
+        .expect("generates")
+    {
+        let at = dir.join(file.path.file_name().expect("a file name"));
+        std::fs::write(at, file.contents).expect("writes");
+    }
+
+    // The only thing written by hand: the proof itself, and the line saying
+    // which proposition it proves. Written against the generated `Tally` so
+    // that the declaration is loaded rather than merely present.
+    std::fs::write(
+        dir.join("Proof.hs"),
+        r#"{-# LANGUAGE OverloadedStrings #-}
+module Main (main) where
+
+import qualified Data.Set as Set
+import Data.Text (Text)
+import Demo (Tally (..))
+import UnitypeHarness (proves, unitypeMain)
+
+tally :: [Text] -> Tally
+tally words =
+  Tally {tallyTotal = fromIntegral (length words), tallySeen = Set.toList (Set.fromList words)}
+
+main :: IO ()
+main = unitypeMain [("tally", proves tally)]
+"#,
+    )
+    .expect("writes the proof");
+    compile_haskell(&dir);
+    dir
+}
+
+/// A dispatcher pointed at the compiled Haskell proof, kept alive or not.
+fn haskell_dispatcher(dir: &Path, persistent: bool) -> Dispatcher {
+    let program = dir.join("proof");
+    dispatcher_for(
+        Environment::subprocess("hs", "haskell", program.to_str().expect("a path"), &[]),
+        dir,
+        persistent,
+    )
+}
+
+#[tokio::test]
+async fn the_generated_haskell_harness_is_reachable_as_a_proof_too() {
+    if !have_ghc() {
+        eprintln!("no ghc on this machine; skipping");
+        return;
+    }
+
+    let dir = generated_haskell_module("generated_haskell_oneshot");
+    let answer = haskell_dispatcher(&dir, false)
+        .call(
+            &"demo::tally".parse().unwrap(),
+            vec![words(&["a", "b", "a"])],
+            &Policy::Default,
+        )
+        .await
+        .expect("answers");
+
+    // Checked against the signature on the way back, so this really is a Tally
+    // rather than something Tally-shaped.
+    assert_eq!(answer.value.get("total"), Some(&Value::Int(3)));
+    assert_eq!(
+        answer.value.get("seen"),
+        Some(&words(&["a", "b"])),
+        "{:?}",
+        answer.value
+    );
+}
+
+#[tokio::test]
+async fn the_generated_haskell_harness_serves_a_worker_without_changing() {
+    if !have_ghc() {
+        return;
+    }
+
+    let dir = generated_haskell_module("generated_haskell_worker");
+    let dispatcher = haskell_dispatcher(&dir, true);
+
+    for (input, total) in [(&["a"][..], 1), (&["a", "b"][..], 2), (&["é", "é"][..], 2)] {
+        let answer = dispatcher
+            .call(
+                &"demo::tally".parse().unwrap(),
+                vec![words(input)],
+                &Policy::Default,
+            )
+            .await
+            .expect("answers");
+        assert_eq!(answer.value.get("total"), Some(&Value::Int(total)));
+    }
+
+    assert_eq!(
+        dispatcher.workers().running().await,
+        1,
+        "three calls, one process"
+    );
+}
+
+#[tokio::test]
+async fn a_haskell_proof_that_throws_is_reported_as_failing_not_as_a_broken_environment() {
+    if !have_ghc() {
+        return;
+    }
+
+    let dir = generated_haskell_module("generated_haskell_throws");
+    std::fs::write(
+        dir.join("Proof.hs"),
+        r#"module Main (main) where
+
+import Data.Text (Text)
+import Demo (Tally (..))
+import UnitypeHarness (proves, unitypeMain)
+
+tally :: [Text] -> Tally
+tally _ = error "the tally went wrong"
+
+main :: IO ()
+main = unitypeMain [("tally", proves tally)]
+"#,
+    )
+    .expect("writes");
+    compile_haskell(&dir);
+
+    let failed = haskell_dispatcher(&dir, false)
+        .call(
+            &"demo::tally".parse().unwrap(),
+            vec![words(&["a"])],
+            &Policy::Default,
+        )
+        .await;
+
+    assert!(
+        failed
+            .as_ref()
+            .is_err_and(|e| e.to_string().contains("the tally went wrong")),
+        "{failed:?}"
+    );
+}
+
+#[tokio::test]
+async fn a_generated_haskell_proof_is_held_to_the_signature_like_any_other() {
+    if !have_ghc() {
+        return;
+    }
+
+    let dir = generated_haskell_module("generated_haskell_wrong");
+    // Replace the proof with one that returns the wrong shape. The generated
+    // record would have stopped this; going around it by answering with parsed
+    // JSON should not get past the boundary check.
+    std::fs::write(
+        dir.join("Proof.hs"),
+        r#"{-# LANGUAGE OverloadedStrings #-}
+module Main (main) where
+
+import qualified Data.Map.Strict as Map
+import Data.Text (Text)
+import UnitypeHarness (proves, unitypeMain)
+import UnitypeSupport (Json (..))
+
+wrong :: [Text] -> Json
+wrong _ = JObject (Map.fromList [("total", JString "not a number")])
+
+main :: IO ()
+main = unitypeMain [("tally", proves wrong)]
+"#,
+    )
+    .expect("writes");
+    compile_haskell(&dir);
+
+    let failed = haskell_dispatcher(&dir, false)
+        .call(
+            &"demo::tally".parse().unwrap(),
+            vec![words(&["a"])],
+            &Policy::Default,
+        )
+        .await;
+
+    assert!(
+        failed
+            .as_ref()
+            .is_err_and(|e| e.to_string().contains("not a")),
+        "{failed:?}"
     );
 }

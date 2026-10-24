@@ -28,7 +28,7 @@ use crate::ident::Ident;
 use crate::ir::{Functor, Type, TypeDef, Universe};
 
 /// The languages this build ships profiles for.
-pub const LANGUAGES: &[&str] = &["rust", "typescript", "python"];
+pub const LANGUAGES: &[&str] = &["rust", "typescript", "python", "haskell"];
 
 /// How one target language spells things.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -64,6 +64,12 @@ pub struct LanguageProfile {
     /// How to bracket a loose spelling, with `{}` for what is bracketed.
     #[serde(default = "default_group")]
     pub group: String,
+    /// Whether a generic declaration's arguments follow its name, separated by
+    /// spaces — `Box Int64` — rather than being bracketed and comma-separated.
+    /// Each argument that is itself loose is bracketed, as `Box (Maybe Int64)`
+    /// needs.
+    #[serde(default)]
+    pub juxtaposed: bool,
     /// The language's own builtin types, as declarations.
     #[serde(default)]
     pub types: Vec<TypeDef>,
@@ -103,6 +109,7 @@ pub fn profile(language: &str) -> Result<LanguageProfile, ProfileError> {
         "rust" => include_str!("rust.json"),
         "typescript" => include_str!("typescript.json"),
         "python" => include_str!("python.json"),
+        "haskell" => include_str!("haskell.json"),
         other => {
             return Err(ProfileError::Unknown {
                 language: other.to_string(),
@@ -178,12 +185,24 @@ impl LanguageProfile {
                 Spelling::tight(self.name(&r.name))
             }
             Type::Ref(r) => {
-                let args: Vec<String> = r.args.iter().map(|a| self.spelling(a).text).collect();
+                let args: Vec<String> = r
+                    .args
+                    .iter()
+                    .map(|a| {
+                        let spelled = self.spelling(a);
+                        if self.juxtaposed && spelled.loose {
+                            self.group.replacen("{}", &spelled.text, 1)
+                        } else {
+                            spelled.text
+                        }
+                    })
+                    .collect();
+                let separator = if self.juxtaposed { " " } else { ", " };
                 self.wrap(
                     "apply",
                     &[
                         Spelling::tight(self.name(&r.name)),
-                        Spelling::tight(args.join(", ")),
+                        Spelling::tight(args.join(separator)),
                     ],
                 )
             }
@@ -327,6 +346,10 @@ mod tests {
         profile("python").expect("ships")
     }
 
+    fn hs() -> LanguageProfile {
+        profile("haskell").expect("ships")
+    }
+
     fn id(s: &str) -> Ident {
         Ident::new(s).unwrap()
     }
@@ -353,10 +376,12 @@ mod tests {
         assert_eq!(rust().spell(&Type::String), "String");
         assert_eq!(ts().spell(&Type::String), "string");
         assert_eq!(py().spell(&Type::String), "str");
+        assert_eq!(hs().spell(&Type::String), "Text");
 
         assert_eq!(rust().spell(&Type::I64), "i64");
         assert_eq!(ts().spell(&Type::I64), "number");
         assert_eq!(py().spell(&Type::I64), "int");
+        assert_eq!(hs().spell(&Type::I64), "Int64");
     }
 
     #[test]
@@ -369,6 +394,27 @@ mod tests {
             "(string | null)[]",
             "without the brackets this would say `string | null[]`, which is a \
              different type"
+        );
+        assert_eq!(hs().spell(&nested), "[Maybe Text]");
+    }
+
+    #[test]
+    fn an_application_is_bracketed_where_it_is_the_argument_of_another() {
+        // `Maybe Map Text Int64` would be a different type, and a kind error.
+        let counts = Type::I64.map_from(Type::String);
+        assert_eq!(hs().spell(&counts), "Map Text Int64");
+        assert_eq!(
+            hs().spell(&counts.clone().optional()),
+            "Maybe (Map Text Int64)"
+        );
+        assert_eq!(
+            hs().spell(&Type::I64.optional().map_from(Type::String)),
+            "Map Text (Maybe Int64)"
+        );
+        assert_eq!(hs().spell(&counts.list()), "[Map Text Int64]");
+        assert_eq!(
+            hs().spell(&Type::String.optional().future()),
+            "IO (Maybe Text)"
         );
     }
 
@@ -403,6 +449,35 @@ mod tests {
     }
 
     #[test]
+    fn a_juxtaposed_application_follows_its_name_and_brackets_what_is_loose() {
+        let apply = |args: Vec<Type>| {
+            Type::Ref(crate::ir::TypeRef {
+                universe: None,
+                name: Ident::new("Box").unwrap(),
+                args,
+            })
+        };
+        let t = Type::Param {
+            name: Ident::new("t").unwrap(),
+        };
+        assert_eq!(
+            hs().spell(&apply(vec![Type::String.optional(), t.clone()])),
+            "Box (Maybe Text) t"
+        );
+        // An application inside an application is bracketed too, and a list
+        // already is.
+        assert_eq!(
+            hs().spell(&apply(vec![apply(vec![t.clone()]), Type::I64.list()])),
+            "Box (Box t) [Int64]"
+        );
+        assert_eq!(
+            hs().spell(&apply(vec![t.clone()]).optional()),
+            "Maybe (Box t)"
+        );
+        assert!(!hs().spell(&apply(vec![t])).contains(','));
+    }
+
+    #[test]
     fn a_map_fills_both_halves_of_its_template() {
         let counts = Type::I64.map_from(Type::String);
         assert_eq!(rust().spell(&counts), "BTreeMap<String, i64>");
@@ -416,6 +491,7 @@ mod tests {
         assert_eq!(ts().spell(&later), "Promise<boolean>");
         assert_eq!(py().spell(&later), "typing.Awaitable[bool]");
         assert!(rust().spell(&later).contains("Future"));
+        assert_eq!(hs().spell(&later), "IO Bool");
     }
 
     #[test]
@@ -432,6 +508,11 @@ mod tests {
         assert_eq!(py().name(&id("class")), "class_");
         assert_eq!(ts().name(&id("function")), "function_");
         assert_eq!(rust().name(&id("radius")), "radius");
+        assert_eq!(hs().name(&id("where")), "where_");
+        // Names the generated code imports are reserved too, or a universe's own
+        // `Map` would be taken for the one it imports.
+        assert_eq!(hs().name(&id("Map")), "Map_");
+        assert_eq!(hs().name(&id("radius")), "radius");
     }
 
     #[test]
