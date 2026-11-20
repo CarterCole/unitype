@@ -49,6 +49,11 @@ impl Functor {
             Type::List { of } => Some((Functor::List, of)),
             Type::Optional { of } => Some((Functor::Optional, of)),
             Type::Future { of } => Some((Functor::Future, of)),
+            // A future restricted to a window is still a future.
+            Type::Bounded { of, .. } => match of.as_ref() {
+                Type::Future { of } => Some((Functor::Future, of)),
+                _ => None,
+            },
             _ => None,
         }
     }

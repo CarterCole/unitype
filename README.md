@@ -67,6 +67,13 @@ today.
   in both. The checker refuses `[256, 1, 1, 1]` as an IPv4 address with no
   parser involved; the wire form is the plain value; Rust spells them `u8`,
   `u16`, and `[u8; 4]`.
+- **Restrictions.** A string can be restricted to the strings a regular
+  expression matches in full, `str[match "[a-z]+"]`, and a future to a window in
+  which its value must arrive, `future<T>[wait 100..5000]`. Both are checked
+  where a value crosses a boundary, the way a bound is, not by the checker. A
+  proof that misses its window is passed over for one that meets it. A
+  restriction class is a signature with no proof that others refine: a
+  signature that promises a window follows a class that asks for one.
 - **Bridges.** Derived from two declarations, composed along a path, and run
   through the same expression language a person writes a proof in. An
   equivalence — the same data renamed and reordered — loses nothing, so one

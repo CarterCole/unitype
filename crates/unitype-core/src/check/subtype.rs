@@ -57,6 +57,17 @@ fn within(have: &Option<Bounds>, want: &Option<Bounds>) -> bool {
     }
 }
 
+/// One pattern fits another only when they are the same text. Whether two
+/// regular expressions accept the same strings is not decided here, so a
+/// pattern is never taken to be narrower than another by inspection.
+fn pattern_fits(have: &Option<String>, want: &Option<String>) -> bool {
+    match (have, want) {
+        (_, None) => true,
+        (None, Some(_)) => false,
+        (Some(have), Some(want)) => have == want,
+    }
+}
+
 /// A count as a bound sees it.
 fn count(n: usize) -> i64 {
     i64::try_from(n).unwrap_or(i64::MAX)
@@ -212,10 +223,22 @@ impl CheckedWorkspace {
                         of, value: bounds, ..
                     },
                 ) => self.sub(a, of, seen) && bounds.is_none_or(|bounds| bounds.contains(*i)),
-                (LiteralValue::Str(s), Type::Bounded { of, len, size, .. }) => {
+                (
+                    LiteralValue::Str(s),
+                    Type::Bounded {
+                        of,
+                        len,
+                        size,
+                        pattern,
+                        ..
+                    },
+                ) => {
                     self.sub(a, of, seen)
                         && len.is_none_or(|len| len.contains(count(s.chars().count())))
                         && size.is_none_or(|size| size.contains(count(s.len())))
+                        && pattern
+                            .as_deref()
+                            .is_none_or(|p| crate::ir::restrict::full_match(p, s).unwrap_or(false))
                 }
                 _ => false,
             };
@@ -297,14 +320,25 @@ impl CheckedWorkspace {
                     value: vx,
                     len: lx,
                     size: sx,
+                    pattern: px,
+                    wait: wx,
                 },
                 Type::Bounded {
                     of: y,
                     value: vy,
                     len: ly,
                     size: sy,
+                    pattern: py,
+                    wait: wy,
                 },
-            ) => self.sub(x, y, seen) && within(vx, vy) && within(lx, ly) && within(sx, sy),
+            ) => {
+                self.sub(x, y, seen)
+                    && within(vx, vy)
+                    && within(lx, ly)
+                    && within(sx, sy)
+                    && pattern_fits(px, py)
+                    && within(wx, wy)
+            }
 
             // A generic parameter stands only for itself. Its bounds are
             // checked where arguments are supplied, not here, because this
@@ -596,6 +630,43 @@ mod tests {
         };
         assert!(ws.is_subtype(&huge, &Type::I64));
         assert!(!ws.is_subtype(&huge, &Type::I32), "it does not fit");
+    }
+
+    #[test]
+    fn a_pattern_fits_only_its_own_text_and_a_literal_is_tested_against_it() {
+        let ws = ws();
+        let word = Type::String.matching("[a-z]+");
+        assert!(
+            ws.is_subtype(&word, &Type::String),
+            "its values are strings"
+        );
+        assert!(ws.is_subtype(&word, &Type::String.matching("[a-z]+")));
+        assert!(!ws.is_subtype(&Type::String, &word));
+        assert!(
+            !ws.is_subtype(&word, &Type::String.matching("[a-z]*")),
+            "whether two patterns accept the same strings is not decided"
+        );
+        assert!(ws.is_subtype(&Type::lit_str("abc"), &word));
+        assert!(!ws.is_subtype(&Type::lit_str("abc1"), &word));
+    }
+
+    #[test]
+    fn a_window_nests_the_way_a_bound_does_and_a_plain_future_promises_none() {
+        let ws = ws();
+        let soon = Type::String.future().waiting(Bounds::between(100, 5000));
+        assert!(ws.is_subtype(&soon, &Type::String.future()));
+        assert!(
+            !ws.is_subtype(&Type::String.future(), &soon),
+            "a plain future promises no window"
+        );
+        assert!(ws.is_subtype(
+            &soon,
+            &Type::String.future().waiting(Bounds::between(0, 10000))
+        ));
+        assert!(!ws.is_subtype(
+            &soon,
+            &Type::String.future().waiting(Bounds::between(200, 10000))
+        ));
     }
 
     #[test]

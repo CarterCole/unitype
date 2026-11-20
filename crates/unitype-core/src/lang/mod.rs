@@ -378,9 +378,11 @@ impl LanguageProfile {
             value,
             len,
             size,
+            pattern,
+            wait,
         } = ty
         {
-            out.push(describe_bounds(of, value, len, size));
+            out.push(describe_bounds(of, value, len, size, pattern, wait));
         }
         for child in ty.children() {
             self.gather(child, out);
@@ -395,6 +397,8 @@ fn describe_bounds(
     value: &Option<Bounds>,
     len: &Option<Bounds>,
     size: &Option<Bounds>,
+    pattern: &Option<String>,
+    wait: &Option<Bounds>,
 ) -> String {
     let counted = match of {
         Type::List { .. } => "items",
@@ -426,6 +430,12 @@ fn describe_bounds(
     }
     if let Some(bounds) = size {
         parts.push(range(bounds, "bytes"));
+    }
+    if let Some(pattern) = pattern {
+        parts.push(format!("matching {pattern:?}"));
+    }
+    if let Some(bounds) = wait {
+        parts.push(format!("delivered {} ms after the call", range(bounds, "")));
     }
     parts.retain(|p| !p.is_empty());
     parts.join(" and ")

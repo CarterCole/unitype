@@ -140,6 +140,35 @@ mod tests {
     }
 
     #[test]
+    fn a_signature_follows_a_restriction_class_by_refining_it() {
+        // The class is a proposition with no proof: a request that delivers
+        // its response within thirty seconds. Anything that promises a tighter
+        // window follows it; anything that promises no window does not.
+        let class = r#"{"name":"HttpRequest","params":[{"name":"a","ty":"Request"}],
+            "ret":{"k":"bounded","of":{"k":"future","of":"Response"},"wait":{"max":30000}}}"#;
+        let types = r#""types":[
+            {"k":"struct","name":"Request","fields":[{"name":"url","ty":"str"}]},
+            {"k":"struct","name":"Response","fields":[{"name":"status","ty":"i32"}]}]"#;
+
+        let quick = format!(
+            r#"{{"universes":[{{"name":"demo",{types},"functions":[{class},
+                {{"name":"quick","refines":"demo::HttpRequest",
+                  "params":[{{"name":"a","ty":"Request"}}],
+                  "ret":{{"k":"bounded","of":{{"k":"future","of":"Response"}},"wait":{{"max":10000}}}}}}]}}]}}"#
+        );
+        assert!(errors(&quick).is_empty(), "{:?}", errors(&quick));
+
+        let slow = format!(
+            r#"{{"universes":[{{"name":"demo",{types},"functions":[{class},
+                {{"name":"slow","refines":"demo::HttpRequest",
+                  "params":[{{"name":"a","ty":"Request"}}],
+                  "ret":{{"k":"future","of":"Response"}}}}]}}]}}"#
+        );
+        let said = errors(&slow);
+        assert!(!said.is_empty(), "a plain future promises no window");
+    }
+
+    #[test]
     fn a_refinement_of_the_same_type_is_accepted_and_recorded() {
         let ws = check(
             r#"{"universes":[{"name":"demo","functions":[

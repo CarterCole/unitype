@@ -311,7 +311,25 @@ pub enum Type {
         /// How many bytes a string must take in UTF-8.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         size: Option<Bounds>,
+        /// What a string must match in full, as a regular expression. A
+        /// restriction class for strings: `str[match "[a-z]+"]`.
+        #[serde(default, rename = "match", skip_serializing_if = "Option::is_none")]
+        pattern: Option<String>,
+        /// The window in which a future must deliver its value, in
+        /// milliseconds from the call that produced it: `future<T>[wait 100..5000]`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        wait: Option<Bounds>,
     },
+}
+
+/// The restrictions a bounded type carries, gathered while one is built.
+#[derive(Default)]
+struct Restrictions {
+    value: Option<Bounds>,
+    len: Option<Bounds>,
+    size: Option<Bounds>,
+    pattern: Option<String>,
+    wait: Option<Bounds>,
 }
 
 impl fmt::Display for Type {
@@ -374,6 +392,8 @@ impl fmt::Display for Type {
                 value,
                 len,
                 size,
+                pattern,
+                wait,
             } => match of.as_ref() {
                 Type::List { of: item } => match len {
                     Some(len) => write!(f, "[{item}; {len}]"),
@@ -387,12 +407,22 @@ impl fmt::Display for Type {
                     if let Some(size) = size {
                         parts.push(format!("size {size}"));
                     }
+                    if let Some(pattern) = pattern {
+                        // Quoted the way JSON quotes, so a pattern with a
+                        // comma or a bracket reads back as one value.
+                        let quoted = serde_json::to_string(pattern).unwrap_or_default();
+                        parts.push(format!("match {quoted}"));
+                    }
                     if parts.is_empty() {
                         write!(f, "{of}")
                     } else {
                         write!(f, "{of}[{}]", parts.join(", "))
                     }
                 }
+                Type::Future { of: item } => match wait {
+                    Some(window) => write!(f, "future<{item}>[wait {window}]"),
+                    None => write!(f, "{of}"),
+                },
                 inner => match value.as_ref().or(len.as_ref()) {
                     Some(bounds) => write!(f, "{inner}[{bounds}]"),
                     None => write!(f, "{inner}"),
@@ -472,38 +502,71 @@ impl Type {
     /// On a type that is already bounded, this sets the value bounds and keeps
     /// the rest, so bounds of different kinds build up one node.
     pub fn valued(self, bounds: Bounds) -> Type {
-        self.bounded(|value, _, _| *value = Some(bounds))
+        self.bounded(|r| r.value = Some(bounds))
     }
 
     /// `self` with its length bounded: `[T; 4]`, `bytes[16]`, `str[len 1..63]`.
     pub fn counted(self, bounds: Bounds) -> Type {
-        self.bounded(|_, len, _| *len = Some(bounds))
+        self.bounded(|r| r.len = Some(bounds))
     }
 
     /// `self` with its size in UTF-8 bytes bounded: `str[size ..253]`.
     pub fn sized(self, bounds: Bounds) -> Type {
-        self.bounded(|_, _, size| *size = Some(bounds))
+        self.bounded(|r| r.size = Some(bounds))
     }
 
-    fn bounded(
-        self,
-        set: impl FnOnce(&mut Option<Bounds>, &mut Option<Bounds>, &mut Option<Bounds>),
-    ) -> Type {
-        let (of, mut value, mut len, mut size) = match self {
+    /// `self`, a string, restricted to the strings `pattern` matches in full:
+    /// `str[match "[a-z]+"]`.
+    pub fn matching(self, pattern: impl Into<String>) -> Type {
+        let pattern = pattern.into();
+        self.bounded(|r| r.pattern = Some(pattern))
+    }
+
+    /// `self`, a future, with the window its value must arrive in:
+    /// `future<T>[wait 100..5000]`.
+    pub fn waiting(self, window: Bounds) -> Type {
+        self.bounded(|r| r.wait = Some(window))
+    }
+
+    /// What a future of this type holds: `T` for `future<T>`, and the same for
+    /// a future restricted to a window, which is still a future. `None` for
+    /// anything that is not one.
+    pub fn future_of(&self) -> Option<&Type> {
+        match self.unbounded() {
+            Type::Future { of } => Some(of),
+            _ => None,
+        }
+    }
+
+    fn bounded(self, set: impl FnOnce(&mut Restrictions)) -> Type {
+        let (of, mut r) = match self {
             Type::Bounded {
                 of,
                 value,
                 len,
                 size,
-            } => (of, value, len, size),
-            other => (Box::new(other), None, None, None),
+                pattern,
+                wait,
+            } => (
+                of,
+                Restrictions {
+                    value,
+                    len,
+                    size,
+                    pattern,
+                    wait,
+                },
+            ),
+            other => (Box::new(other), Restrictions::default()),
         };
-        set(&mut value, &mut len, &mut size);
+        set(&mut r);
         Type::Bounded {
             of,
-            value,
-            len,
-            size,
+            value: r.value,
+            len: r.len,
+            size: r.size,
+            pattern: r.pattern,
+            wait: r.wait,
         }
     }
 
@@ -614,12 +677,19 @@ impl Type {
                 of: Box::new(children.remove(0)),
             },
             Type::Bounded {
-                value, len, size, ..
+                value,
+                len,
+                size,
+                pattern,
+                wait,
+                ..
             } => Type::Bounded {
                 of: Box::new(children.remove(0)),
                 value: *value,
                 len: *len,
                 size: *size,
+                pattern: pattern.clone(),
+                wait: *wait,
             },
             Type::Map { .. } => {
                 let value = children.pop().expect("map has two children");

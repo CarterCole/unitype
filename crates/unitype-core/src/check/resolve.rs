@@ -203,13 +203,8 @@ fn check_type(
             }
             check_type(ws, ret, scope, &path.then(PathSeg::Ret), diags);
         }
-        Type::Bounded {
-            of,
-            value,
-            len,
-            size,
-        } => {
-            check_bounded(of, value, len, size, path, diags);
+        Type::Bounded { of, .. } => {
+            check_bounded(t, path, diags);
             check_type(ws, of, scope, &path.then(PathSeg::Elem), diags);
         }
         leaf => debug_assert!(leaf.is_leaf(), "unhandled type node {}", leaf.kind_name()),
@@ -217,30 +212,36 @@ fn check_type(
 }
 
 /// Bounds go on the kinds of type that have something to bound, and only the
-/// bounds that kind has: an integer's value; the length of a list, a map, or
-/// bytes; a string's length in scalar values and its size in bytes. A count
-/// cannot go below zero, and a range whose ends are the wrong way round admits
-/// nothing.
-fn check_bounded(
-    of: &Type,
-    value: &Option<crate::ir::Bounds>,
-    len: &Option<crate::ir::Bounds>,
-    size: &Option<crate::ir::Bounds>,
-    path: &TypePath,
-    diags: &mut Diagnostics,
-) {
+/// restrictions that kind has: an integer's value; the length of a list, a map,
+/// or bytes; a string's length in scalar values, its size in bytes, and the
+/// pattern its text must match; a future's window. A count or a window cannot
+/// go below zero, a range whose ends are the wrong way round admits nothing,
+/// and a pattern must be a regular expression.
+fn check_bounded(node: &Type, path: &TypePath, diags: &mut Diagnostics) {
+    let Type::Bounded {
+        of,
+        value,
+        len,
+        size,
+        pattern,
+        wait,
+    } = node
+    else {
+        return;
+    };
     let mut bad = |what: String| diags.error(CheckErrorKind::BadBounds(what), path.clone());
-    let (takes_value, takes_len, takes_size) = match of {
-        Type::I32 | Type::I64 => (true, false, false),
-        Type::List { .. } | Type::Map { .. } | Type::Bytes => (false, true, false),
-        Type::String => (false, true, true),
+    let (takes_value, takes_len, takes_size, takes_pattern, takes_wait) = match of.as_ref() {
+        Type::I32 | Type::I64 => (true, false, false, false, false),
+        Type::List { .. } | Type::Map { .. } | Type::Bytes => (false, true, false, false, false),
+        Type::String => (false, true, true, true, false),
+        Type::Future { .. } => (false, false, false, false, true),
         Type::Bounded { .. } => {
             bad("bounds are given once".into());
             return;
         }
         other => {
             bad(format!(
-                "`{}` takes no bounds; only an integer, a string, bytes, a list, or a map does",
+                "`{}` takes no bounds; only an integer, a string, bytes, a list, a map, or a future does",
                 describe(other)
             ));
             return;
@@ -250,6 +251,7 @@ fn check_bounded(
         ("value", value, takes_value, false),
         ("len", len, takes_len, true),
         ("size", size, takes_size, true),
+        ("wait", wait, takes_wait, true),
     ] {
         let Some(bounds) = bounds else {
             continue;
@@ -264,12 +266,21 @@ fn check_bounded(
         }
         if counts && ends().any(|n| n < 0) {
             bad(format!(
-                "`{slot}` bounds of {bounds} go below zero, which a count cannot"
+                "`{slot}` bounds of {bounds} go below zero, which a count or a window cannot"
             ));
         }
-        if matches!(of, Type::I32) && ends().any(|n| i32::try_from(n).is_err()) {
+        if matches!(of.as_ref(), Type::I32) && ends().any(|n| i32::try_from(n).is_err()) {
             bad(format!(
                 "`value` bounds of {bounds} reach outside a 32-bit integer"
+            ));
+        }
+    }
+    if let Some(pattern) = pattern {
+        if !takes_pattern {
+            bad(format!("`{}` has no `match` to bound", describe(of)));
+        } else if let Err(e) = crate::ir::restrict::full_match(pattern, "") {
+            bad(format!(
+                "`match` pattern {pattern:?} is not a regular expression: {e}"
             ));
         }
     }
@@ -362,6 +373,40 @@ mod tests {
             .err()
             .map(|d| d.errors.iter().map(ToString::to_string).collect())
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn a_pattern_and_a_window_are_checked_where_they_belong() {
+        let msgs = errors(
+            r#"{"universes":[{"name":"demo","types":[
+                {"k":"struct","name":"S","fields":[
+                    {"name":"a","ty":{"k":"bounded","of":"str","match":"("}},
+                    {"name":"b","ty":{"k":"bounded","of":"i32","match":"[a-z]+"}},
+                    {"name":"c","ty":{"k":"bounded","of":"i32","wait":{"max":5}}},
+                    {"name":"d","ty":{"k":"bounded","of":{"k":"future","of":"str"},
+                        "wait":{"min":5000,"max":100}}},
+                    {"name":"e","ty":{"k":"bounded","of":{"k":"future","of":"str"},
+                        "wait":{"min":-1}}}]}]}]}"#,
+        );
+        let said = msgs.join("\n");
+        for why in [
+            "not a regular expression",
+            "has no `match` to bound",
+            "has no `wait` to bound",
+            "admit nothing",
+            "below zero",
+        ] {
+            assert!(said.contains(why), "{why}:\n{said}");
+        }
+
+        let fine = errors(
+            r#"{"universes":[{"name":"demo","types":[
+                {"k":"struct","name":"S","fields":[
+                    {"name":"word","ty":{"k":"bounded","of":"str","match":"[a-z]+"}},
+                    {"name":"soon","ty":{"k":"bounded","of":{"k":"future","of":"str"},
+                        "wait":{"min":100,"max":5000}}}]}]}]}"#,
+        );
+        assert!(fine.is_empty(), "{fine:?}");
     }
 
     #[test]

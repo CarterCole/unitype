@@ -319,6 +319,21 @@ mod tests {
     use crate::ir::NamedParam;
     use crate::meta::Metadata;
 
+    #[test]
+    fn a_restriction_is_part_of_what_a_type_is() {
+        use crate::ir::Bounds;
+        let plain = local_hash(&Type::String);
+        let word = local_hash(&Type::String.matching("[a-z]+"));
+        assert_ne!(plain, word, "a pattern changes the address");
+        assert_ne!(word, local_hash(&Type::String.matching("[a-z]*")));
+        let soon = Type::String.future().waiting(Bounds::between(100, 5000));
+        assert_ne!(local_hash(&soon), local_hash(&Type::String.future()));
+        assert_ne!(
+            local_hash(&soon),
+            local_hash(&Type::String.future().waiting(Bounds::between(100, 6000)))
+        );
+    }
+
     fn id(s: &str) -> Ident {
         Ident::new(s).unwrap()
     }

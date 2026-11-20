@@ -179,6 +179,8 @@ impl CheckedWorkspace {
                     value: bounds,
                     len,
                     size,
+                    pattern,
+                    ..
                 },
                 _,
             ) => {
@@ -186,6 +188,19 @@ impl CheckedWorkspace {
                 self.check_value(value, of, path, errors);
                 if errors.len() == before {
                     self.check_bounds(value, ty, bounds, len, size, path, errors);
+                }
+                // A string restricted by a pattern must match all of it. A
+                // future's window is not a property of the value: dispatch
+                // checks it when the value is delivered.
+                if let (Some(pattern), Value::Str(text)) = (pattern, value) {
+                    if !crate::ir::restrict::full_match(pattern, text).unwrap_or(false) {
+                        errors.push(ValueError::saying(
+                            path,
+                            ty,
+                            value,
+                            format!("{text:?} does not match the pattern {pattern:?}"),
+                        ));
+                    }
                 }
             }
             (Type::Unit, Value::Null) => {}
@@ -467,6 +482,28 @@ mod tests {
     use crate::check::check_workspace;
     use crate::ir::{Bounds, TypeRef};
     use crate::{Ident, Workspace};
+
+    #[test]
+    fn a_string_must_match_its_pattern_in_full() {
+        let ws = ws();
+        let word = Type::String.matching("[a-z]+");
+        assert!(ws.validate(&Value::Str("abc".into()), &word).is_ok());
+
+        let refused = ws
+            .validate(&Value::Str("abc1".into()), &word)
+            .expect_err("it does not match all of the string")
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(refused.contains("does not match the pattern"), "{refused}");
+
+        assert!(
+            ws.validate(&Value::Str("abc".into()), &Type::String)
+                .is_ok(),
+            "a plain string takes any text"
+        );
+    }
 
     #[test]
     fn a_value_is_held_within_its_bounds() {

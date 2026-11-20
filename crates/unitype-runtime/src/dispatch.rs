@@ -131,6 +131,12 @@ pub struct Invocation {
     pub considered: Vec<Considered>,
 }
 
+/// A window's end or start as a duration. The checker refuses a negative one,
+/// so this only has to be safe, not exact.
+fn millis(n: i64) -> Duration {
+    Duration::from_millis(u64::try_from(n).unwrap_or(0))
+}
+
 /// Decides which proof answers a call, and runs it.
 pub struct Dispatcher {
     ws: Arc<CheckedWorkspace>,
@@ -380,9 +386,17 @@ impl Dispatcher {
 
         // A future is a promise about when, not about what, so a signature
         // returning one is satisfied by the value it eventually holds.
-        let expected = match &sig.ret {
-            Type::Future { of } => (**of).clone(),
-            other => other.clone(),
+        let expected = sig
+            .ret
+            .future_of()
+            .cloned()
+            .unwrap_or_else(|| sig.ret.clone());
+        // A future restricted to a window must deliver inside it. A proof that
+        // misses the window is passed over, as one that is unavailable is, so
+        // another proof that meets it can answer.
+        let window = match &sig.ret {
+            Type::Bounded { wait, .. } => *wait,
+            _ => None,
         };
 
         let mut considered = Vec::with_capacity(candidates.len());
@@ -407,10 +421,53 @@ impl Dispatcher {
             // Each written against the type the call checked it at, which an
             // equivalent signature's parameter holds the same data as.
             let types: Vec<Type> = order.iter().map(|&i| sig.params[i].ty.clone()).collect();
-            let outcome = self
-                .invoke(implementation, handed, &types, &expected, policy)
-                .await;
+            let call = self.invoke(implementation, handed, &types, &expected, policy);
+            let outcome = match window.and_then(|w| w.max) {
+                Some(max) => match tokio::time::timeout(millis(max), call).await {
+                    Ok(outcome) => outcome,
+                    Err(_) => {
+                        considered.push(Considered {
+                            id: implementation.id.clone(),
+                            environment: environment.clone(),
+                            cost: cost.clone(),
+                            outcome: Outcome::Failed(format!(
+                                "did not answer within {max} ms, the window's end"
+                            )),
+                        });
+                        continue;
+                    }
+                },
+                None => call.await,
+            };
             let elapsed = started.elapsed();
+            // The timeout above cannot stop a proof that blocks its thread, so
+            // a late answer is refused here too, whichever way it arrived.
+            if let Some(w) = window {
+                let early = w.min.is_some_and(|min| elapsed < millis(min));
+                let late = w.max.is_some_and(|max| elapsed > millis(max));
+                if early || late {
+                    let why = if early {
+                        format!(
+                            "answered after {} ms, before the window opens at {} ms",
+                            elapsed.as_millis(),
+                            w.min.unwrap_or_default()
+                        )
+                    } else {
+                        format!(
+                            "answered after {} ms, after the window closes at {} ms",
+                            elapsed.as_millis(),
+                            w.max.unwrap_or_default()
+                        )
+                    };
+                    considered.push(Considered {
+                        id: implementation.id.clone(),
+                        environment: environment.clone(),
+                        cost: cost.clone(),
+                        outcome: Outcome::Failed(why),
+                    });
+                    continue;
+                }
+            }
 
             match outcome {
                 Ok(value) => {
@@ -1015,6 +1072,129 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// A future that must deliver its value between 20 and 200 milliseconds
+    /// after the call.
+    const WINDOW_WS: &str = r#"{"universes":[{"name":"demo","functions":[
+        {"name":"fetch","params":[{"name":"url","ty":"str"}],
+         "ret":{"k":"bounded","of":{"k":"future","of":"str"},"wait":{"min":20,"max":200}}}]}]}"#;
+
+    fn window_dispatcher(registry: Registry) -> Dispatcher {
+        let ws = Arc::new(
+            check_workspace(Workspace::from_json(WINDOW_WS).expect("reads")).expect("checks"),
+        );
+        Dispatcher::new(ws, Arc::new(registry))
+    }
+
+    #[tokio::test]
+    async fn a_proof_that_delivers_inside_its_window_answers() {
+        let mut registry = Registry::new();
+        registry.register_native_sync("steady", |_| {
+            std::thread::sleep(Duration::from_millis(60));
+            Ok(Value::Str("page".into()))
+        });
+        registry
+            .register(Implementation::new(
+                "fetch.steady",
+                q("demo::fetch"),
+                here(),
+                "steady",
+                ImplProfile::new(BigO::O1, BigO::O1),
+            ))
+            .unwrap();
+
+        let done = window_dispatcher(registry)
+            .call(
+                &q("demo::fetch"),
+                vec![Value::Str("https://example.com".into())],
+                &Policy::Default,
+            )
+            .await
+            .expect("it delivers inside the window");
+        assert!(matches!(done.value, Value::Str(ref s) if s == "page"));
+    }
+
+    #[tokio::test]
+    async fn a_proof_that_misses_the_window_is_passed_over_for_one_that_meets_it() {
+        let mut registry = Registry::new();
+        registry.register_native_sync("late", |_| {
+            std::thread::sleep(Duration::from_millis(300));
+            Ok(Value::Str("late".into()))
+        });
+        registry.register_native_sync("prompt", |_| {
+            std::thread::sleep(Duration::from_millis(50));
+            Ok(Value::Str("prompt".into()))
+        });
+        registry
+            .register(Implementation::new(
+                "fetch.late",
+                q("demo::fetch"),
+                here(),
+                "late",
+                ImplProfile::new(BigO::O1, BigO::O1),
+            ))
+            .unwrap();
+        registry
+            .register(Implementation::new(
+                "fetch.prompt",
+                q("demo::fetch"),
+                here(),
+                "prompt",
+                ImplProfile::new(BigO::ON, BigO::ON),
+            ))
+            .unwrap();
+
+        // The late proof is the cheaper one, so it is asked first.
+        let done = window_dispatcher(registry)
+            .call(
+                &q("demo::fetch"),
+                vec![Value::Str("https://example.com".into())],
+                &Policy::Fastest,
+            )
+            .await
+            .expect("the prompt one meets the window");
+        assert_eq!(done.implementation.to_string(), "fetch.prompt");
+        assert!(
+            done.considered.iter().any(|c| matches!(
+                &c.outcome,
+                Outcome::Failed(why) if why.contains("after the window closes")
+            )),
+            "the late answer is recorded, not hidden"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_window_nothing_meets_says_which_end_it_missed() {
+        let mut registry = Registry::new();
+        registry.register_native_sync("instant", |_| Ok(Value::Str("too soon".into())));
+        registry
+            .register(Implementation::new(
+                "fetch.instant",
+                q("demo::fetch"),
+                here(),
+                "instant",
+                ImplProfile::new(BigO::O1, BigO::O1),
+            ))
+            .unwrap();
+
+        let err = window_dispatcher(registry)
+            .call(
+                &q("demo::fetch"),
+                vec![Value::Str("https://example.com".into())],
+                &Policy::Default,
+            )
+            .await
+            .unwrap_err();
+        let DispatchError::NoneAvailable { skipped, .. } = err else {
+            panic!("expected no proof to meet the window, got {err}");
+        };
+        assert!(
+            skipped
+                .iter()
+                .any(|s| s.contains("before the window opens")),
+            "{skipped:?}"
+        );
     }
 
     #[tokio::test]

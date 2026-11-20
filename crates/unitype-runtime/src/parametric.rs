@@ -408,10 +408,7 @@ async fn judge(
 
 /// A proof's eventual answer: what a future resolves to, or the type itself.
 fn eventual(ret: &Type) -> Type {
-    match ret {
-        Type::Future { of } => (**of).clone(),
-        other => other.clone(),
-    }
+    ret.future_of().cloned().unwrap_or_else(|| ret.clone())
 }
 
 /// A trial, named by what was passed: `xs = [0, 1, 2]`.

@@ -527,6 +527,10 @@ enum ShapeNode {
         len: Option<crate::ir::Bounds>,
         #[serde(skip_serializing_if = "Option::is_none")]
         size: Option<crate::ir::Bounds>,
+        #[serde(default, rename = "match", skip_serializing_if = "Option::is_none")]
+        pattern: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        wait: Option<crate::ir::Bounds>,
     },
     /// A generic parameter of the declaration, by position.
     Param {
@@ -782,11 +786,15 @@ impl Lowering<'_> {
                 value,
                 len,
                 size,
+                pattern,
+                wait,
             } => ShapeNode::Bounded {
                 of: one(of),
                 value: *value,
                 len: *len,
                 size: *size,
+                pattern: pattern.clone(),
+                wait: *wait,
             },
             Type::Map { key, value } => ShapeNode::Map {
                 key: one(key),

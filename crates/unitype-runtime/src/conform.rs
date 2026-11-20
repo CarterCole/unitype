@@ -20,7 +20,6 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use unitype_core::QualifiedName;
-use unitype_core::ir::Type;
 use unitype_core::value::Value;
 
 use crate::dispatch::{Dispatcher, Policy};
@@ -217,10 +216,11 @@ pub async fn run(dispatcher: &Dispatcher, suite: &Suite) -> Result<Report, Confo
         return Err(ConformError::NoProofs(suite.signature.clone()));
     }
 
-    let expected_type = match &sig.ret {
-        Type::Future { of } => (**of).clone(),
-        other => other.clone(),
-    };
+    let expected_type = sig
+        .ret
+        .future_of()
+        .cloned()
+        .unwrap_or_else(|| sig.ret.clone());
 
     let mut cases = Vec::with_capacity(suite.vectors.len());
     for vector in &suite.vectors {

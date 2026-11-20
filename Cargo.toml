@@ -24,6 +24,7 @@ indexmap = { version = "2", features = ["serde"] }
 thiserror = "2"
 blake3 = "1"
 base64 = "0.22"
+regex = "1"
 heck = "0.5"
 tokio = "1"
 clap = { version = "4", features = ["derive"] }

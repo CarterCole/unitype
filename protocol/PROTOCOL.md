@@ -49,7 +49,8 @@ Type ::= never | any | unit | bool | i32 | i64 | f64 | string | bytes
        | future(Type)
        | ref(universe, name, Type*)
        | param(name)
-       | bounded(Type, value: Bounds?, len: Bounds?, size: Bounds?)
+       | bounded(Type, value: Bounds?, len: Bounds?, size: Bounds?,
+                 match: string?, wait: Bounds?)
 
 LiteralValue ::= bool(b) | int(i) | str(s)
 Field        ::= (name, Type, doc?)
@@ -90,14 +91,43 @@ Notes on the choices, each of which affects what is representable:
   scalar values and its `size` in UTF-8 bytes, which differ, and which each
   language's own `length` counts differently. Its values are `T`'s values
   within the bounds, and so is its wire form: `i32[0..255]` is written as the
-  integer it is. Bounds go on nothing else — a tuple's arity is its length —
-  and are given once, so `bounded(bounded(T))` is an error, as is a count below
-  zero or a range whose ends are the wrong way round. This is how an unsigned
+  integer it is. Bounds go on nothing else but the restrictions below. A
+  tuple's arity is its length. Bounds are given once, so `bounded(bounded(T))`
+  is an error, as is a count below zero or a range whose ends are the wrong way
+  round. This is how an unsigned
   byte is said: `i32[0..255]`, which every target holds and Rust spells `u8`.
   A `bounded` is a subtype of its `T`; narrower bounds are a subtype of wider
   ones; a literal fits when its value, or its counts, do; and an `i64` bounded
   within ±2^53 may be used where `f64` is expected, which the unbounded one may
   not.
+- **Restrictions.** A string may be restricted to the strings a regular
+  expression matches in full: `str[match "[a-z]+"]`. The expression is in
+  Rust's `regex` syntax, written as a JSON string, and anchored at both ends, so
+  `[a-z]+` admits `abc` and refuses `abc1`. A future may be restricted to a
+  window: `future<T>[wait 100..5000]`. `wait` is a `Bounds` in whole
+  milliseconds, counted from the call that produced the future to the moment
+  its value is delivered, both ends inclusive and either end open. `min` alone
+  is "no sooner than min", and `max` alone is "no later than max". A restricted
+  type is a `bounded` with a `match` or `wait` member, serialized as
+  `{"k":"bounded","of":"str","match":"[a-z]+"}` or
+  `{"k":"bounded","of":{"k":"future","of":T},"wait":{"min":100,"max":5000}}`.
+  An absent member is left out, so every existing type encodes as it did.
+
+  A restriction is part of what a type is, so it changes the address. A
+  restricted type is a subtype of its unrestricted one. A pattern fits only the
+  same pattern, since whether two expressions accept the same strings is not
+  decided here, and a literal string fits a pattern when it matches it. Windows
+  nest the way bounds do: a narrower window fits a wider one, and a plain future
+  promises no window, so it fits no windowed one.
+
+  Restrictions are checked at runtime, where a value crosses a boundary (§7),
+  and not by the checker, which cannot tell whether a computation finishes in
+  time. A string that does not match its pattern is refused as a value outside
+  its bounds is. A proof whose future arrives before the window opens or after
+  it closes misses the window: dispatch passes it over for another proof that
+  meets it, and when none does, the call fails and says which end was missed. A
+  guest has no clock (§7.3), so the host does the measuring. A target spells a
+  restricted type as the type it restricts.
 
 A `map` key type must be `string`, `i32`, `i64`, a non-boolean literal, or a
 union of those, so that a map is representable as an object in every target.
@@ -129,6 +159,31 @@ Because an identifier cannot begin with `$`, keys beginning with `$` are
 reserved for the value encoding (§4) and can never collide with a field name.
 
 A **qualified name** is written `universe::name`.
+
+### 1.3 Restriction classes
+
+A **restriction class** is a signature with no proof that other signatures
+refine. `refines` already requires a refining signature's type to be a subtype
+of the class's, so a signature follows a class by refining it. A restriction
+makes the class stricter: a signature that promises a window follows a class
+that asks for one, and a signature that promises no window does not.
+
+```json
+{"name": "HttpRequest",
+ "params": [{"name": "a", "ty": "Request"}],
+ "ret": {"k": "bounded", "of": {"k": "future", "of": "Response"},
+         "wait": {"max": 30000}}}
+
+{"name": "quick", "refines": "demo::HttpRequest",
+ "params": [{"name": "a", "ty": "Request"}],
+ "ret": {"k": "bounded", "of": {"k": "future", "of": "Response"},
+         "wait": {"max": 10000}}}
+```
+
+`quick` follows `HttpRequest`, so a proof of `quick` is a proof of
+`HttpRequest`: an HTTP request that answers within thirty seconds. A signature
+with the same parameter and a plain `future<Response>` result does not follow
+it, since it promises no window.
 
 ---
 
@@ -180,6 +235,8 @@ canonical output.
 | `"i32[0..255]"`, `"i64[1..]"`, `"i32[..9]"`, `"i32[5]"` | a bounded integer, both ends inclusive |
 | `"[T; 4]"`, `"[T; 1..8]"`, `"bytes[16]"`, `"map<K, V>[..10]"` | a bounded length |
 | `"str[len 1..63]"`, `"str[size ..253]"`, `"str[len 1..63, size ..253]"` | a string bounded in scalar values, in UTF-8 bytes, or both |
+| `"future<T>[wait 100..5000]"`, `"future<T>[wait 100..]"`, `"future<T>[wait ..5000]"` | a future whose value arrives within the window, in milliseconds |
+| `str[match "[a-z]+"]`, `str[len 1..63, match "[a-z]+"]` | a string matching a regular expression in full |
 
 Expansion is directed by the schema, so a string is expanded only where a type
 belongs. Under `{"k":"map"}` the `value` member is a type and is expanded; under
@@ -231,8 +288,9 @@ Applied bottom-up to a fixed point:
     is not semantic.
 
 **Bounds**
-13. A bound with neither end is dropped, and a `bounded` left with no bounds
-    is the type it bounded.
+13. A bound with neither end is dropped, and a `bounded` left with no
+    restrictions is the type without them. A pattern is never dropped: the
+    empty pattern admits only the empty string.
 
 Normalization is idempotent, and an implementation SHOULD test that it is.
 
@@ -967,3 +1025,8 @@ what it describes. Adding a variant without adding it here has to fail.
   existing type encodes as it did, so no address or domain moves; a bounded
   type is a new encoding with an address of its own. §7.4 lets a case expect
   `null`.
+- **Restrictions** — §1.1 adds `match` and `wait` to `bounded`: a string
+  matching a regular expression in full, and a future delivering within a
+  window of milliseconds. §1.3 names restriction classes, which a signature
+  follows by refining them. Every existing type encodes as it did; a restricted
+  type is a new encoding with an address of its own.

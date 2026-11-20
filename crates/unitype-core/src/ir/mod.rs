@@ -4,6 +4,7 @@
 pub mod defs;
 pub mod expr;
 pub mod functor;
+pub mod restrict;
 pub mod sugar;
 pub mod ty;
 pub mod universe;

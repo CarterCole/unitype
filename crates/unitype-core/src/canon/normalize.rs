@@ -57,22 +57,27 @@ pub fn normalize_type(t: &Type) -> Type {
             value,
             len,
             size,
-        } => normalize_bounded(*of, value, len, size),
+            pattern,
+            wait,
+        } => normalize_bounded(*of, value, len, size, pattern, wait),
         other => other,
     }
 }
 
 /// Drops a bound with neither end, which bounds nothing, and the node itself
-/// once nothing is left for it to say.
+/// once nothing is left for it to say. A pattern always says something, even
+/// the empty one, which admits only the empty string.
 fn normalize_bounded(
     of: Type,
     value: Option<Bounds>,
     len: Option<Bounds>,
     size: Option<Bounds>,
+    pattern: Option<String>,
+    wait: Option<Bounds>,
 ) -> Type {
     let kept = |bounds: Option<Bounds>| bounds.filter(|b| !b.is_open());
-    let (value, len, size) = (kept(value), kept(len), kept(size));
-    if value.is_none() && len.is_none() && size.is_none() {
+    let (value, len, size, wait) = (kept(value), kept(len), kept(size), kept(wait));
+    if value.is_none() && len.is_none() && size.is_none() && pattern.is_none() && wait.is_none() {
         return of;
     }
     Type::Bounded {
@@ -80,6 +85,8 @@ fn normalize_bounded(
         value,
         len,
         size,
+        pattern,
+        wait,
     }
 }
 

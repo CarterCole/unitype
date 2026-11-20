@@ -473,9 +473,17 @@
         {
           "name": "size",
           "ty": "Bounds?"
+        },
+        {
+          "name": "match",
+          "ty": "str?"
+        },
+        {
+          "name": "wait",
+          "ty": "Bounds?"
         }
       ],
-      "doc": "A type with bounds on its values or its length: an integer's value; the length of a list, a map, or bytes; a string's length in scalar values and its size in UTF-8 bytes."
+      "doc": "A type with restrictions on its values: an integer's value; the length of a list, a map, or bytes; a string's length in scalar values, its size in UTF-8 bytes, and the regular expression it must match in full; a future's window, in milliseconds, within which it must deliver its value."
     },
     {
       "k": "alias",

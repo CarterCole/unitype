@@ -18,6 +18,8 @@
 //! | `"i32[0..255]"` | an integer within bounds, both ends inclusive |
 //! | `"[T; 4]"`, `"bytes[16]"` | a list or bytes of so many; `..8`, `1..` for one end |
 //! | `"str[len 1..63, size ..253]"` | a string bounded in scalar values, in UTF-8 bytes, or both |
+//! | `"str[match \"[a-z]+\"]"` | a string matching a regular expression in full |
+//! | `"future<T>[wait 100..5000]"` | a future whose value arrives within the window, in milliseconds |
 //!
 //! Expansion happens as a pass over the parsed JSON before it is read into the
 //! IR, directed by the schema so that a string is only ever expanded where a
@@ -327,25 +329,67 @@ fn split_once_at_depth_zero_on(t: &str, sep: char) -> Option<(&str, &str)> {
 }
 
 /// Splits `base[spec]` into the type and the bounds written after it, when
-/// that is what this is. A list, which begins with `[`, is not.
+/// that is what this is. A list, which begins with `[`, is not. Brackets inside
+/// a quoted pattern do not count, so `str[match "[a-z]+"]` splits where it
+/// should.
 fn split_bounds_suffix(t: &str) -> Option<(&str, &str)> {
     if !t.ends_with(']') || t.starts_with('[') {
         return None;
     }
-    let mut depth = 0usize;
-    for (at, c) in t.char_indices().rev() {
+    let mut open = Vec::new();
+    let mut quoted = false;
+    let mut escaped = false;
+    for (at, c) in t.char_indices() {
+        if quoted {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                '"' => quoted = false,
+                _ => {}
+            }
+            continue;
+        }
         match c {
-            ']' => depth += 1,
-            '[' => {
-                depth -= 1;
-                if depth == 0 {
-                    return (at > 0).then(|| (&t[..at], &t[at + 1..t.len() - 1]));
+            '"' => quoted = true,
+            '[' => open.push(at),
+            ']' => {
+                let start = open.pop()?;
+                if at + 1 == t.len() {
+                    return (start > 0).then(|| (&t[..start], &t[start + 1..at]));
                 }
             }
             _ => {}
         }
     }
     None
+}
+
+/// Splits at every comma that is not inside a quoted string, so a pattern may
+/// contain one.
+fn split_outside_quotes(t: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let (mut start, mut quoted, mut escaped) = (0, false, false);
+    for (at, c) in t.char_indices() {
+        if quoted {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                '"' => quoted = false,
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '"' => quoted = true,
+            ',' => {
+                parts.push(&t[start..at]);
+                start = at + 1;
+            }
+            _ => {}
+        }
+    }
+    parts.push(&t[start..]);
+    parts
 }
 
 /// `n`, `a..b`, `a..`, or `..b`, both ends inclusive, as a bounds object.
@@ -392,7 +436,7 @@ fn bounds_on(s: &str, base: Json, spec: &str) -> Result<Json, SugarError> {
         "bytes" | "list" | "map" => Ok(bounded(base, "len", parse_bounds(s, spec)?)),
         "string" => {
             let mut out = base;
-            for part in spec.split(',') {
+            for part in split_outside_quotes(spec) {
                 let Some((word, rest)) = part.trim().split_once(char::is_whitespace) else {
                     return Err(SugarError::Malformed(
                         s.to_string(),
@@ -401,15 +445,33 @@ fn bounds_on(s: &str, base: Json, spec: &str) -> Result<Json, SugarError> {
                 };
                 match word {
                     "len" | "size" => out = bounded(out, word, parse_bounds(s, rest)?),
+                    "match" => {
+                        let pattern: String = serde_json::from_str(rest.trim()).map_err(|_| {
+                            SugarError::Malformed(
+                                s.to_string(),
+                                "a pattern is a regular expression in double quotes",
+                            )
+                        })?;
+                        out = bounded(out, "match", Json::String(pattern));
+                    }
                     _ => {
                         return Err(SugarError::Malformed(
                             s.to_string(),
-                            "a string's bounds are `len` or `size`",
+                            "a string's bounds are `len`, `size`, or `match`",
                         ));
                     }
                 }
             }
             Ok(out)
+        }
+        "future" => {
+            let Some(window) = spec.trim().strip_prefix("wait ") else {
+                return Err(SugarError::Malformed(
+                    s.to_string(),
+                    "a future's bound is its window: `future<T>[wait 100..5000]`",
+                ));
+            };
+            Ok(bounded(base, "wait", parse_bounds(s, window)?))
         }
         "bounded" => Err(SugarError::Malformed(
             s.to_string(),
@@ -581,7 +643,47 @@ mod tests {
             ("i32[..]", "bounds nothing"),
             ("i32[a..b]", "must be an integer"),
             ("i32[0..5][1]", "given once"),
-            ("str[width 3]", "`len` or `size`"),
+            ("str[width 3]", "`len`, `size`, or `match`"),
+        ] {
+            let err = parse_type_sugar(spelled).expect_err(spelled).to_string();
+            assert!(err.contains(why), "{spelled}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_pattern_and_a_window_expand_and_read_back_the_way_they_print() {
+        assert_eq!(
+            sugar(r#"str[match "[a-z]+"]"#),
+            Type::String.matching("[a-z]+")
+        );
+        assert_eq!(
+            sugar(r#"str[len 1..63, match "a,b]c"]"#),
+            Type::String
+                .counted(Bounds::between(1, 63))
+                .matching("a,b]c"),
+            "a comma and a bracket inside the quotes do not end the pattern"
+        );
+        assert_eq!(
+            sugar("future<str>[wait 100..5000]"),
+            Type::String.future().waiting(Bounds::between(100, 5000))
+        );
+        for spelled in [
+            r#"str[match "[a-z]+"]"#,
+            r#"str[len 1..63, match "\\d{3}"]"#,
+            "future<str>[wait 100..5000]",
+            "future<str>[wait 100..]",
+            "future<i64>[wait ..30000]",
+        ] {
+            assert_eq!(sugar(spelled).to_string(), spelled);
+        }
+    }
+
+    #[test]
+    fn a_pattern_or_a_window_on_the_wrong_kind_is_refused_as_malformed() {
+        for (spelled, why) in [
+            ("str[match [a-z]]", "double quotes"),
+            ("future<str>[100..5000]", "window"),
+            ("i32[wait 1..5]", "must be an integer"),
         ] {
             let err = parse_type_sugar(spelled).expect_err(spelled).to_string();
             assert!(err.contains(why), "{spelled}: {err}");
