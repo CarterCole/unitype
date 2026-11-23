@@ -1389,6 +1389,16 @@
           "doc": "A signature this one strengthens, as `universe::name`."
         },
         {
+          "name": "time",
+          "ty": "str?",
+          "doc": "The most time a proof of this may claim, as a named complexity class."
+        },
+        {
+          "name": "space",
+          "ty": "str?",
+          "doc": "The most space a proof of this may claim beyond its input, as a named complexity class."
+        },
+        {
           "name": "body",
           "ty": "Expr?",
           "doc": "A constructive proof, when there is one."

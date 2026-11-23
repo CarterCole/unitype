@@ -469,6 +469,48 @@ pub enum CheckErrorKind {
         /// The refinement's parameter count.
         got: usize,
     },
+    /// A bound named a class the protocol does not have.
+    #[error(
+        "`{sig}` bounds its {axis} by `{class}`, which is not a complexity class this protocol names: use o1, o_log_n, o_n, o_n_log_n, o_n2, o_n3, or o_exp"
+    )]
+    UnnamedCost {
+        /// The signature with the bound.
+        sig: QualifiedName,
+        /// `time` or `space`.
+        axis: &'static str,
+        /// The token that was written.
+        class: String,
+    },
+    /// A refinement promised no bound where what it refines bounds the cost.
+    #[error(
+        "`{sig}` refines `{base}`, which bounds its {axis} at {bound}, so `{sig}` must bound it too"
+    )]
+    CostNotPromised {
+        /// The refining signature.
+        sig: QualifiedName,
+        /// What it refines.
+        base: QualifiedName,
+        /// `time` or `space`.
+        axis: &'static str,
+        /// The refined signature's bound.
+        bound: String,
+    },
+    /// A refinement promised more cost than what it refines allows.
+    #[error(
+        "`{sig}` refines `{base}`, but its {axis} {have} is more than the {bound} that `{base}` allows"
+    )]
+    CostTooHigh {
+        /// The refining signature.
+        sig: QualifiedName,
+        /// What it refines.
+        base: QualifiedName,
+        /// `time` or `space`.
+        axis: &'static str,
+        /// The refinement's bound.
+        have: String,
+        /// The refined signature's bound.
+        bound: String,
+    },
 }
 
 impl CheckErrorKind {

@@ -38,7 +38,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use unitype_core::check::CheckedWorkspace;
-use unitype_core::ir::Type;
+use unitype_core::ir::{FunctionSig, Type};
+use unitype_core::meta::ImplProfile;
 use unitype_core::value::Value;
 use unitype_core::{Ident, QualifiedName};
 
@@ -129,6 +130,29 @@ pub struct Invocation {
     pub elapsed: Duration,
     /// Every candidate and what became of it, so a caller can see why.
     pub considered: Vec<Considered>,
+}
+
+/// Why a proof's claimed cost is over what a proposition allows, if it is. An
+/// unnamed claim cannot be compared, so it is not allowed under any bound.
+fn over_budget(sig: &FunctionSig, claimed: &ImplProfile) -> Option<String> {
+    for (axis, allowed, claim) in [
+        ("time", &sig.time, &claimed.time),
+        ("space", &sig.space, &claimed.space),
+    ] {
+        let Some(allowed) = allowed else {
+            continue;
+        };
+        let fits = match (claim.rank(), allowed.rank()) {
+            (Some(claim), Some(allowed)) => claim <= allowed,
+            _ => false,
+        };
+        if !fits {
+            return Some(format!(
+                "claims {claim} for {axis}, but the proposition allows at most {allowed}"
+            ));
+        }
+    }
+    None
 }
 
 /// A window's end or start as a duration. The checker refuses a negative one,
@@ -414,6 +438,18 @@ impl Dispatcher {
                 continue;
             }
 
+            // A proof that claims more than the proposition allows is not a
+            // candidate for it, whatever it would answer.
+            if let Some(reason) = over_budget(sig, &implementation.cost) {
+                considered.push(Considered {
+                    id: implementation.id.clone(),
+                    environment,
+                    cost,
+                    outcome: Outcome::Unavailable(reason),
+                });
+                continue;
+            }
+
             let started = Instant::now();
             // In the order the proof's own signature takes them, which is the
             // caller's order unless it proves an equivalent signature.
@@ -423,28 +459,35 @@ impl Dispatcher {
             let types: Vec<Type> = order.iter().map(|&i| sig.params[i].ty.clone()).collect();
             let call = self.invoke(implementation, handed, &types, &expected, policy);
             let outcome = match window.and_then(|w| w.max) {
-                Some(max) => match tokio::time::timeout(millis(max), call).await {
-                    Ok(outcome) => outcome,
-                    Err(_) => {
-                        considered.push(Considered {
-                            id: implementation.id.clone(),
-                            environment: environment.clone(),
-                            cost: cost.clone(),
-                            outcome: Outcome::Failed(format!(
-                                "did not answer within {max} ms, the window's end"
-                            )),
-                        });
-                        continue;
+                // One millisecond past the end, since the late check below
+                // works in whole milliseconds and must have the final word.
+                Some(max) => {
+                    match tokio::time::timeout(millis(max.saturating_add(1)), call).await {
+                        Ok(outcome) => outcome,
+                        Err(_) => {
+                            considered.push(Considered {
+                                id: implementation.id.clone(),
+                                environment: environment.clone(),
+                                cost: cost.clone(),
+                                outcome: Outcome::Failed(format!(
+                                    "did not answer within {max} ms, the window's end"
+                                )),
+                            });
+                            continue;
+                        }
                     }
-                },
+                }
                 None => call.await,
             };
             let elapsed = started.elapsed();
             // The timeout above cannot stop a proof that blocks its thread, so
             // a late answer is refused here too, whichever way it arrived.
             if let Some(w) = window {
-                let early = w.min.is_some_and(|min| elapsed < millis(min));
-                let late = w.max.is_some_and(|max| elapsed > millis(max));
+                // Whole milliseconds, as a window is written, so that
+                // `not by 5000` and `up until 4999` admit the same answers.
+                let ms = i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX);
+                let early = w.min.is_some_and(|min| ms < min);
+                let late = w.max.is_some_and(|max| ms > max);
                 if early || late {
                     let why = if early {
                         format!(
@@ -1072,6 +1115,83 @@ mod tests {
                 ..
             }
         ));
+    }
+
+    /// A proposition that allows at most n log n time and constant space.
+    const BUDGET_WS: &str = r#"{"universes":[{"name":"demo","functions":[
+        {"name":"sort","params":[{"name":"xs","ty":"[i64]"}],"ret":"[i64]",
+         "time":"o_n_log_n","space":"o1"}]}]}"#;
+
+    fn budget_dispatcher(registry: Registry) -> Dispatcher {
+        let ws = Arc::new(
+            check_workspace(Workspace::from_json(BUDGET_WS).expect("reads")).expect("checks"),
+        );
+        Dispatcher::new(ws, Arc::new(registry))
+    }
+
+    fn sorting_proof(registry: &mut Registry, id: &str, profile: ImplProfile) {
+        registry.register_native_sync(id, |args| Ok(args[0].clone()));
+        registry
+            .register(Implementation::new(
+                format!("sort.{id}").as_str(),
+                q("demo::sort"),
+                here(),
+                id,
+                profile,
+            ))
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_proof_that_claims_more_than_the_proposition_allows_is_not_asked() {
+        let mut registry = Registry::new();
+        sorting_proof(
+            &mut registry,
+            "bubble",
+            ImplProfile::new(BigO::ON2, BigO::O1),
+        );
+        let err = budget_dispatcher(registry)
+            .call(&q("demo::sort"), vec![list(&[2, 1])], &Policy::Default)
+            .await
+            .unwrap_err();
+        let DispatchError::NoneAvailable { skipped, .. } = err else {
+            panic!("expected the claim to be ruled out");
+        };
+        assert!(
+            skipped
+                .iter()
+                .any(|s| s.contains("allows at most O(n log n)")),
+            "{skipped:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_proof_within_the_budget_answers_and_an_unnamed_claim_does_not() {
+        let mut registry = Registry::new();
+        sorting_proof(
+            &mut registry,
+            "merge",
+            ImplProfile::new(BigO::ONLogN, BigO::O1),
+        );
+        let done = budget_dispatcher(registry)
+            .call(&q("demo::sort"), vec![list(&[2, 1])], &Policy::Default)
+            .await
+            .expect("the claim fits the budget");
+        assert_eq!(done.implementation.to_string(), "sort.merge");
+
+        let mut registry = Registry::new();
+        sorting_proof(
+            &mut registry,
+            "vague",
+            ImplProfile::new(BigO::Custom("usually fast".into()), BigO::O1),
+        );
+        assert!(
+            budget_dispatcher(registry)
+                .call(&q("demo::sort"), vec![list(&[2, 1])], &Policy::Default)
+                .await
+                .is_err(),
+            "a claim with no rank cannot be shown to fit a bound"
+        );
     }
 
     /// A future that must deliver its value between 20 and 200 milliseconds

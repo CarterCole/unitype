@@ -113,6 +113,13 @@ Notes on the choices, each of which affects what is representable:
   `{"k":"bounded","of":{"k":"future","of":T},"wait":{"min":100,"max":5000}}`.
   An absent member is left out, so every existing type encodes as it did.
 
+  A window may be said in words instead of as a range. `wait not before 100` is
+  `100..`, and `wait up until 5000` is `..5000`. `wait not by 5000` is before
+  5000 ms, which in whole milliseconds is `..4999`. Two limits join with `and`,
+  one of each kind in either order: `wait not before 100 and not by 5000` is
+  `100..4999`. Checks compare whole milliseconds of the elapsed time, so
+  `not by 5000` admits an answer at 4999.9 ms and refuses one at 5000 ms.
+
   A restriction is part of what a type is, so it changes the address. A
   restricted type is a subtype of its unrestricted one. A pattern fits only the
   same pattern, since whether two expressions accept the same strings is not
@@ -185,6 +192,24 @@ that asks for one, and a signature that promises no window does not.
 with the same parameter and a plain `future<Response>` result does not follow
 it, since it promises no window.
 
+### 1.4 Complexity bounds
+
+A signature may bound how much time and space a proof of it may claim, as a
+named class: `"time": "o_n_log_n"`, `"space": "o1"`. The classes are `o1`,
+`o_log_n`, `o_n`, `o_n_log_n`, `o_n2`, `o_n3`, and `o_exp`. Any other class is
+refused, since two bounds must be comparable. A bound is part of the
+proposition's address, and an absent one leaves the address as it was.
+
+A refinement may promise less cost than what it refines, never more. It must
+bound each axis that what it refines bounds, and it may bound an axis that
+what it refines leaves open.
+
+A proof declares its own profile, time and space, where it is registered. That
+claim is the proof's own and is not verified. Dispatch does not ask a proof
+whose claim is over the bound, or is not a named class, and it records why.
+That is a refusal of the candidate, not a failure of the call, so another proof
+that fits may answer.
+
 ---
 
 ## 2. Serialization **(frozen)**
@@ -236,6 +261,7 @@ canonical output.
 | `"[T; 4]"`, `"[T; 1..8]"`, `"bytes[16]"`, `"map<K, V>[..10]"` | a bounded length |
 | `"str[len 1..63]"`, `"str[size ..253]"`, `"str[len 1..63, size ..253]"` | a string bounded in scalar values, in UTF-8 bytes, or both |
 | `"future<T>[wait 100..5000]"`, `"future<T>[wait 100..]"`, `"future<T>[wait ..5000]"` | a future whose value arrives within the window, in milliseconds |
+| `"future<T>[wait not before 100 and not by 5000]"`, `"future<T>[wait up until 5000]"` | the same windows in words: `not before` is at least, `up until` is at most, `not by` is before |
 | `str[match "[a-z]+"]`, `str[len 1..63, match "[a-z]+"]` | a string matching a regular expression in full |
 
 Expansion is directed by the schema, so a string is expanded only where a type
@@ -1030,3 +1056,6 @@ what it describes. Adding a variant without adding it here has to fail.
   window of milliseconds. §1.3 names restriction classes, which a signature
   follows by refining them. Every existing type encodes as it did; a restricted
   type is a new encoding with an address of its own.
+- **Complexity bounds** — §1.4 adds `time` and `space` to a signature: the most
+  a proof may claim, as a named class. Refinements may only promise less.
+  Absent bounds leave every address as it was.

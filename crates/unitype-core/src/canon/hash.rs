@@ -166,6 +166,12 @@ struct SigIdentity {
     params: Vec<TypeParamDecl>,
     /// The function type, with the same renaming applied.
     ty: Type,
+    /// The most time a proof may claim. Absent, it leaves the address alone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    time: Option<crate::meta::BigO>,
+    /// The most space a proof may claim. Absent, it leaves the address alone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    space: Option<crate::meta::BigO>,
 }
 
 fn sig_identity(sig: &FunctionSig) -> SigIdentity {
@@ -192,6 +198,8 @@ fn sig_identity(sig: &FunctionSig) -> SigIdentity {
             })
             .collect(),
         ty: rename_params(&identity_type(&sig.function_type()), &renames),
+        time: sig.time.clone(),
+        space: sig.space.clone(),
     }
 }
 
@@ -346,6 +354,8 @@ mod tests {
             params,
             ret,
             refines: None,
+            time: None,
+            space: None,
             body: None,
             meta: Metadata::default(),
         }
@@ -469,6 +479,8 @@ mod tests {
             params: vec![NamedParam::new(id("v"), Type::Param { name: id(param) })],
             ret: Type::Param { name: id(param) },
             refines: None,
+            time: None,
+            space: None,
             body: None,
             meta: Metadata::default(),
         };

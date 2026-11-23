@@ -427,6 +427,66 @@ fn parse_bounds(s: &str, spec: &str) -> Result<Json, SugarError> {
     Ok(Json::Object(obj))
 }
 
+/// A future's window: a range written as bounds are, `100..5000`, or limits in
+/// words. `not before 100` is no sooner than 100 milliseconds. `up until 5000`
+/// is no later than 5000. `not by 5000` is before 5000, which in whole
+/// milliseconds is no later than 4999. Two limits join with `and`, one of each
+/// kind, in either order.
+fn parse_window(s: &str, spec: &str) -> Result<Json, SugarError> {
+    let spec = spec.trim();
+    // A range has no spaces in it, and the words always do.
+    if !spec.contains(char::is_whitespace) {
+        return parse_bounds(s, spec);
+    }
+    let limit = |text: &str| -> Result<i64, SugarError> {
+        text.trim().parse::<i64>().map_err(|_| {
+            SugarError::Malformed(
+                s.to_string(),
+                "a window's limit is a whole number of milliseconds",
+            )
+        })
+    };
+    let (mut min, mut max): (Option<i64>, Option<i64>) = (None, None);
+    for clause in spec.split(" and ") {
+        let clause = clause.trim();
+        if let Some(text) = clause.strip_prefix("not before ") {
+            if min.replace(limit(text)?).is_some() {
+                return Err(SugarError::Malformed(
+                    s.to_string(),
+                    "a window has one `not before`",
+                ));
+            }
+        } else if let Some(text) = clause.strip_prefix("not by ") {
+            if max.replace(limit(text)?.saturating_sub(1)).is_some() {
+                return Err(SugarError::Malformed(
+                    s.to_string(),
+                    "a window has one upper limit",
+                ));
+            }
+        } else if let Some(text) = clause.strip_prefix("up until ") {
+            if max.replace(limit(text)?).is_some() {
+                return Err(SugarError::Malformed(
+                    s.to_string(),
+                    "a window has one upper limit",
+                ));
+            }
+        } else {
+            return Err(SugarError::Malformed(
+                s.to_string(),
+                "a window is `not before N`, `not by N`, or `up until N`, joined by `and`",
+            ));
+        }
+    }
+    let mut obj = Map::new();
+    if let Some(min) = min {
+        obj.insert("min".into(), Json::from(min));
+    }
+    if let Some(max) = max {
+        obj.insert("max".into(), Json::from(max));
+    }
+    Ok(Json::Object(obj))
+}
+
 /// Puts bounds on an already-expanded type, under the slot the type takes them
 /// in: an integer's `value`, a container's `len`, a string's `len` or `size`.
 fn bounds_on(s: &str, base: Json, spec: &str) -> Result<Json, SugarError> {
@@ -471,7 +531,7 @@ fn bounds_on(s: &str, base: Json, spec: &str) -> Result<Json, SugarError> {
                     "a future's bound is its window: `future<T>[wait 100..5000]`",
                 ));
             };
-            Ok(bounded(base, "wait", parse_bounds(s, window)?))
+            Ok(bounded(base, "wait", parse_window(s, window)?))
         }
         "bounded" => Err(SugarError::Malformed(
             s.to_string(),
@@ -684,6 +744,52 @@ mod tests {
             ("str[match [a-z]]", "double quotes"),
             ("future<str>[100..5000]", "window"),
             ("i32[wait 1..5]", "must be an integer"),
+        ] {
+            let err = parse_type_sugar(spelled).expect_err(spelled).to_string();
+            assert!(err.contains(why), "{spelled}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_window_can_be_said_in_words() {
+        let soon = |w: Bounds| Type::String.future().waiting(w);
+        assert_eq!(
+            sugar("future<str>[wait not before 100]"),
+            soon(Bounds::at_least(100))
+        );
+        assert_eq!(
+            sugar("future<str>[wait up until 5000]"),
+            soon(Bounds::at_most(5000))
+        );
+        assert_eq!(
+            sugar("future<str>[wait not by 5000]"),
+            soon(Bounds::at_most(4999)),
+            "before 5000 ms is no later than 4999 whole milliseconds"
+        );
+        assert_eq!(
+            sugar("future<str>[wait not before 100 and not by 5000]"),
+            soon(Bounds::between(100, 4999))
+        );
+        assert_eq!(
+            sugar("future<str>[wait up until 5000 and not before 100]"),
+            sugar("future<str>[wait 100..5000]"),
+            "the words and the range are the same window"
+        );
+    }
+
+    #[test]
+    fn a_window_in_words_refuses_repeats_and_nonsense() {
+        for (spelled, why) in [
+            (
+                "future<str>[wait not before 1 and not before 2]",
+                "one `not before`",
+            ),
+            (
+                "future<str>[wait not by 5 and up until 6]",
+                "one upper limit",
+            ),
+            ("future<str>[wait after 5]", "`not before N`"),
+            ("future<str>[wait not before soon]", "whole number"),
         ] {
             let err = parse_type_sugar(spelled).expect_err(spelled).to_string();
             assert!(err.contains(why), "{spelled}: {err}");

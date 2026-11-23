@@ -77,6 +77,8 @@ impl CheckedWorkspace {
             params: vec![NamedParam::new(subject, named(&link.from))],
             ret: named(&link.to),
             refines: None,
+            time: None,
+            space: None,
             body: Some(body),
             meta: Metadata::default(),
         })

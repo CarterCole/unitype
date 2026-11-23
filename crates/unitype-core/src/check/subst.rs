@@ -88,6 +88,8 @@ mod tests {
             )],
             ret: Type::Param { name: id("T") }.optional(),
             refines: None,
+            time: None,
+            space: None,
             body: None,
             meta: Default::default(),
         };

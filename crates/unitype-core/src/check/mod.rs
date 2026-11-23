@@ -14,6 +14,7 @@
 
 mod apply;
 mod bounds;
+mod cost;
 pub mod error;
 mod expr;
 mod inherit;
@@ -137,6 +138,7 @@ pub fn check_workspace(ws: Workspace) -> Result<CheckedWorkspace, Diagnostics> {
     inherit::verify(&checked, &mut diags);
     bounds::verify(&checked, &mut diags);
     refine::verify(&mut checked, &mut diags);
+    cost::verify(&checked, &mut diags);
     expr::verify(&checked, &mut diags);
     // Structural addresses come before link checking, which uses them to decide
     // whether a link claiming two types are identical is telling the truth.

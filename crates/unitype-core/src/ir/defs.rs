@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::ident::{Ident, QualifiedName};
 use crate::ir::expr::Expr;
 use crate::ir::ty::{Field, Type, TypeRef};
-use crate::meta::Metadata;
+use crate::meta::{BigO, Metadata};
 
 /// A generic parameter introduced by a declaration.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -289,6 +289,13 @@ pub struct FunctionSig {
     /// signature is called.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refines: Option<QualifiedName>,
+    /// The most time a proof of this may claim, as a complexity class. A proof
+    /// that claims more is not a candidate for this proposition.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time: Option<BigO>,
+    /// The most space a proof of this may claim beyond its input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space: Option<BigO>,
     /// A constructive proof written in the expression IR.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub body: Option<Expr>,
@@ -360,6 +367,8 @@ mod tests {
             params: vec![NamedParam::new(id("xs"), Type::I64.list())],
             ret: Type::I64.list(),
             refines: None,
+            time: None,
+            space: None,
             body: None,
             meta: Metadata::default(),
         };
@@ -384,6 +393,8 @@ mod tests {
             )],
             ret: Type::Param { name: id("T") }.optional(),
             refines: None,
+            time: None,
+            space: None,
             body: None,
             meta: Metadata::default(),
         };
@@ -425,6 +436,8 @@ mod tests {
             params: vec![NamedParam::new(id("xs"), Type::I64.list())],
             ret: Type::I64.list(),
             refines: None,
+            time: None,
+            space: None,
             body: None,
             meta: Metadata::default(),
         };

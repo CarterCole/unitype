@@ -226,6 +226,8 @@ impl CheckedWorkspace {
             params: vec![NamedParam::new(subject, named(from))],
             ret: named(to),
             refines: None,
+            time: None,
+            space: None,
             body: Some(carried),
             meta: Metadata::default(),
         })
