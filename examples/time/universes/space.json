@@ -1,0 +1,40 @@
+{
+  "name": "space",
+  "doc": "Physical things. A thing that has two or three dimensions is sized, and its size is its extent in each.",
+  "types": [
+    {
+      "k": "struct",
+      "name": "Extent2",
+      "doc": "A two-dimensional extent: width and height, in metres.",
+      "fields": [
+        { "name": "width", "ty": "f64" },
+        { "name": "height", "ty": "f64" }
+      ]
+    },
+    {
+      "k": "struct",
+      "name": "Extent3",
+      "doc": "A three-dimensional extent: width, height, and depth, in metres.",
+      "fields": [
+        { "name": "width", "ty": "f64" },
+        { "name": "height", "ty": "f64" },
+        { "name": "depth", "ty": "f64" }
+      ]
+    },
+    {
+      "k": "enum",
+      "name": "Dimensions",
+      "doc": "How many dimensions a physical thing has, and its extent in them. Bounds apply to integers only, so a negative length is not refused here.",
+      "variants": [
+        { "name": "two", "payload": "Extent2" },
+        { "name": "three", "payload": "Extent3" }
+      ]
+    },
+    {
+      "k": "struct",
+      "name": "Sized",
+      "doc": "Anything physical. A thing is sized when it has a size in two or three dimensions.",
+      "fields": [{ "name": "size", "ty": "Dimensions" }]
+    }
+  ]
+}

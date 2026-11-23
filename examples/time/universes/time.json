@@ -1,0 +1,46 @@
+{
+  "name": "time",
+  "doc": "Anything that happens in time. Each occurrence has an existence: an instant, or a span that starts at an instant and lasts a duration.",
+  "types": [
+    {
+      "k": "alias",
+      "name": "Moment",
+      "doc": "A point in time as an ISO 8601 date-time string. The pattern checks the shape only, so a date that does not exist, such as 2026-02-30, still matches.",
+      "target": {
+        "k": "bounded",
+        "of": "str",
+        "match": "\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?(Z|[+-]\\d{2}:\\d{2})"
+      }
+    },
+    {
+      "k": "struct",
+      "name": "Instant",
+      "doc": "An occurrence at a single moment.",
+      "fields": [{ "name": "at", "ty": "Moment" }]
+    },
+    {
+      "k": "struct",
+      "name": "Span",
+      "doc": "An occurrence that starts at a moment and lasts a duration in milliseconds.",
+      "fields": [
+        { "name": "start", "ty": "Moment" },
+        { "name": "duration_ms", "doc": "How long it lasts, counted from start. Zero is allowed and is not the same as an instant.", "ty": "i64[0..]" }
+      ]
+    },
+    {
+      "k": "enum",
+      "name": "Existence",
+      "doc": "When an occurrence is: either instantaneous, or a span with a duration.",
+      "variants": [
+        { "name": "instant", "payload": "Instant" },
+        { "name": "span", "payload": "Span" }
+      ]
+    },
+    {
+      "k": "struct",
+      "name": "Occurrence",
+      "doc": "Anything that happens in time. Types that represent events, tasks, or other timed things extend this and inherit its existence.",
+      "fields": [{ "name": "existence", "ty": "Existence" }]
+    }
+  ]
+}

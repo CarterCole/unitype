@@ -1,0 +1,26 @@
+{
+  "name": "actor",
+  "doc": "Things that exist in time and space and act there: a computer, a natural process, or an AI.",
+  "types": [
+    {
+      "k": "enum",
+      "name": "ActorKind",
+      "doc": "What kind of actor it is.",
+      "variants": [
+        { "name": "computer", "doc": "A machine that runs programs." },
+        { "name": "natural_process", "doc": "Something that happens in nature without anyone running it, such as weather or erosion." },
+        { "name": "ai", "doc": "A model or system that produces output from input." }
+      ]
+    },
+    {
+      "k": "struct",
+      "name": "Actor",
+      "doc": "A thing that acts in time and space. Its existence in time is a time::Existence, and its size in two or three dimensions is a space::Dimensions.",
+      "fields": [
+        { "name": "kind", "ty": "ActorKind" },
+        { "name": "existence", "ty": "time::Existence" },
+        { "name": "size", "ty": "space::Dimensions" }
+      ]
+    }
+  ]
+}
