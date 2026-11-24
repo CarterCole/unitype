@@ -406,6 +406,112 @@ wording follows the checker's existing ones.
    each with a `..5000` commitment and a `..5000` input budget. Every window rule
    passes, so the acyclic rule alone refuses it: `cycle: a → b → a`.
 
+## OWL mapping
+
+An OWL ontology can hold a graph as data, but it cannot check one. This section
+says which parts map, which do not, and what the mapping needs first.
+
+It uses the `owl::Individual` type from `examples/time/MAPS.md`, which is on
+`main` at 8d83bd0 and not on this branch. The IRIs below are written in full
+because the universe base IRI (MAPS §7.2) is still open.
+
+### Mapping
+
+| Design | OWL | Notes |
+|---|---|---|
+| Node | Named individual, IRI = base + node name | Node names must be IRI fragments (Q13). |
+| Plan, task, actor | `rdf:type` of the node: `plan:Plan`, `plan:Task`, `actor:Actor` | The three classes are pairwise disjoint. |
+| Unlabelled edge `a –rel→ b` | Object-property assertion `a rel b`, in `a`'s `object` map | Exact when `(a, rel, b)` is unique. |
+| Labelled edge | Reified edge individual (below) | A triple has no slot for a label. |
+| `rel` | Object property in the layer's vocabulary; on a reified edge, the edge's type, a subclass of `graph:Edge` | |
+| `label` | `graph:label` data property on the reified edge | |
+| Directed graph | Object property, which is OWL's default | |
+| Undirected graph | Relation that is its own inverse (`inverse_of` contains itself) | OWL 2 defines a symmetric property this way. Direction lives on the property (Q12). |
+| `root` | No OWL construct; a `graph:root` object property on a graph individual | Rootedness is a check, below. |
+| `root_reach` | Direction of a transitive `reaches`, a super-property of `rel` | Names a direction; asserts nothing. |
+
+The labelled `feeds` edge from `forecast` to `route` in `field_survey`, as an
+individual:
+
+```json
+{
+  "iri": "https://example.com/plan#feeds-forecast-route",
+  "types": ["https://example.com/plan#feeds"],
+  "data": { "https://example.com/graph#label": [{ "$tag": "string", "value": "forecast" }] },
+  "annotations": {},
+  "object": {
+    "https://example.com/graph#from": ["https://example.com/survey#forecast"],
+    "https://example.com/graph#to": ["https://example.com/survey#route"]
+  },
+  "same_as": [],
+  "different_from": []
+}
+```
+
+The direct assertion `forecast feeds route` is kept only where no other edge
+shares its triple. Two edges from one producer to one consumer with different
+labels are one triple in OWL, which happens when a consumer takes two parameters
+from the same plan. The reified edge keeps both.
+
+### Endpoints: refusal by inconsistency
+
+Domain and range, with disjoint classes, make the plan layer's endpoint rules
+into refusals that a reasoner reports:
+
+- `feeds`: domain and range `plan:Plan`.
+- `realizes`: domain `plan:Task`, range `plan:Plan`.
+- `performs`: domain `actor:Actor`, range `plan:Task`.
+
+A task used as a feed endpoint then types as both `Plan` and `Task`, which the
+disjointness axiom reports. This works only for nodes already typed by kind.
+An untyped node takes its type from domain or range inference and is accepted,
+so check 2 has to type every node before OWL is asked.
+
+### What OWL cannot express
+
+- **The window rules.** G1, S1, lower bounds, delivery in window, causality, and
+  containment in an actor's span compare numbers and instants across individuals.
+  OWL 2 data ranges constrain one literal against a constant. SWRL builtins can
+  compare two literals in a rule, so S1 could be written as a rule that derives a
+  violation. SWRL is outside OWL 2 DL, and no reasoner has been run on it here.
+- **Acyclicity.** OWL's only cycle-like characteristic is irreflexivity, which
+  forbids self-loops. `a feeds b` with `b feeds a` is consistent OWL.
+- **Rootedness, and exact counts, as requirements.** OWL is open world. A node
+  with no path to the root, or a parameter fed twice, is not a contradiction: the
+  reasoner infers the missing link. A functional property does not refuse a second
+  value; it infers the two are the same individual (`owl:sameAs`). A second
+  `realizes` on one task would silently merge two plans. These are closed-world
+  checks.
+- **Unique node names.** OWL has no unique-name assumption. Two node IRIs can be
+  one individual unless `owl:AllDifferent` says otherwise.
+- **No duplicate edges.** Triples are sets, so a duplicate collapses. The reified
+  form can hold one, and the graph pass refuses it.
+- **Time values.** A `wait` window is a duration from the origin, and
+  `time::Existence` is an interval. OWL has neither.
+- **Window subtyping.** `future<Route>[wait ..5000]` refines `..5500` by inclusion
+  of ranges, which OWL has no construct for.
+- **Plans as signatures.** OWL has no functions, so parameter names and order are
+  not represented. The parameters are the labelled `feeds` edges.
+- **Sequencing, races and replanning.** These are operations, not logic.
+
+### What the mapping needs first
+
+- **Base IRIs** (MAPS §7.2). Without them a node name is not an IRI.
+- **Node names as IRI fragments.** `nodes` is `[str]`, so `"fetch forecast"` is a
+  legal node. The `owl::Individual` pattern refuses the bare name `route` as an
+  IRI, which is what a node name is today (checked in the scratch project).
+
+### Two findings
+
+- **Direction lives on the property.** `directed` is a flag on each graph, but
+  OWL's symmetry belongs to the relation, for the whole ontology. A `contains`
+  relation cannot be symmetric in one graph and asymmetric in another, so
+  undirected graphs need relation names that directed graphs do not use. Q12.
+- **The `Task` name.** A class's IRI is under its universe's base. If the graph
+  names a `plan:Task` class, it and the `Task` in `task.json` are different
+  classes at the OWL level, while the authoring names still clash. Whether they
+  are the same is Q6. `task.json` is not edited here.
+
 ## Open questions
 
 - **Q1. Sequenced plans.** A plan called when an input arrives, rather than at the
@@ -439,6 +545,12 @@ wording follows the checker's existing ones.
 - **Q11. Undirected rootedness.** For an undirected graph, a root connects every
   node. Is "connected to the root" the right meaning, or should an undirected graph
   name a root only when it is a tree?
+- **Q12. Where direction lives.** OWL puts symmetry on the relation, not the graph.
+  Either undirected graphs use relation names that directed graphs never use, or
+  the `directed` flag becomes a check that each graph's relations match their
+  declared symmetry. Which one?
+- **Q13. Node names.** Identifiers only, the same rule as unitype names, so IRI
+  fragments need no escaping? Or any string, percent-encoded on export?
 
 ## Findings from building the example
 
@@ -466,6 +578,11 @@ wording follows the checker's existing ones.
   `field_survey`). `validate` also accepts a `root_reach` on an undirected graph,
   which the graph pass will refuse (rule 3); the type cannot say it.
 - Probes for the findings above, each in its own scratch project.
+- OWL mapping: the `owl` universe from `examples/time/MAPS.md` (on `main`, 8d83bd0)
+  was extracted into a scratch project with `time`, `actor`, `graph`, `plan` and
+  `survey`. `check` passes (7 universes, 28 types, 5 signatures). `validate --type
+  owl::Individual` accepts the reified `feeds` edge, and refuses it with a bare
+  node name in place of an IRI. No OWL reasoner was run.
 
 Nothing here checks feeds, cycles or windows in the checker yet. Those passes are
 the next step, and they are what this design specifies.
