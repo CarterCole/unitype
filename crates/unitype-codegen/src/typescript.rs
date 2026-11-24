@@ -275,20 +275,29 @@ fn emit_fields(
             w.comment("// ", &caveat);
         }
         // A field that may be absent is optional *and* nullable, because the
-        // wire has one way of being absent and TypeScript has two. What may be
-        // absent is what the canonical form leaves out, and so what a body may
-        // leave out: anything that expands to `T?`, `null` or `any`.
-        let optional = matches!(
-            ws.expand_alias(&field.ty),
-            Type::Optional { .. } | Type::Unit | Type::Any
-        );
+        // wire has one way of being absent and TypeScript has two.
         w.write(format_args!(
             "{}{}: {};",
             profile.name(&field.name),
-            if optional { "?" } else { "" },
+            if may_be_absent(ws, &field.ty) {
+                "?"
+            } else {
+                ""
+            },
             profile.spell(&field.ty)
         ));
     }
+}
+
+/// Whether a field of this type may be left out.
+///
+/// What may be absent is what the canonical form leaves out, and so what a
+/// body may leave out: anything that expands to `T?`, `null` or `any`.
+fn may_be_absent(ws: &CheckedWorkspace, ty: &Type) -> bool {
+    matches!(
+        ws.expand_alias(ty),
+        Type::Optional { .. } | Type::Unit | Type::Any
+    )
 }
 
 fn emit_enum(w: &mut CodeWriter, def: &EnumDef, profile: &LanguageProfile) {
@@ -525,7 +534,17 @@ impl<'a> Body<'a> {
             Expr::Lit { value } => crate::typescript::literal(value),
             Expr::Var { name } => profile.name(name),
             Expr::Field { of, name } => {
-                format!("{}.{}", self.expression(of, env), profile.name(name))
+                let read = format!("{}.{}", self.expression(of, env), profile.name(name));
+                // A field that may be absent is declared optional, so
+                // TypeScript reads it as `undefined` as well as `null`, where
+                // the profile's `T?` is `T | null` alone. Absent and null are
+                // one state on the wire, so the read gives `null` for both.
+                let holds = self.ws.type_of_expr(expr, env);
+                if holds.is_some_and(|t| may_be_absent(self.ws, &t)) {
+                    format!("({read} ?? null)")
+                } else {
+                    read
+                }
             }
             Expr::MakeRecord { fields, .. } => {
                 let parts: Vec<String> = fields
@@ -760,14 +779,14 @@ impl<'a> Body<'a> {
     }
 }
 
-/// Whether TypeScript already holds what `expr` produces as the checker does,
-/// so that a binding of it need not say.
+/// Whether TypeScript takes what `expr` produces from a declaration, so that a
+/// binding of it need not say.
 ///
 /// A name, a field and a call are read off what declared or bound them, and an
 /// operation always gives a number or a boolean. Anything else TypeScript
-/// works out from its shape, which can say less. A field read is also the one
-/// place TypeScript holds `undefined` beside `null` for something absent, which
-/// a written-out `T | null` would refuse.
+/// works out from its shape, which can say less. A declaration can say less
+/// than the checker as well, `unknown` where the checker has a union, and then
+/// a binding that said more would refuse what it is given.
 fn known(expr: &Expr) -> bool {
     matches!(
         expr,
@@ -1079,6 +1098,94 @@ mod tests {
         );
     }
 
+    const READS: &str = r#"{"universes":[{"name":"demo","types":[
+        {"k":"alias","name":"Later","target":"i64?"},
+        {"k":"struct","name":"Circle","fields":[
+            {"name":"radius","ty":"float"},{"name":"note","ty":"str?"},{"name":"when","ty":"Later"},
+            {"name":"extra","ty":"any"},{"name":"nothing","ty":"null"}]},
+        {"k":"struct","name":"Holder","fields":[{"name":"c","ty":"Circle"}]},
+        {"k":"struct","name":"Painted","fields":[
+            {"name":"shade","ty":{"k":"union","members":[
+                {"k":"literal","value":{"str":"red"}},{"k":"literal","value":{"str":"blue"}}]}}]}],
+      "functions":[
+        {"name":"takes","params":[{"name":"s","ty":"str?"}],"ret":"str"},
+        {"name":"returned","params":[{"name":"c","ty":"Circle"}],"ret":"str?",
+         "body":{"k":"field","of":{"k":"var","name":"c"},"name":"note"}},
+        {"name":"passed","params":[{"name":"c","ty":"Circle"}],"ret":"str",
+         "body":{"k":"call","sig":"demo::takes","args":[
+            {"k":"field","of":{"k":"var","name":"c"},"name":"note"}]}},
+        {"name":"chosen","params":[{"name":"b","ty":"bool"},{"name":"c","ty":"Circle"}],"ret":"str?",
+         "body":{"k":"let","name":"n",
+                 "value":{"k":"if","cond":{"k":"var","name":"b"},
+                          "then":{"k":"field","of":{"k":"var","name":"c"},"name":"note"},
+                          "else":{"k":"lit","value":null}},
+                 "body":{"k":"var","name":"n"}}},
+        {"name":"later","params":[{"name":"c","ty":"Circle"}],"ret":"Later",
+         "body":{"k":"field","of":{"k":"var","name":"c"},"name":"when"}},
+        {"name":"extra","params":[{"name":"c","ty":"Circle"}],"ret":"any",
+         "body":{"k":"field","of":{"k":"var","name":"c"},"name":"extra"}},
+        {"name":"nothing","params":[{"name":"c","ty":"Circle"}],"ret":"null",
+         "body":{"k":"field","of":{"k":"var","name":"c"},"name":"nothing"}},
+        {"name":"radius","params":[{"name":"c","ty":"Circle"}],"ret":"float",
+         "body":{"k":"field","of":{"k":"var","name":"c"},"name":"radius"}},
+        {"name":"deep","params":[{"name":"h","ty":"Holder"}],"ret":"str?",
+         "body":{"k":"field","of":{"k":"field","of":{"k":"var","name":"h"},"name":"c"},"name":"note"}},
+        {"name":"loose","params":[{"name":"r","ty":{"k":"record","fields":[{"name":"note","ty":"str?"}]}}],
+         "ret":"str?","body":{"k":"field","of":{"k":"var","name":"r"},"name":"note"}},
+        {"name":"shaded","params":[{"name":"p","ty":"Painted"}],"ret":"any",
+         "body":{"k":"let","name":"k","value":{"k":"field","of":{"k":"var","name":"p"},"name":"shade"},
+                 "body":{"k":"var","name":"k"}}}]}]}"#;
+
+    #[test]
+    fn a_field_that_may_be_absent_is_read_as_null_when_it_is() {
+        let out = generate(READS);
+        assert!(
+            out.contains("return (c.note ?? null);"),
+            "TypeScript reads an optional field as `undefined` too, which `string | null` \
+             refuses: {out}"
+        );
+        assert!(out.contains("return takes((c.note ?? null));"), "{out}");
+        assert!(
+            out.contains("return ((n: string | null) => n)((b ? (c.note ?? null) : null));"),
+            "a binding that says it holds `string | null` has to be given one: {out}"
+        );
+    }
+
+    #[test]
+    fn an_alias_an_any_and_a_null_are_read_as_null_when_absent_too() {
+        let out = generate(READS);
+        assert!(out.contains("return (c.when ?? null);"), "{out}");
+        assert!(out.contains("return (c.extra ?? null);"), "{out}");
+        assert!(out.contains("return (c.nothing ?? null);"), "{out}");
+    }
+
+    #[test]
+    fn a_field_that_has_to_be_there_is_read_as_it_is() {
+        let out = generate(READS);
+        assert!(out.contains("return c.radius;"), "{out}");
+        assert!(
+            out.contains("return (h.c.note ?? null);"),
+            "only the read that may find nothing is folded: {out}"
+        );
+    }
+
+    #[test]
+    fn a_field_of_an_anonymous_record_is_read_as_null_when_absent() {
+        let out = generate(READS);
+        assert!(out.contains("return (r.note ?? null);"), "{out}");
+    }
+
+    #[test]
+    fn a_binding_of_a_field_declared_as_less_than_it_holds_says_nothing() {
+        let out = generate(READS);
+        assert!(out.contains("shade: unknown;"), "{out}");
+        assert!(
+            out.contains("return ((k ) => k)(p.shade);"),
+            "a binding that said `\"blue\" | \"red\"` would refuse the `unknown` it is \
+             given: {out}"
+        );
+    }
+
     #[test]
     fn an_enum_becomes_a_union_tagged_the_way_the_wire_tags_it() {
         let out = generate(SHAPES);
@@ -1362,8 +1469,7 @@ mod tests {
         let out = generate(BINDINGS);
         assert!(
             out.contains("return ((n ) => "),
-            "a field that may be absent reads as `undefined` too, which `string | null` \
-             would refuse: {out}"
+            "a field is read off its declaration, as a name is: {out}"
         );
         assert!(
             out.contains("return ((m ) => ((d ) => ((e ) => e)(d))((m + m)))(measure(s));"),
