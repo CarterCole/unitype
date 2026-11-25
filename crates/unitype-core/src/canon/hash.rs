@@ -183,6 +183,7 @@ fn sig_identity(sig: &FunctionSig) -> SigIdentity {
             .enumerate()
             .map(|(i, decl)| TypeParamDecl {
                 name: positional_name(i),
+                arity: decl.arity,
                 bounds: decl
                     .bounds
                     .iter()
@@ -231,6 +232,10 @@ fn rename_params(t: &Type, renames: &HashMap<Ident, Ident>) -> Type {
     match node {
         Type::Param { name } => Type::Param {
             name: renames.get(&name).cloned().unwrap_or(name),
+        },
+        Type::Apply { name, args } => Type::Apply {
+            name: renames.get(&name).cloned().unwrap_or(name),
+            args,
         },
         other => other,
     }

@@ -371,6 +371,22 @@ impl CheckedWorkspace {
                 format!("`{name}` is still generic here; supply its type argument first"),
             )),
 
+            (Type::Apply { name, .. }, _) => errors.push(ValueError::saying(
+                path,
+                ty,
+                value,
+                format!(
+                    "`{name}` is still a generic constructor here; supply the constructor first"
+                ),
+            )),
+
+            (Type::Constructor { .. }, _) => errors.push(ValueError::saying(
+                path,
+                ty,
+                value,
+                "a type constructor is not a type that data can hold".into(),
+            )),
+
             _ => mismatch(errors),
         }
     }

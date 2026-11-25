@@ -280,6 +280,20 @@ fn plan(
     if sig.params_decl.is_empty() {
         return Err(ParametricError::NotGeneric(name.clone()));
     }
+    // A parameter standing for a type constructor is not filled with a type: a
+    // free theorem over one needs the harness to choose constructors, which it
+    // does not do yet.
+    for decl in &sig.params_decl {
+        if decl.is_higher_order() {
+            return Err(ParametricError::Unfillable {
+                sig: name.clone(),
+                what: format!("`{}`", decl.name),
+                why:
+                    "stands for a type constructor, and a free theorem over one is a later addition"
+                        .into(),
+            });
+        }
+    }
     for decl in &sig.params_decl {
         if let Some(bound) = decl.bounds.first() {
             return Err(ParametricError::Bounded {
@@ -664,6 +678,11 @@ impl<'a> Shape<'a> {
                 None => value.clone(),
             },
             _ if !self.mentions_param(ty) => value.clone(),
+            Type::Apply { .. } | Type::Constructor { .. } => {
+                return Err(format!(
+                    "`{ty}` applies a type constructor, which this harness cannot read"
+                ));
+            }
 
             Type::Optional { of } => match value {
                 Value::Null => Value::Null,
@@ -779,6 +798,15 @@ impl Filler<'_, '_> {
                 None => return Err(Unfillable::of(ty, "is bound by nothing in scope")),
             },
             Type::Never => return Err(Unfillable::of(ty, "has no values")),
+            Type::Apply { .. } => {
+                return Err(Unfillable::of(
+                    ty,
+                    "applies a type constructor, and no constructor is chosen to fill it with",
+                ));
+            }
+            Type::Constructor { .. } => {
+                return Err(Unfillable::of(ty, "is a type constructor, not a type"));
+            }
             Type::Any => Value::Int(k as i64),
             Type::Unit => Value::Null,
             Type::Bool => Value::Bool(k % 2 == 0),

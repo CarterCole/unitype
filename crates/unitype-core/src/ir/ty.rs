@@ -10,6 +10,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 
 use crate::ident::Ident;
+use crate::ir::functor::Functor;
 
 /// The largest magnitude of integer that a float holds exactly.
 ///
@@ -291,6 +292,29 @@ pub enum Type {
         /// The parameter's name.
         name: Ident,
     },
+    /// A higher-order parameter applied to arguments: `M<A>`, where `M` stands
+    /// for a unary type constructor such as a list.
+    ///
+    /// Only a parameter declared with an arity of one can be applied, and it is
+    /// applied to exactly one argument. Substituting a [`Type::Constructor`] for
+    /// `M` gives that constructor's application: `M<A>` with `M` bound to
+    /// `list` is `[A]`. Until then the application is opaque, equal only to
+    /// itself, as a bare parameter is.
+    Apply {
+        /// The higher-order parameter being applied.
+        name: Ident,
+        /// The arguments it is applied to.
+        args: Vec<Type>,
+    },
+    /// A unary type constructor, passed as the argument of a higher-order
+    /// parameter: `list` in `Monad<list>`.
+    ///
+    /// It is not a type that values have. It is only meaningful as the argument
+    /// for a parameter of arity one, and is refused anywhere else.
+    Constructor {
+        /// Which constructor it is.
+        functor: Functor,
+    },
     /// A type with bounds on its values or its length.
     ///
     /// The values are the inner type's values that lie within the bounds, and
@@ -383,6 +407,12 @@ impl fmt::Display for Type {
 
             Type::Ref(r) => write!(f, "{r}"),
             Type::Param { name } => write!(f, "{name}"),
+            Type::Apply { name, args } => write!(f, "{name}<{}>", join(args, ", ")),
+            Type::Constructor { functor } => f.write_str(match functor {
+                Functor::List => "list",
+                Functor::Optional => "optional",
+                Functor::Future => "future",
+            }),
 
             // The bounds go where the thing they bound is said: a list's length
             // inside its brackets, an integer's range after it, and a string's
@@ -604,6 +634,8 @@ impl Type {
             Type::Future { .. } => "future",
             Type::Ref(_) => "ref",
             Type::Param { .. } => "param",
+            Type::Apply { .. } => "apply",
+            Type::Constructor { .. } => "constructor",
             Type::Bounded { .. } => "bounded",
         }
     }
@@ -623,6 +655,7 @@ impl Type {
                 | Type::Bytes
                 | Type::Literal { .. }
                 | Type::Param { .. }
+                | Type::Constructor { .. }
         )
     }
 
@@ -656,6 +689,7 @@ impl Type {
                 params.iter().chain(std::iter::once(ret.as_ref())).collect()
             }
             Type::Ref(r) => r.args.iter().collect(),
+            Type::Apply { args, .. } => args.iter().collect(),
             _ => Vec::new(),
         }
     }
@@ -724,6 +758,10 @@ impl Type {
                 name: r.name.clone(),
                 args: children,
             }),
+            Type::Apply { name, .. } => Type::Apply {
+                name: name.clone(),
+                args: children,
+            },
             _ => self.clone(),
         }
     }

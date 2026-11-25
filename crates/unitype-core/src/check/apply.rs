@@ -18,9 +18,9 @@
 
 use crate::check::CheckedWorkspace;
 use crate::check::error::describe;
-use crate::check::subst::{Subst, bind, substitute};
-use crate::ident::QualifiedName;
-use crate::ir::{FunctionSig, Type};
+use crate::check::subst::{Subst, bind, fits_arity, substitute};
+use crate::ident::{Ident, QualifiedName};
+use crate::ir::{FunctionSig, Functor, Type};
 
 /// Why a call or a pipeline does not type-check.
 #[derive(thiserror::Error, Debug, Clone, PartialEq)]
@@ -44,6 +44,21 @@ pub enum CallError {
         expected: usize,
         /// How many were given.
         got: usize,
+    },
+    /// A type argument was of the wrong kind: a type where a type constructor
+    /// is wanted, or a constructor where a type is.
+    #[error(
+        "type argument {index} of `{sig}` is the wrong kind for `{param}`: {expected} is wanted"
+    )]
+    TypeArgKind {
+        /// The signature being called.
+        sig: QualifiedName,
+        /// Which type argument, counting from zero.
+        index: usize,
+        /// The parameter it was supplied for.
+        param: Ident,
+        /// What the parameter takes, in words.
+        expected: &'static str,
     },
     /// An argument was not of a usable type.
     #[error("argument {index} of `{sig}`: `{found}` cannot be used where `{required}` is expected")]
@@ -128,6 +143,20 @@ impl CheckedWorkspace {
                         got: supplied.len(),
                     });
                 }
+                for (index, (decl, arg)) in sig.params_decl.iter().zip(supplied).enumerate() {
+                    if !fits_arity(decl.arity, arg) {
+                        return Err(CallError::TypeArgKind {
+                            sig: name.clone(),
+                            index,
+                            param: decl.name.clone(),
+                            expected: if decl.arity == 0 {
+                                "a type"
+                            } else {
+                                "a type constructor"
+                            },
+                        });
+                    }
+                }
                 bind(&sig.params_decl, supplied)
             }
             None => self.infer_type_arguments(name, sig, args)?,
@@ -185,6 +214,34 @@ impl CheckedWorkspace {
             // here; the subtyping check reports it, and the caller can always
             // say what they meant with explicit type arguments.
             subst.entry(name.clone()).or_insert(actual);
+            return;
+        }
+
+        // A higher-order parameter applied to a type: `M<A>` against `[i64]`
+        // binds `M` to the list constructor and `A` to `i64`. The argument has
+        // to be built with a constructor the parameter can stand for; anything
+        // else leaves the parameter unbound, so the caller is asked to say.
+        if let Type::Apply { name, args } = &pattern {
+            if let [arg] = args.as_slice() {
+                // The constructor the argument was built with, and what it holds.
+                let read = match &actual {
+                    Type::Apply {
+                        name: forwarded,
+                        args: inner,
+                    } => inner.first().map(|inner| {
+                        let forwarded = Type::Param {
+                            name: forwarded.clone(),
+                        };
+                        (forwarded, inner)
+                    }),
+                    other => Functor::split(other)
+                        .map(|(functor, inner)| (Type::Constructor { functor }, inner)),
+                };
+                if let Some((constructor, inner)) = read {
+                    subst.entry(name.clone()).or_insert(constructor);
+                    self.match_shape(arg, inner, subst);
+                }
+            }
             return;
         }
 

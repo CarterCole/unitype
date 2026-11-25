@@ -20,6 +20,20 @@ pub fn bind(params: &[TypeParamDecl], args: &[Type]) -> Subst {
         .collect()
 }
 
+/// Whether `arg` may be supplied for a parameter of `arity`.
+///
+/// An ordinary parameter takes a type; a higher-order one takes a constructor.
+/// The two are never interchangeable, so a mismatch is a kind error, reported
+/// where the argument is written.
+pub fn fits_arity(arity: u32, arg: &Type) -> bool {
+    let is_constructor = matches!(arg, Type::Constructor { .. });
+    match arity {
+        0 => !is_constructor,
+        1 => is_constructor,
+        _ => false,
+    }
+}
+
 /// Replaces every bound generic parameter in `t`.
 pub fn substitute(t: &Type, subst: &Subst) -> Type {
     if subst.is_empty() {
@@ -29,6 +43,20 @@ pub fn substitute(t: &Type, subst: &Subst) -> Type {
     let node = t.with_children(kids);
     match node {
         Type::Param { name } => subst.get(&name).cloned().unwrap_or(Type::Param { name }),
+        // A constructor bound to a higher-order parameter applies to the argument
+        // it was given: `M<A>` with `M` bound to `list` is `[A]`. Anything else
+        // bound there is a kind error, which the caller reports before this runs,
+        // so the application is left as written.
+        Type::Apply { name, args } => match (subst.get(&name), args.as_slice()) {
+            (Some(Type::Constructor { functor }), [arg]) => functor.apply(arg.clone()),
+            // A higher-order parameter of the caller, passed on, is still
+            // applied: its name is what changes.
+            (Some(Type::Param { name: forwarded }), _) => Type::Apply {
+                name: forwarded.clone(),
+                args,
+            },
+            _ => Type::Apply { name, args },
+        },
         other => other,
     }
 }

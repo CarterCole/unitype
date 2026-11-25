@@ -49,6 +49,8 @@ Type ::= never | any | unit | bool | i32 | i64 | f64 | string | bytes
        | future(Type)
        | ref(universe, name, Type*)
        | param(name)
+       | apply(name, Type)
+       | constructor(functor)
        | bounded(Type, value: Bounds?, len: Bounds?, size: Bounds?,
                  match: string?, wait: Bounds?)
 
@@ -210,6 +212,41 @@ whose claim is over the bound, or is not a named class, and it records why.
 That is a refusal of the candidate, not a failure of the call, so another proof
 that fits may answer.
 
+### 1.5 Higher-order parameters
+
+A generic parameter may stand for a type constructor rather than a type. Such a
+parameter has an **arity** of one, written `"arity": 1` on its declaration; an
+ordinary parameter has arity zero, and the field is absent. Arity above one is
+refused, since no constructor with two arguments is named.
+
+It is used by applying it: `apply(M, A)`, written `M<A>`, is the constructor `M`
+applied to `A`. A constructor is one of the three that map through, `list`,
+`optional`, and `future`, and is passed for the parameter as `constructor(list)`
+and so on. A constructor is not a type that a value has, so it is refused
+anywhere a type is needed. These rules follow.
+
+- An applied parameter takes exactly one type argument. A higher-order parameter
+  used bare, without an argument, is refused.
+- A constructor is given for a parameter of arity one, and a type for one of
+  arity zero. A reference that passes the wrong kind is refused where it is
+  written. A higher-order parameter may be passed on to another that takes a
+  constructor, which is how one monad can be built from another.
+- Substituting a constructor for a parameter applies it: `M<A>` with `M` bound to
+  `list` is `[A]`, and likewise for `optional` and `future`. Substituting a
+  parameter for a parameter renames the application.
+- A call infers the constructor from an argument of that shape: `[i64]` against
+  `M<A>` binds `M` to `list` and `A` to `i64`. A type that has no constructor
+  leaves `M` unbound, and the caller states the type arguments.
+- An applied type is equal only to itself. A declaration holds its argument
+  invariantly, since nothing says how an unknown constructor holds what it is
+  given. This is the strictest rule, and is sound for the same reason as §1.1:
+  values are immutable.
+- A higher-order parameter cannot be bounded by an interface yet.
+
+A declaration generic over a constructor is addressed by its shape (§5.4), and
+an applied type has an address of its own. No target writes one yet (§7.5), and
+the free theorem for one is a later addition (§7.6).
+
 ---
 
 ## 2. Serialization **(frozen)**
@@ -227,7 +264,8 @@ never written as `null` or `[]`.
 ```
 
 Kind tokens for types: `never any unit bool i32 i64 f64 string bytes literal
-optional list map tuple record union function future ref param bounded`.
+optional list map tuple record union function future ref param apply
+constructor bounded`.
 For declarations: `struct interface enum alias`.
 For expressions (§6): `lit var field make_record make_list make_tuple
 make_variant call let if map_through prim fold case match`.
@@ -465,6 +503,9 @@ what normalization would have rewritten. Then:
 
 - a generic parameter is `{"k":"param","i":n}`, `n` its position among the
   enclosing declaration's parameters;
+- an applied parameter is `{"k":"apply","i":n,"args":[…]}`, with `n` the position
+  of the parameter it applies, and a constructor is
+  `{"k":"constructor","functor":…}` (§1.5);
 - a reference to a declaration outside the group being addressed is
   `{"k":"id","h":"ut1:…","args":[…]}`, `h` being that declaration's structural
   address;
@@ -866,6 +907,11 @@ integer spelled as a TypeScript `number` is exact only to 2^53, that a Python
 A profile is data, so a language this specification never mentions is added by
 writing one.
 
+A declaration generic over a type constructor, or applying one (§1.5), is
+refused by every backend, which names it, until a backend writes one. A
+universe that is not selected is not refused, so a caller may generate the
+plain declarations beside it.
+
 A `bounded` type is spelled as the type it bounds, except where the profile
 names something narrower that holds exactly what the bounds allow: a list of
 `integers`, each a range and a spelling, so that `i32[0..255]` is `u8` where
@@ -921,7 +967,8 @@ What is not covered, and is reported as such rather than checked wrongly: a
 **bounded** parameter can be looked at through its bound, so the theorem weakens
 to naturality over bound-respecting relabellings; a parameter under an
 **untagged union** cannot be found in a value; and a parameter type that cannot
-be filled from nothing — a function, an interface — cannot be tried.
+be filled from nothing — a function, an interface, or a type constructor (§1.5)
+— cannot be tried.
 
 A call to a generic proposition is made *at* type arguments (§7's boundary
 checks run against the instantiated signature), and the proof is not told
@@ -1058,4 +1105,9 @@ what it describes. Adding a variant without adding it here has to fail.
   type is a new encoding with an address of its own.
 - **Complexity bounds** — §1.4 adds `time` and `space` to a signature: the most
   a proof may claim, as a named class. Refinements may only promise less.
+- **Higher-order parameters** — §1.5 adds `apply` and `constructor`, and the
+  `arity` of a generic parameter, which is absent for an ordinary one. Every
+  existing type and declaration encodes as it did, so no address or domain
+  moves; a declaration over a constructor is a new encoding with an address of
+  its own, and §5.4 adds the two shape nodes that describe it.
   Absent bounds leave every address as it was.

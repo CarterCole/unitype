@@ -432,6 +432,50 @@
     },
     {
       "k": "struct",
+      "name": "TypeApply",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "apply"
+            }
+          }
+        },
+        {
+          "name": "name",
+          "ty": "str"
+        },
+        {
+          "name": "args",
+          "ty": "[Type]"
+        }
+      ],
+      "doc": "A higher-order parameter applied to a type: M<A>, where M stands for a type constructor such as a list."
+    },
+    {
+      "k": "struct",
+      "name": "TypeConstructor",
+      "fields": [
+        {
+          "name": "k",
+          "ty": {
+            "k": "literal",
+            "value": {
+              "str": "constructor"
+            }
+          }
+        },
+        {
+          "name": "functor",
+          "ty": "Functor"
+        }
+      ],
+      "doc": "A unary type constructor, passed for a higher-order parameter: list in Monad<list>. Not a type that values have."
+    },
+    {
+      "k": "struct",
       "name": "Bounds",
       "fields": [
         {
@@ -511,6 +555,8 @@
           "TypeFunction",
           "TypeReference",
           "TypeParam",
+          "TypeApply",
+          "TypeConstructor",
           "TypeBounded"
         ]
       },
@@ -566,6 +612,11 @@
           "name": "bounds",
           "ty": "[TypeRef]?",
           "doc": "Interfaces every argument must satisfy."
+        },
+        {
+          "name": "arity",
+          "ty": "i64?",
+          "doc": "How many type arguments the parameter takes: absent for an ordinary type, one for a type constructor."
         }
       ],
       "doc": "A generic parameter a declaration introduces."

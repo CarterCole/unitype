@@ -168,6 +168,17 @@ impl Walk<'_> {
                     self.found[i] = self.found[i].join(at);
                 }
             }
+            // A higher-order parameter applied to a type: nothing says how the
+            // constructor it stands for holds its argument, so the argument is
+            // held exactly, and the parameter is invariant for the same reason.
+            Type::Apply { name, args } => {
+                if let Some(&i) = self.params.get(name) {
+                    self.found[i] = self.found[i].join(Variance::Invariant);
+                }
+                for arg in args {
+                    self.ty(arg, Variance::Invariant);
+                }
+            }
             // A function takes its parameters, so they face the other way.
             Type::Function { params, ret } => {
                 for p in params {

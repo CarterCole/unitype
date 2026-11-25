@@ -13,20 +13,47 @@ use crate::meta::{BigO, Metadata};
 /// A generic parameter introduced by a declaration.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct TypeParamDecl {
-    /// The parameter's name, referred to by [`Type::Param`].
+    /// The parameter's name, referred to by [`Type::Param`] or, when it is
+    /// higher-order, applied by [`Type::Apply`].
     pub name: Ident,
     /// Interfaces every argument must satisfy.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub bounds: Vec<TypeRef>,
+    /// How many type arguments the parameter takes. Zero for an ordinary type.
+    /// One for a unary type constructor such as a list, which is supplied as a
+    /// [`Type::Constructor`] and applied with [`Type::Apply`]: `Monad<M>` with
+    /// `M` of arity one is a monad over any such constructor.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub arity: u32,
+}
+
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 impl TypeParamDecl {
-    /// An unbounded parameter.
+    /// An unbounded parameter of ordinary type.
     pub fn new(name: Ident) -> Self {
         Self {
             name,
             bounds: Vec::new(),
+            arity: 0,
         }
+    }
+
+    /// A parameter standing for a unary type constructor, such as `M` in
+    /// `Monad<M>`.
+    pub fn constructor(name: Ident) -> Self {
+        Self {
+            name,
+            bounds: Vec::new(),
+            arity: 1,
+        }
+    }
+
+    /// Whether this parameter stands for a type constructor rather than a type.
+    pub fn is_higher_order(&self) -> bool {
+        self.arity > 0
     }
 }
 
@@ -386,6 +413,7 @@ mod tests {
             params_decl: vec![TypeParamDecl {
                 name: id("T"),
                 bounds: vec![TypeRef::local(id("Ord")), TypeRef::local(id("Show"))],
+                arity: 0,
             }],
             params: vec![NamedParam::new(
                 id("xs"),

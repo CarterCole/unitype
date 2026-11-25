@@ -136,6 +136,25 @@ pub enum CheckErrorKind {
     /// A generic parameter was used where nothing bound it.
     #[error("`{0}` is not a generic parameter of this declaration")]
     UnboundParam(Ident),
+    /// A higher-order parameter, which stands for a type constructor, was used
+    /// without being applied to a type.
+    #[error("`{0}` stands for a type constructor, so it must be applied to a type, as `{0}<T>`")]
+    UnappliedConstructor(Ident),
+    /// An ordinary parameter was applied as if it were a type constructor.
+    #[error("`{0}` stands for a type, not a type constructor, so it takes no arguments")]
+    AppliedType(Ident),
+    /// A higher-order parameter was applied to other than one type.
+    #[error("`{name}` takes one type argument, but {got} were given")]
+    ConstructorArity {
+        /// The higher-order parameter being applied.
+        name: Ident,
+        /// How many arguments were supplied.
+        got: usize,
+    },
+    /// A type constructor was used where a type is needed, or a type where a
+    /// type constructor is.
+    #[error("{0}")]
+    KindMismatch(String),
     /// A map key type could not be represented as an object key.
     #[error("`{0}` cannot be a map key: use a string, an integer, or a literal")]
     BadMapKey(String),

@@ -33,7 +33,7 @@ pub mod writer;
 use std::path::PathBuf;
 
 use unitype_core::check::CheckedWorkspace;
-use unitype_core::ir::{Expr, Type, TypeDef, TypeRef, Universe};
+use unitype_core::ir::{Expr, Type, TypeDef, TypeParamDecl, TypeRef, Universe};
 use unitype_core::lang::ProfileError;
 use unitype_core::{Ident, QualifiedName};
 
@@ -213,6 +213,66 @@ pub(crate) fn selected<'a>(ws: &'a CheckedWorkspace, options: &GenOptions) -> Ve
         .collect();
     chosen.sort_by(|a, b| a.name.cmp(&b.name));
     chosen
+}
+
+/// Refuses a workspace that is generic over a type constructor.
+///
+/// A parameter standing for a constructor, and every application of one, has
+/// no spelling in the languages generated here, so writing one would mean
+/// guessing what it is. Each backend asks this before it writes a line, so a
+/// declaration of that kind fails by name rather than producing code that
+/// reads the wrong way.
+pub(crate) fn refuse_higher_order(
+    ws: &CheckedWorkspace,
+    options: &GenOptions,
+    language: &str,
+) -> Result<(), GenError> {
+    let refuse = |what: String| GenError::Unsupported {
+        language: language.into(),
+        what,
+        detail: "it applies or passes a type constructor, which this backend does not write yet"
+            .into(),
+    };
+    for universe in selected(ws, options) {
+        for def in &universe.types {
+            let generic = def.params().iter().any(TypeParamDecl::is_higher_order);
+            if generic || def_types(def).into_iter().any(is_higher_order) {
+                return Err(refuse(format!("`{}::{}`", universe.name, def.name())));
+            }
+        }
+        for sig in &universe.functions {
+            let mut uses = sig.params_decl.iter().any(TypeParamDecl::is_higher_order)
+                || sig.params.iter().any(|p| is_higher_order(&p.ty))
+                || is_higher_order(&sig.ret);
+            if let Some(body) = &sig.body {
+                body.walk(&mut |e| {
+                    if let Expr::Fold { ty: Some(ty), .. } = e {
+                        uses |= is_higher_order(ty);
+                    }
+                });
+            }
+            if uses {
+                return Err(refuse(format!("`{}::{}`", universe.name, sig.name)));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether a type applies or passes a type constructor anywhere inside it.
+fn is_higher_order(ty: &Type) -> bool {
+    matches!(ty, Type::Apply { .. } | Type::Constructor { .. })
+        || ty.children().into_iter().any(is_higher_order)
+}
+
+/// The types a declaration is built from, for checking what they mention.
+fn def_types(def: &TypeDef) -> Vec<&Type> {
+    match def {
+        TypeDef::Struct(d) => d.fields.iter().map(|f| &f.ty).collect(),
+        TypeDef::Enum(d) => d.variants.iter().map(|v| &v.payload).collect(),
+        TypeDef::Alias(d) => vec![&d.target],
+        TypeDef::Interface(d) => d.fields.iter().map(|f| &f.ty).collect(),
+    }
 }
 
 /// Whether any body in a universe contains an expression `wanted` picks out.

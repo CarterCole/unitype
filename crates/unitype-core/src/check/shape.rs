@@ -393,7 +393,7 @@ impl SigShape {
 /// number is part of that, so every union in it is put back in order.
 fn renumbered(node: &ShapeNode, to: &[usize]) -> ShapeNode {
     fn walk(node: &mut ShapeNode, to: &[usize]) {
-        if let ShapeNode::Param { i } = node {
+        if let ShapeNode::Param { i } | ShapeNode::Apply { i, .. } = node {
             *i = to[*i];
         }
         for child in node.children_mut() {
@@ -536,6 +536,16 @@ enum ShapeNode {
     Param {
         i: usize,
     },
+    /// A higher-order parameter of the declaration, by position, applied to
+    /// its arguments.
+    Apply {
+        i: usize,
+        args: Vec<ShapeNode>,
+    },
+    /// A unary type constructor, passed for a higher-order parameter.
+    Constructor {
+        functor: crate::ir::Functor,
+    },
     /// A declaration outside the group being addressed, by its address.
     Id {
         h: TypeId,
@@ -592,6 +602,7 @@ impl ShapeNode {
             ShapeNode::Tuple { items }
             | ShapeNode::Union { members: items }
             | ShapeNode::Id { args: items, .. }
+            | ShapeNode::Apply { args: items, .. }
             | ShapeNode::Rec { args: items, .. } => items.iter().collect(),
             ShapeNode::Function { params, ret } => {
                 params.iter().chain(std::iter::once(ret.as_ref())).collect()
@@ -611,6 +622,7 @@ impl ShapeNode {
             | ShapeNode::Bytes
             | ShapeNode::Literal { .. }
             | ShapeNode::Param { .. }
+            | ShapeNode::Constructor { .. }
             | ShapeNode::Unresolved { .. } => Vec::new(),
         }
     }
@@ -625,6 +637,7 @@ impl ShapeNode {
             ShapeNode::Tuple { items }
             | ShapeNode::Union { members: items }
             | ShapeNode::Id { args: items, .. }
+            | ShapeNode::Apply { args: items, .. }
             | ShapeNode::Rec { args: items, .. } => items.iter_mut().collect(),
             ShapeNode::Function { params, ret } => params
                 .iter_mut()
@@ -647,6 +660,7 @@ impl ShapeNode {
             | ShapeNode::Bytes
             | ShapeNode::Literal { .. }
             | ShapeNode::Param { .. }
+            | ShapeNode::Constructor { .. }
             | ShapeNode::Unresolved { .. } => Vec::new(),
         }
     }
@@ -824,6 +838,13 @@ impl Lowering<'_> {
                     name: t.to_string(),
                 },
             },
+            Type::Apply { name, args } => match self.params.iter().position(|p| p == name) {
+                Some(i) => ShapeNode::Apply { i, args: all(args) },
+                None => ShapeNode::Unresolved {
+                    name: t.to_string(),
+                },
+            },
+            Type::Constructor { functor } => ShapeNode::Constructor { functor: *functor },
             Type::Ref(r) => {
                 let args = all(&r.args);
                 let target = self.ws.ref_target(r);

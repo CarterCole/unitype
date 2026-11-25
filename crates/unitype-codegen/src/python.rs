@@ -63,6 +63,7 @@ impl Backend for Python {
         options: &GenOptions,
     ) -> Result<Vec<GeneratedFile>, GenError> {
         let profile = profile("python")?;
+        crate::refuse_higher_order(ws, options, "python")?;
         let mut files = Vec::new();
 
         for universe in selected(ws, options) {

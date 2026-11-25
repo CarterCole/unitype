@@ -1,11 +1,19 @@
 //! Resolution: every name means something, and means it here.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use crate::check::error::{CheckErrorKind, Diagnostics, PathSeg, TypePath, describe};
 use crate::check::{CheckedWorkspace, DefIx};
 use crate::ident::Ident;
 use crate::ir::{Type, TypeDef, TypeParamDecl, TypeRef};
+
+/// The generic parameters in scope, each with the arity it was declared with:
+/// zero for an ordinary type, one for a type constructor.
+type Scope = HashMap<Ident, u32>;
+
+fn scope_of(params: &[TypeParamDecl]) -> Scope {
+    params.iter().map(|p| (p.name.clone(), p.arity)).collect()
+}
 
 /// Checks that every reference resolves, every generic use has the right number
 /// of arguments, every parameter is bound, and no alias expands forever.
@@ -15,7 +23,7 @@ pub(crate) fn run(ws: &CheckedWorkspace, diags: &mut Diagnostics) {
 
         for def in &universe.types {
             let path = at.then(PathSeg::Def(def.name().clone()));
-            let scope: HashSet<Ident> = def.params().iter().map(|p| p.name.clone()).collect();
+            let scope = scope_of(def.params());
             check_bounds(ws, def.params(), &path, diags);
 
             match def {
@@ -54,7 +62,7 @@ pub(crate) fn run(ws: &CheckedWorkspace, diags: &mut Diagnostics) {
 
         for sig in &universe.functions {
             let path = at.then(PathSeg::Sig(sig.name.clone()));
-            let scope: HashSet<Ident> = sig.params_decl.iter().map(|p| p.name.clone()).collect();
+            let scope = scope_of(&sig.params_decl);
             check_bounds(ws, &sig.params_decl, &path, diags);
             for (i, param) in sig.params.iter().enumerate() {
                 check_type(ws, &param.ty, &scope, &path.then(PathSeg::Param(i)), diags);
@@ -76,6 +84,24 @@ fn check_bounds(
     diags: &mut Diagnostics,
 ) {
     for (i, param) in params.iter().enumerate() {
+        if param.arity > 1 {
+            diags.error(
+                CheckErrorKind::KindMismatch(format!(
+                    "`{}` takes {} arguments, and only one-argument type constructors are supported",
+                    param.name, param.arity
+                )),
+                path.then(PathSeg::Param(i)),
+            );
+        }
+        if param.is_higher_order() && !param.bounds.is_empty() {
+            diags.error(
+                CheckErrorKind::BadBounds(format!(
+                    "`{}` stands for a type constructor, and a type constructor cannot be bounded by an interface yet",
+                    param.name
+                )),
+                path.then(PathSeg::Bound(i)),
+            );
+        }
         for bound in &param.bounds {
             let at = path.then(PathSeg::Bound(i));
             let Some(ix) = check_ref(ws, bound, &at, diags) else {
@@ -152,26 +178,108 @@ fn check_ref(
     Some(ix)
 }
 
+/// Checks one argument of a reference against the parameter it is passed for.
+///
+/// A higher-order parameter takes a type constructor, whether written out or
+/// passed on as a higher-order parameter of the caller. Anything else is a type.
+/// A mismatch is reported here, where the argument is written, so the kind
+/// error names the argument rather than the declaration.
+fn check_ref_arg(
+    ws: &CheckedWorkspace,
+    arg: &Type,
+    i: usize,
+    target: Option<DefIx>,
+    scope: &Scope,
+    path: &TypePath,
+    diags: &mut Diagnostics,
+) {
+    let wanted = target
+        .and_then(|ix| ws.def_at(ix).params().get(i))
+        .map(|p| p.arity);
+    let as_constructor = match arg {
+        Type::Constructor { .. } => true,
+        Type::Param { name } => scope.get(name) == Some(&1),
+        _ => false,
+    };
+    match (wanted, as_constructor) {
+        (Some(0), true) => diags.error(
+            CheckErrorKind::KindMismatch(
+                "a type constructor was given for a parameter that takes a type".into(),
+            ),
+            path.clone(),
+        ),
+        (Some(1), false) => {
+            diags.error(
+                CheckErrorKind::KindMismatch(
+                    "a parameter that stands for a type constructor was given a type".into(),
+                ),
+                path.clone(),
+            );
+            check_type(ws, arg, scope, path, diags);
+        }
+        // A constructor for a higher-order parameter is fine, and so is one the
+        // caller holds itself; nothing else is checked here.
+        (_, true) => {}
+        (_, false) => check_type(ws, arg, scope, path, diags),
+    }
+}
+
+/// The written name of a constructor.
+fn constructor_name(functor: crate::ir::Functor) -> &'static str {
+    match functor {
+        crate::ir::Functor::List => "list",
+        crate::ir::Functor::Optional => "optional",
+        crate::ir::Functor::Future => "future",
+    }
+}
+
 /// Walks a type, checking every reference, parameter use, and map key in it.
 fn check_type(
     ws: &CheckedWorkspace,
     t: &Type,
-    scope: &HashSet<Ident>,
+    scope: &Scope,
     path: &TypePath,
     diags: &mut Diagnostics,
 ) {
     match t {
         Type::Ref(r) => {
-            check_ref(ws, r, path, diags);
+            let target = check_ref(ws, r, path, diags);
             for (i, arg) in r.args.iter().enumerate() {
+                check_ref_arg(ws, arg, i, target, scope, &path.then(PathSeg::Arg(i)), diags);
+            }
+        }
+        Type::Param { name } => match scope.get(name) {
+            None => diags.error(CheckErrorKind::UnboundParam(name.clone()), path.clone()),
+            Some(arity) if *arity > 0 => diags.error(
+                CheckErrorKind::UnappliedConstructor(name.clone()),
+                path.clone(),
+            ),
+            Some(_) => {}
+        },
+        Type::Apply { name, args } => {
+            match scope.get(name) {
+                None => diags.error(CheckErrorKind::UnboundParam(name.clone()), path.clone()),
+                Some(0) => diags.error(CheckErrorKind::AppliedType(name.clone()), path.clone()),
+                Some(_) if args.len() != 1 => diags.error(
+                    CheckErrorKind::ConstructorArity {
+                        name: name.clone(),
+                        got: args.len(),
+                    },
+                    path.clone(),
+                ),
+                Some(_) => {}
+            }
+            for (i, arg) in args.iter().enumerate() {
                 check_type(ws, arg, scope, &path.then(PathSeg::Arg(i)), diags);
             }
         }
-        Type::Param { name } => {
-            if !scope.contains(name) {
-                diags.error(CheckErrorKind::UnboundParam(name.clone()), path.clone());
-            }
-        }
+        Type::Constructor { functor } => diags.error(
+            CheckErrorKind::KindMismatch(format!(
+                "`{}` is a type constructor, not a type: it can only be passed for a higher-order parameter",
+                constructor_name(*functor)
+            )),
+            path.clone(),
+        ),
         Type::Map { key, value } => {
             if !key.is_valid_map_key() {
                 diags.error(

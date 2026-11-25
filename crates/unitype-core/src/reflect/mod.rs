@@ -139,6 +139,15 @@ mod tests {
             Type::Param {
                 name: Ident::new("T").unwrap(),
             },
+            Type::Apply {
+                name: Ident::new("M").unwrap(),
+                args: vec![Type::Param {
+                    name: Ident::new("A").unwrap(),
+                }],
+            },
+            Type::Constructor {
+                functor: crate::ir::Functor::List,
+            },
             Type::String
                 .counted(crate::ir::Bounds::between(1, 63))
                 .sized(crate::ir::Bounds::at_most(253)),
@@ -149,7 +158,7 @@ mod tests {
         }
         assert_eq!(
             every_shape.len(),
-            23,
+            25,
             "one of every shape, plus the three kinds of literal"
         );
     }

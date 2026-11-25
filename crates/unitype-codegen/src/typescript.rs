@@ -45,6 +45,7 @@ impl Backend for TypeScript {
         options: &GenOptions,
     ) -> Result<Vec<GeneratedFile>, GenError> {
         let profile = profile("typescript")?;
+        crate::refuse_higher_order(ws, options, "typescript")?;
         let mut files = Vec::new();
 
         for universe in selected(ws, options) {

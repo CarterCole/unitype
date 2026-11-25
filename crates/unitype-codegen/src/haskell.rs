@@ -84,6 +84,7 @@ impl Backend for Haskell {
         options: &GenOptions,
     ) -> Result<Vec<GeneratedFile>, GenError> {
         let profile = profile("haskell")?;
+        crate::refuse_higher_order(ws, options, "haskell")?;
         let chosen = selected(ws, options);
 
         let mut modules: BTreeMap<String, &Ident> = BTreeMap::new();

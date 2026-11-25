@@ -229,6 +229,29 @@ impl LanguageProfile {
                 )
             }
             Type::Param { name } => Spelling::tight(self.name(name)),
+            // A higher-order parameter applied, spelled as an application of the
+            // parameter to its argument. A backend that cannot express one refuses
+            // the declaration before it is spelled, so this is what a reader sees
+            // in a diagnostic rather than what gets generated.
+            Type::Apply { name, args } => {
+                let args: Vec<String> = args.iter().map(|a| self.spelling(a).text).collect();
+                let separator = if self.juxtaposed { " " } else { ", " };
+                self.wrap(
+                    "apply",
+                    &[
+                        Spelling::tight(self.name(name)),
+                        Spelling::tight(args.join(separator)),
+                    ],
+                )
+            }
+            Type::Constructor { functor } => Spelling::tight(
+                match functor {
+                    crate::ir::Functor::List => "list",
+                    crate::ir::Functor::Optional => "optional",
+                    crate::ir::Functor::Future => "future",
+                }
+                .to_string(),
+            ),
             // A union or an anonymous record has no one spelling: how it is
             // written depends on the backend's choices about declarations, so
             // the backend does that part.

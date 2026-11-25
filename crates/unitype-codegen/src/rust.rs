@@ -74,6 +74,7 @@ impl Backend for Rust {
         options: &GenOptions,
     ) -> Result<Vec<GeneratedFile>, GenError> {
         let profile = profile("rust")?;
+        crate::refuse_higher_order(ws, options, "rust")?;
         let mut files = Vec::new();
         let chosen = selected(ws, options);
         for universe in &chosen {

@@ -250,7 +250,7 @@ pub fn desugar_type(slot: &mut Json) -> Result<(), SugarError> {
             type_array(obj, "params")?;
             type_slot(obj, "ret")?;
         }
-        "ref" => type_array(obj, "args")?,
+        "ref" | "apply" => type_array(obj, "args")?,
         _ => {}
     }
     Ok(())
@@ -865,6 +865,21 @@ mod tests {
         desugar_type(&mut json).unwrap();
         let t: Type = serde_json::from_value(json).unwrap();
         assert_eq!(t, Type::local_ref("User").list().map_from(Type::String));
+    }
+
+    #[test]
+    fn an_applied_parameter_reaches_the_shorthand_for_its_argument() {
+        let mut json: Json =
+            serde_json::from_str(r#"{"k":"apply","name":"M","args":["i64"]}"#).unwrap();
+        desugar_type(&mut json).unwrap();
+        let t: Type = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            t,
+            Type::Apply {
+                name: crate::ident::Ident::new("M").unwrap(),
+                args: vec![Type::I64],
+            }
+        );
     }
 
     #[test]
