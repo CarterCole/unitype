@@ -1,0 +1,9 @@
+{
+  "version": "1.0",
+  "signature": "email::contacted",
+  "vectors": [
+    { "name": "an inbox takes mail for an address", "args": [{ "address": "ada@example.com", "provider": "inbox" }], "expect": true },
+    { "name": "a bounce takes none", "args": [{ "address": "ada@example.com", "provider": "bounce" }], "expect": false },
+    { "name": "something with no at sign is not an address", "args": [{ "address": "ada", "provider": "inbox" }], "expect": false }
+  ]
+}

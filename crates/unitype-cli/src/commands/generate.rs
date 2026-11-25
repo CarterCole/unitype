@@ -35,6 +35,27 @@ pub fn run(
         project.root.join(root)
     };
 
+    let universes = if project.file.generate.universes.is_empty() {
+        None
+    } else {
+        let names = project
+            .file
+            .generate
+            .universes
+            .iter()
+            .map(|name| {
+                unitype_core::Ident::new(name).map_err(|e| {
+                    Failure::usage(format!("`{name}` in gen.universes is not a name: {e}"))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Some(names)
+    };
+    let options = GenOptions {
+        universes,
+        ..GenOptions::default()
+    };
+
     let mut written = Vec::new();
     for lang in &wanted {
         let Some(backend) = backend(lang) else {
@@ -49,7 +70,7 @@ pub fn run(
         };
 
         let files = backend
-            .generate(&project.workspace, &GenOptions::default())
+            .generate(&project.workspace, &options)
             .map_err(|e| Failure::check(e.to_string()))?;
 
         for file in files {

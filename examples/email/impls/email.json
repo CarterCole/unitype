@@ -1,0 +1,52 @@
+{
+  "version": "1.0",
+  "doc": "`email::contacted` and `email::verified`, each proved in Python and in Node over simulated mailboxes. Each proof is a process that reads one request per line and answers it. Paths are relative to this file.",
+  "environments": [
+    {
+      "id": "python",
+      "language": "python",
+      "doc": "CPython, standard library only.",
+      "reach": { "k": "subprocess", "command": "python3", "args": ["../proofs/email.py"], "persistent": true, "timeout_ms": 15000 }
+    },
+    {
+      "id": "node",
+      "language": "typescript",
+      "doc": "Node 24 or later, which runs TypeScript by dropping the types.",
+      "reach": { "k": "subprocess", "command": "node", "args": ["../proofs/email.ts"], "persistent": true, "timeout_ms": 15000 }
+    }
+  ],
+  "implementations": [
+    {
+      "id": "contacted.python",
+      "proves": "email::contacted",
+      "environment": "python",
+      "entry": "email.contacted",
+      "cost": { "time": "o1", "space": "o1" },
+      "notes": "A check on the address and the provider, so it does not depend on how long the mail is."
+    },
+    {
+      "id": "contacted.node",
+      "proves": "email::contacted",
+      "environment": "node",
+      "entry": "email.contacted",
+      "cost": { "time": "o1", "space": "o1" },
+      "notes": "The same check in Node."
+    },
+    {
+      "id": "verified.python",
+      "proves": "email::verified",
+      "environment": "python",
+      "entry": "email.verified",
+      "cost": { "time": "o1", "space": "o1" },
+      "notes": "A lookup of the address in the mailbox's answers."
+    },
+    {
+      "id": "verified.node",
+      "proves": "email::verified",
+      "environment": "node",
+      "entry": "email.verified",
+      "cost": { "time": "o1", "space": "o1" },
+      "notes": "The same lookup in Node."
+    }
+  ]
+}

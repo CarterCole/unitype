@@ -1,0 +1,9 @@
+{
+  "unitype": "1.0",
+  "name": "email",
+  "universes": ["universes"],
+  "gen": {
+    "out": "generated",
+    "langs": ["python", "typescript"]
+  }
+}

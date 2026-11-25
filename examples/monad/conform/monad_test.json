@@ -1,0 +1,9 @@
+{
+  "version": "1.0",
+  "signature": "monad_test::explain",
+  "vectors": [
+    { "name": "lists are a monad", "args": ["list"], "expect": { "held": true, "reason": null } },
+    { "name": "optionals are a monad", "args": ["optional"], "expect": { "held": true, "reason": null } },
+    { "name": "a list that keeps only the first answer of each step fails the left identity", "args": ["first_list"], "expect": { "held": false, "reason": "left_identity" } }
+  ]
+}

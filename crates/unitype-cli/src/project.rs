@@ -59,6 +59,11 @@ pub struct GenSettings {
     /// Which languages to write.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub langs: Vec<String>,
+    /// Which universes to write. Empty means every universe. A universe left out
+    /// is not generated, so a project may keep a declaration no backend writes
+    /// yet beside the ones it does generate.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub universes: Vec<String>,
 }
 
 fn default_version() -> String {

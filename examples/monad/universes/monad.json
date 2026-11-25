@@ -1,0 +1,38 @@
+{
+  "name": "monad",
+  "doc": "A type constructor that a value can be lifted into and chained through. The monad is generic over the constructor itself, so one declaration covers the list, the optional, and any other constructor that is a monad: M is a higher-order parameter, and M<A> is that constructor applied to A.",
+  "types": [
+    {
+      "k": "interface",
+      "name": "Monad",
+      "doc": "A type constructor that lifts a value in and chains a step through it. Its laws are not written here: the monad test in unitype-core checks them on sample values and answers true or false.",
+      "params": [{ "name": "M", "arity": 1 }]
+    }
+  ],
+  "functions": [
+    {
+      "name": "pure",
+      "doc": "Lift a value into the constructor.",
+      "params_decl": [{ "name": "M", "arity": 1 }, { "name": "A" }],
+      "params": [{ "name": "a", "ty": { "k": "param", "name": "A" } }],
+      "ret": { "k": "apply", "name": "M", "args": [{ "k": "param", "name": "A" }] }
+    },
+    {
+      "name": "bind",
+      "doc": "Chain a step through a monadic value: the step runs on what it holds, and the result is the constructor's again.",
+      "params_decl": [{ "name": "M", "arity": 1 }, { "name": "A" }, { "name": "B" }],
+      "params": [
+        { "name": "m", "ty": { "k": "apply", "name": "M", "args": [{ "k": "param", "name": "A" }] } },
+        {
+          "name": "f",
+          "ty": {
+            "k": "function",
+            "params": [{ "k": "param", "name": "A" }],
+            "ret": { "k": "apply", "name": "M", "args": [{ "k": "param", "name": "B" }] }
+          }
+        }
+      ],
+      "ret": { "k": "apply", "name": "M", "args": [{ "k": "param", "name": "B" }] }
+    }
+  ]
+}

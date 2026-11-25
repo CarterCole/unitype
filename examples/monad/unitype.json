@@ -1,0 +1,10 @@
+{
+  "unitype": "1.0",
+  "name": "monad",
+  "universes": ["universes"],
+  "gen": {
+    "out": "generated",
+    "langs": ["python", "typescript"],
+    "universes": ["monad_test"]
+  }
+}

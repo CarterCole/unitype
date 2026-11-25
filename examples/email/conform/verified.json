@@ -1,0 +1,9 @@
+{
+  "version": "1.0",
+  "signature": "email::verified",
+  "vectors": [
+    { "name": "the mailbox answers for the address it owns", "args": [{ "address": "ada@example.com", "provider": "inbox" }], "expect": true },
+    { "name": "an inbox does not answer for an address it does not own", "args": [{ "address": "grace@example.com", "provider": "inbox" }], "expect": false },
+    { "name": "a bounce answers for nothing", "args": [{ "address": "ada@example.com", "provider": "bounce" }], "expect": false }
+  ]
+}

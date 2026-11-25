@@ -1826,3 +1826,240 @@ unitypeMain({
         "on a plain address every parser agrees, so that case is not where it is wrong: {said}"
     );
 }
+
+/// Runs `unitype` against the monad example, which holds a class generic over a
+/// type constructor beside a plain test of it.
+fn monad_example(args: &[&str]) -> Output {
+    let project = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/monad");
+    Command::new(env!("CARGO_BIN_EXE_unitype"))
+        .arg("--project")
+        .arg(project)
+        .args(args)
+        .output()
+        .expect("the command runs")
+}
+
+#[test]
+fn the_monad_example_checks_and_generates_only_its_test_universe() {
+    let checked = monad_example(&["check"]);
+    assert!(
+        checked.status.success(),
+        "check failed:\n{}",
+        String::from_utf8_lossy(&checked.stdout)
+    );
+
+    // The class is higher-order, which no backend writes, and the project
+    // names the test universe alone, so generation succeeds.
+    let generated = monad_example(&["gen"]);
+    assert!(
+        generated.status.success(),
+        "gen failed:\n{}",
+        String::from_utf8_lossy(&generated.stderr)
+    );
+    let generated_dir =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/monad/generated/python");
+    assert!(generated_dir.join("monad_test.py").exists());
+    assert!(!generated_dir.join("monad.py").exists());
+}
+
+#[test]
+fn the_monad_test_explains_itself_in_every_proof_that_is_present() {
+    if !have_python() || !have_node_that_reads_typescript() {
+        eprintln!("skipped: needs python3 and a Node that reads TypeScript");
+        return;
+    }
+    let project = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/monad");
+    let output = Command::new(env!("CARGO_BIN_EXE_unitype"))
+        .arg("--project")
+        .arg(project)
+        .args(["conform", "--sig", "monad_test::explain"])
+        .output()
+        .expect("the command runs");
+    let said = String::from_utf8_lossy(&output.stdout);
+    assert!(output.status.success(), "conform failed:\n{said}");
+    assert!(
+        said.contains("2 proofs, 3 cases") && said.contains("all agree"),
+        "{said}"
+    );
+}
+
+#[test]
+fn the_monad_test_holds_is_the_bool_cast_of_its_explanation() {
+    // `holds` has no proofs of its own: its body reads `explain(...).held`.
+    for (name, want) in [
+        ("list", "true"),
+        ("optional", "true"),
+        ("first_list", "false"),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_unitype"))
+            .arg("--project")
+            .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/monad"))
+            .args([
+                "run",
+                "monad_test::holds",
+                "--args",
+                &format!("[\"{name}\"]"),
+            ])
+            .output()
+            .expect("the command runs");
+        assert!(
+            output.status.success(),
+            "{name}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            want,
+            "{name}"
+        );
+    }
+}
+
+/// Runs the verifier, `email::test_email`, on one receiver written as JSON.
+fn email_verdict(receiver: &str) -> serde_json::Value {
+    let project = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/email");
+    let output = Command::new(env!("CARGO_BIN_EXE_unitype"))
+        .arg("--project")
+        .arg(project)
+        .args([
+            "run",
+            "email::test_email",
+            "--args",
+            &format!("[{receiver}]"),
+        ])
+        .output()
+        .expect("the command runs");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("a verdict is JSON")
+}
+
+#[test]
+fn the_verifier_passes_a_receiver_that_is_contacted_and_verified() {
+    let passed = email_verdict(r#"{"address":"ada@example.com","provider":"inbox"}"#);
+    assert_eq!(passed["held"], true, "{passed}");
+    assert!(
+        passed.get("reason").is_none(),
+        "a pass gives no reason: {passed}"
+    );
+}
+
+#[test]
+fn the_verifier_says_which_part_a_receiver_failed() {
+    let unverified = email_verdict(r#"{"address":"grace@example.com","provider":"inbox"}"#);
+    assert_eq!(unverified["held"], false, "{unverified}");
+    assert_eq!(unverified["reason"], "not_verified", "{unverified}");
+
+    let unreached = email_verdict(r#"{"address":"ada@example.com","provider":"bounce"}"#);
+    assert_eq!(unreached["reason"], "not_contacted", "{unreached}");
+}
+
+#[test]
+fn the_email_proofs_agree_with_their_vectors() {
+    if !have_python() || !have_node_that_reads_typescript() {
+        eprintln!("skipped: needs python3 and a Node that reads TypeScript");
+        return;
+    }
+    for sig in ["email::contacted", "email::verified"] {
+        let project = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/email");
+        let output = Command::new(env!("CARGO_BIN_EXE_unitype"))
+            .arg("--project")
+            .arg(project)
+            .args(["conform", "--sig", sig])
+            .output()
+            .expect("the command runs");
+        let said = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "{sig}: {said}");
+        assert!(
+            said.contains("2 proofs, 3 cases") && said.contains("all agree"),
+            "{said}"
+        );
+    }
+}
+
+/// Runs `unitype` against the message example, with the arguments given.
+fn message_example(args: &[&str]) -> Output {
+    let project = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/message");
+    Command::new(env!("CARGO_BIN_EXE_unitype"))
+        .arg("--project")
+        .arg(project)
+        .args(args)
+        .output()
+        .expect("the command runs")
+}
+
+#[test]
+fn the_message_family_checks() {
+    let checked = message_example(&["check"]);
+    assert!(
+        checked.status.success(),
+        "{}",
+        String::from_utf8_lossy(&checked.stdout)
+    );
+}
+
+#[test]
+fn a_chat_message_over_its_size_bound_is_refused() {
+    let body = "a".repeat(4097);
+    let data = format!(r#"{{"sender":"ada","receiver":"grace","body":"{body}"}}"#);
+    let output = message_example(&[
+        "cast",
+        "--lang",
+        "python",
+        "--type",
+        "message::ChatMessage",
+        "--data",
+        &data,
+    ]);
+    assert!(!output.status.success(), "an oversize body should not cast");
+    let said = String::from_utf8_lossy(&output.stderr);
+    assert!(said.contains("not within 1..4096"), "{said}");
+}
+
+#[test]
+fn a_chat_message_at_its_size_bound_is_accepted() {
+    let body = "a".repeat(4096);
+    let data = format!(r#"{{"sender":"ada","receiver":"grace","body":"{body}"}}"#);
+    let output = message_example(&[
+        "cast",
+        "--lang",
+        "python",
+        "--type",
+        "message::ChatMessage",
+        "--data",
+        &data,
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[test]
+fn a_bare_value_and_an_annotated_one_cast_against_the_same_type() {
+    // Causes are optional, so the short form and the annotated form are both
+    // the same literal, and both cast.
+    for data in [
+        r#"{"value":"hello"}"#,
+        r#"{"value":"hello","causes":{"owner":"ada","licence":"CC-BY-4.0","material":{"bytes":5}}}"#,
+    ] {
+        let output = message_example(&[
+            "cast",
+            "--lang",
+            "python",
+            "--type",
+            "message::ExplainedText",
+            "--data",
+            data,
+        ]);
+        assert!(
+            output.status.success(),
+            "{data}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}

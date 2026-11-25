@@ -1,0 +1,311 @@
+{
+  "name": "message",
+  "doc": "A message one actor sends, or a signal that only sends or only receives. Every message is sized by its body: each channel bounds its body, so a message that is too large for its channel does not check. A message type extends Message, and the router picks each one up by its channel.",
+  "types": [
+    {
+      "k": "enum",
+      "name": "Recipients",
+      "doc": "Who a message is for.",
+      "variants": [
+        {
+          "name": "individual",
+          "payload": "str",
+          "doc": "One actor, by name."
+        },
+        {
+          "name": "group",
+          "payload": "str",
+          "doc": "Every actor in a named group."
+        },
+        {
+          "name": "broadcast",
+          "doc": "Anyone who can hear it."
+        }
+      ]
+    },
+    {
+      "k": "struct",
+      "name": "Message",
+      "doc": "A message with a body of any type. Without a sender it is a signal that only receives; without recipients it reaches no one in particular.",
+      "params": [
+        {
+          "name": "T"
+        }
+      ],
+      "fields": [
+        {
+          "name": "sender",
+          "ty": "str?",
+          "doc": "Who sent it."
+        },
+        {
+          "name": "recipients",
+          "ty": "Recipients?",
+          "doc": "Who it is for."
+        },
+        {
+          "name": "sent",
+          "ty": "time::Moment?",
+          "doc": "When it was sent."
+        },
+        {
+          "name": "body",
+          "ty": {
+            "k": "param",
+            "name": "T"
+          },
+          "doc": "What it says."
+        }
+      ]
+    },
+    {
+      "k": "struct",
+      "name": "Mailbox",
+      "doc": "An actor's inbox and outbox: the messages it has received and the ones it is sending, in order.",
+      "params": [
+        {
+          "name": "T"
+        }
+      ],
+      "fields": [
+        {
+          "name": "owner",
+          "ty": "str"
+        },
+        {
+          "name": "inbox",
+          "ty": {
+            "k": "list",
+            "of": {
+              "k": "ref",
+              "name": "Message",
+              "args": [
+                {
+                  "k": "param",
+                  "name": "T"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "outbox",
+          "ty": {
+            "k": "list",
+            "of": {
+              "k": "ref",
+              "name": "Message",
+              "args": [
+                {
+                  "k": "param",
+                  "name": "T"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "k": "struct",
+      "name": "EmailMessage",
+      "doc": "A message a person sends by email. It always has a sender and a receiver, so the router can pick it up and deliver it into the system. The body is text of up to 200000 characters.",
+      "extends": {
+        "name": "Message",
+        "args": [
+          "str[len 1..200000]"
+        ]
+      },
+      "fields": [
+        {
+          "name": "sender",
+          "ty": "str"
+        },
+        {
+          "name": "receiver",
+          "ty": "str"
+        }
+      ]
+    },
+    {
+      "k": "struct",
+      "name": "HttpMessage",
+      "doc": "A request or response carried over HTTP. It has a sender and the url it is for, and a body of up to 1 MiB of text.",
+      "extends": {
+        "name": "Message",
+        "args": [
+          "str[len 0..1048576]"
+        ]
+      },
+      "fields": [
+        {
+          "name": "sender",
+          "ty": "str"
+        },
+        {
+          "name": "url",
+          "ty": "str"
+        }
+      ]
+    },
+    {
+      "k": "struct",
+      "name": "PhoneMessage",
+      "doc": "A call or voicemail: the audio is the body, of up to 10 MiB, and the caller and the number called are required.",
+      "extends": {
+        "name": "Message",
+        "args": [
+          "bytes[..10485760]"
+        ]
+      },
+      "fields": [
+        {
+          "name": "sender",
+          "ty": "str"
+        },
+        {
+          "name": "receiver",
+          "ty": "str"
+        }
+      ]
+    },
+    {
+      "k": "struct",
+      "name": "ChatMessage",
+      "doc": "A text message in a chat: up to 4096 characters, with a sender and a receiver.",
+      "extends": {
+        "name": "Message",
+        "args": [
+          "str[len 1..4096]"
+        ]
+      },
+      "fields": [
+        {
+          "name": "sender",
+          "ty": "str"
+        },
+        {
+          "name": "receiver",
+          "ty": "str"
+        }
+      ]
+    },
+    {
+      "k": "struct",
+      "name": "VoiceNote",
+      "doc": "A voice note sent in a chat: audio of up to 25 MiB, with a sender and a receiver.",
+      "extends": {
+        "name": "Message",
+        "args": [
+          "bytes[..26214400]"
+        ]
+      },
+      "fields": [
+        {
+          "name": "sender",
+          "ty": "str"
+        },
+        {
+          "name": "receiver",
+          "ty": "str"
+        }
+      ]
+    },
+    {
+      "k": "struct",
+      "name": "Material",
+      "doc": "What a value is made of, as far as it has been measured. Every field is optional: absent means not recorded, never zero or none.",
+      "fields": [
+        {
+          "name": "bytes",
+          "ty": "i64?",
+          "doc": "How many bytes it takes."
+        },
+        {
+          "name": "characters",
+          "ty": "i64?",
+          "doc": "How many characters it has, where it is text."
+        }
+      ]
+    },
+    {
+      "k": "struct",
+      "name": "Causes",
+      "doc": "The four causes of a literal, and the metadata about who may use it. Every field is optional: a literal can be written short, with none of these, and cast into this form at any time. Absent means not recorded, so nothing here is a default claim. None of it changes the literal's identity.",
+      "fields": [
+        {
+          "name": "material",
+          "ty": "Material?",
+          "doc": "What it is made of."
+        },
+        {
+          "name": "formal",
+          "ty": "str?",
+          "doc": "Its type, as the type's words or address."
+        },
+        {
+          "name": "efficient",
+          "ty": "str?",
+          "doc": "Who made it: the author of the declaration, or the proof or sender that produced it."
+        },
+        {
+          "name": "final",
+          "ty": "str?",
+          "doc": "Why it was made: the purpose its author wrote, or the call that asked for it."
+        },
+        {
+          "name": "owner",
+          "ty": "str?",
+          "doc": "Who owns it."
+        },
+        {
+          "name": "licence",
+          "ty": "str?",
+          "doc": "The terms it may be used on."
+        },
+        {
+          "name": "cost_to_move",
+          "ty": "str?",
+          "doc": "A declared estimate of what it costs to move, per channel. A claim, not a measurement."
+        }
+      ]
+    },
+    {
+      "k": "struct",
+      "name": "Explained",
+      "doc": "A value with its causes cast on. The causes are optional, so a bare value is the same literal in short form.",
+      "params": [
+        {
+          "name": "T"
+        }
+      ],
+      "fields": [
+        {
+          "name": "value",
+          "ty": {
+            "k": "param",
+            "name": "T"
+          },
+          "doc": "The value itself."
+        },
+        {
+          "name": "causes",
+          "ty": "Causes?",
+          "doc": "Its causes, if any have been recorded."
+        }
+      ]
+    },
+    {
+      "k": "alias",
+      "name": "ExplainedText",
+      "doc": "Text with its causes cast on, if any have been recorded.",
+      "target": {
+        "k": "ref",
+        "name": "Explained",
+        "args": [
+          "str"
+        ]
+      }
+    }
+  ]
+}

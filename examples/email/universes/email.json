@@ -1,0 +1,170 @@
+{
+  "name": "email",
+  "doc": "Checking that a receiver is who it says, by mail. A receiver is contacted when mail sent to its address is delivered, and verified when it answers for that address. A test of a receiver passes only when both hold, and each way of contacting or verifying a receiver is a proof of one of the two propositions. The mailboxes in the proofs are simulated: nothing here sends mail to a real address.",
+  "types": [
+    {
+      "k": "struct",
+      "name": "EmailReceiver",
+      "doc": "Something that can be reached by email at an address, and the mailbox that answers for it.",
+      "fields": [
+        {
+          "name": "address",
+          "ty": "str",
+          "doc": "The address mail is sent to."
+        },
+        {
+          "name": "provider",
+          "ty": {
+            "k": "union",
+            "members": [
+              {
+                "k": "literal",
+                "value": {
+                  "str": "inbox"
+                }
+              },
+              {
+                "k": "literal",
+                "value": {
+                  "str": "bounce"
+                }
+              }
+            ]
+          },
+          "doc": "Which mailbox answers for the address. An inbox delivers to any address and answers for the ones it owns; a bounce delivers to none."
+        }
+      ]
+    },
+    {
+      "k": "struct",
+      "name": "Verdict",
+      "doc": "Whether a receiver passed a test, and if it did not, the first part that failed.",
+      "fields": [
+        {
+          "name": "held",
+          "ty": "bool",
+          "doc": "Whether the receiver passed."
+        },
+        {
+          "name": "reason",
+          "ty": "str?",
+          "doc": "The first part that failed, absent when it passed."
+        }
+      ]
+    }
+  ],
+  "functions": [
+    {
+      "name": "contacted",
+      "doc": "Whether mail sent to the receiver's address is delivered. A proof of this is one way of reaching a receiver.",
+      "params": [
+        {
+          "name": "receiver",
+          "ty": "EmailReceiver"
+        }
+      ],
+      "ret": "bool"
+    },
+    {
+      "name": "verified",
+      "doc": "Whether the receiver answers for its address, which shows it is who it says. A proof of this is one way of checking identity.",
+      "params": [
+        {
+          "name": "receiver",
+          "ty": "EmailReceiver"
+        }
+      ],
+      "ret": "bool"
+    },
+    {
+      "name": "test_email",
+      "doc": "The verifier: a receiver passes when it is contacted and then verified. The reasons are `not_contacted` and `not_verified`. Has no proofs of its own, since it is built from the two above.",
+      "params": [
+        {
+          "name": "receiver",
+          "ty": "EmailReceiver"
+        }
+      ],
+      "ret": "Verdict",
+      "body": {
+        "k": "if",
+        "cond": {
+          "k": "call",
+          "sig": "email::contacted",
+          "args": [
+            {
+              "k": "var",
+              "name": "receiver"
+            }
+          ]
+        },
+        "then": {
+          "k": "if",
+          "cond": {
+            "k": "call",
+            "sig": "email::verified",
+            "args": [
+              {
+                "k": "var",
+                "name": "receiver"
+              }
+            ]
+          },
+          "then": {
+            "k": "make_record",
+            "ty": "Verdict",
+            "fields": [
+              {
+                "name": "held",
+                "value": {
+                  "k": "lit",
+                  "value": true
+                }
+              }
+            ]
+          },
+          "else": {
+            "k": "make_record",
+            "ty": "Verdict",
+            "fields": [
+              {
+                "name": "held",
+                "value": {
+                  "k": "lit",
+                  "value": false
+                }
+              },
+              {
+                "name": "reason",
+                "value": {
+                  "k": "lit",
+                  "value": "not_verified"
+                }
+              }
+            ]
+          }
+        },
+        "else": {
+          "k": "make_record",
+          "ty": "Verdict",
+          "fields": [
+            {
+              "name": "held",
+              "value": {
+                "k": "lit",
+                "value": false
+              }
+            },
+            {
+              "name": "reason",
+              "value": {
+                "k": "lit",
+                "value": "not_contacted"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

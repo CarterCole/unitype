@@ -1,0 +1,62 @@
+{
+  "name": "monad_test",
+  "doc": "Tests of the monad class. A test is a proposition about a constructor. Its proofs are instantiations: each one checks the property for the constructors it names, and says which part failed. A bool is a cast of the verdict, not a separate test.",
+  "types": [
+    {
+      "k": "struct",
+      "name": "Verdict",
+      "doc": "Whether a constructor passed a test, and if it did not, the first part that failed.",
+      "fields": [
+        { "name": "held", "ty": "bool", "doc": "Whether the constructor passed." },
+        { "name": "reason", "ty": "str?", "doc": "The first part that failed, absent when it passed." }
+      ]
+    }
+  ],
+  "functions": [
+    {
+      "name": "explain",
+      "doc": "The verdict on a constructor: whether it is a monad, with the reason it is not. A constructor passes only if it has both members and its laws hold. The reasons are `no_pure` and `no_bind` for a constructor missing a member, and otherwise the first law that fails on the samples: `left_identity`, `right_identity`, or `associativity`. Futures are not an input, since a future has no value until it arrives, so its laws cannot be run here.",
+      "params": [
+        {
+          "name": "constructor",
+          "ty": {
+            "k": "union",
+            "members": [
+              { "k": "literal", "value": { "str": "list" } },
+              { "k": "literal", "value": { "str": "optional" } },
+              { "k": "literal", "value": { "str": "first_list" } }
+            ]
+          }
+        }
+      ],
+      "ret": "Verdict"
+    },
+    {
+      "name": "holds",
+      "doc": "Whether a constructor is a monad. The cast of `explain` down to its bool, so it has no proofs of its own.",
+      "params": [
+        {
+          "name": "constructor",
+          "ty": {
+            "k": "union",
+            "members": [
+              { "k": "literal", "value": { "str": "list" } },
+              { "k": "literal", "value": { "str": "optional" } },
+              { "k": "literal", "value": { "str": "first_list" } }
+            ]
+          }
+        }
+      ],
+      "ret": "bool",
+      "body": {
+        "k": "field",
+        "name": "held",
+        "of": {
+          "k": "call",
+          "sig": "monad_test::explain",
+          "args": [{ "k": "var", "name": "constructor" }]
+        }
+      }
+    }
+  ]
+}

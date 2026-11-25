@@ -1,0 +1,36 @@
+{
+  "version": "1.0",
+  "doc": "`monad_test::explain`, proved in Python and in Node. Each proof is a process that reads one request per line and answers it. `monad_test::holds` is the bool cast of `explain` and has no proofs of its own. Paths are relative to this file.",
+  "environments": [
+    {
+      "id": "python",
+      "language": "python",
+      "doc": "CPython, standard library only.",
+      "reach": { "k": "subprocess", "command": "python3", "args": ["../proofs/monad_test.py"], "persistent": true, "timeout_ms": 15000 }
+    },
+    {
+      "id": "node",
+      "language": "typescript",
+      "doc": "Node 24 or later, which runs TypeScript by dropping the types.",
+      "reach": { "k": "subprocess", "command": "node", "args": ["../proofs/monad_test.ts"], "persistent": true, "timeout_ms": 15000 }
+    }
+  ],
+  "implementations": [
+    {
+      "id": "explain.python",
+      "proves": "monad_test::explain",
+      "environment": "python",
+      "entry": "monad_test.explain",
+      "cost": { "time": "o1", "space": "o1" },
+      "notes": "Runs the laws on a fixed set of samples, so the cost does not grow with the input."
+    },
+    {
+      "id": "explain.node",
+      "proves": "monad_test::explain",
+      "environment": "node",
+      "entry": "monad_test.explain",
+      "cost": { "time": "o1", "space": "o1" },
+      "notes": "The same test in Node, over the same samples."
+    }
+  ]
+}

@@ -12,4 +12,6 @@ examples/demo/proofs
 examples/fetch/generated/
 /examples/fetch/rust/target
 examples/net/generated/
+examples/monad/generated/
+examples/email/generated/
 /examples/net/rust/target
